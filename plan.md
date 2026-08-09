@@ -2006,3 +2006,93 @@ reports, benchmark report, crash-drill seed/results, compatibility matrix, and
 traceability report to the release. If a checklist item is intentionally not
 supported, the release must label it as unsupported rather than silently
 shipping a partial guarantee.
+
+---
+
+## Appendix — Remaining Work & Validated Next Steps (2026-08-09)
+
+Two colleague reviews (`improvements.md`, `perf.md` — both untracked, treated
+as advisory) make a series of recommendations. Each is validated below against
+the current code and measurements, then folded into a concrete, ordered
+roadmap together with the plan items that are still open. **Evidence is cited
+for every verdict; where a claim is already satisfied or only partially true,
+that is stated explicitly.**
+
+### A. Validation of `improvements.md`
+
+| # | Claim | Verdict | Evidence / note |
+|---|-------|---------|-----------------|
+| 1 | Move query filtering/sorting/index evaluation to Rust | ✅ VALID (top priority) | Live queries run in Dart: `QueryImpl` decodes every row to a Dart `Map` and predicates in Dart (`lib/src/query/query_impl.dart`); the durable `__gecko_index` table (WS3/ADR-0008) is only used for rebuild-at-open validation, while queries use a full Dart in-memory `SecondaryIndex` built by decoding **all** rows at open. |
+| 2 | Relation cascades/joins inside the Rust `WriteTransaction` | 🟡 VALID, defer | `RelationshipManager` is Dart (`lib/src/relation/`); moving to Rust is a big change. Only worth it after the query path (A1) because reads dominate. |
+| 3 | Reactivity invalidation routing in Rust | 🟡 VALID at scale, defer | Change bus + subscriber fan-out is Dart (`RawEngine._changeBus`). Coalesced batches already emit once; per-query incremental maintenance (perf.md §7) is the real fix, and it can start in Dart before moving to Rust. |
+| 4 | AES-256-GCM strictly at the Rust `redb::StorageBackend` seam | ✅ ALREADY DONE | `rust/src/crypto_storage.rs` `EncryptingStorageBackend` (page-level AES-256-GCM, `[gen][ciphertext‖tag][nonce]`), wired in `rust/src/worker.rs` (ADR-0009, WS4). |
+| 5 | Encryption strictly opt-in; plaintext = zero overhead | ✅ ALREADY TRUE | `DatabaseConfig.physicalEncryptionKey` / `keyProvider` only engage the Rust encrypting backend when supplied; plaintext DBs use plain redb I/O. |
+| 6 | `memcmp`-friendly LE / offset-binary wire encoding | 🟡 VALID but format-locked | Wire v1 is frozen (ADR-0002). `sort_rules.dart` already produces byte-orderable forms. A full LE offset-binary encoding is only viable as a **new format version** with a compat/migration path — plan it, don't bolt it on. |
+| 7 | Zero-copy FRB buffers + UI coalescing | ✅ VALID | Real, but must be measured first (perf.md Phase A); FRB zero-copy applies to bulk row reads. |
+| 8 | Web OPFS inside a dedicated JS Worker via `postMessage` | ✅ ALREADY DONE | In-package worker entry + `WebWorkerClient` + JSON protocol (ADR-0013/0014), live-validated `GECKO-WORKER-OK`. |
+| 9 | Scrap `NativeResolver` runtime network downloads | 🟡 PARTIALLY VALID | `native_resolver.dart` resolves override → cache → bundled → **`downloadUri` via `HttpClient`** (last-resort fallback). Primary shipping path is already static/bundled (ADR-0012). Action: for release builds, make the download fallback opt-out or remove it entirely (air-gapped/macOS Gatekeeper). |
+| 10 | Eliminate the middleman Dart worker isolate (`Isolate.spawn`) | 🟡 VALID OPINION, big tradeoff | VM path does `Isolate.spawn(_nativeWorkerMain)` (ADR-0003/0005) and pays SendPort marshalling per call. But it buys UI responsiveness + deterministic finalizer teardown, and the FRB worker pool threading differs. **Do not remove without the boundary micro-benchmark (perf.md Phase A–B) proving the isolate is a real cost** — and even then consider it opt-in. |
+| 11 | Consolidate encryption mechanics (drop Dart logical wrapping) | 🟡 MOSTLY COVERED by #4/#5 | The Dart `EncryptedRawBackend` (Phase 11) is an additive logical layer (covers the in-memory backend, which physical page encryption cannot); it is not the file-backend production path. Revisit only if it shows up in profiles. |
+
+### B. Validation of `perf.md`
+
+All of perf.md's headline numbers were reproduced by the WS8/Phase-13 benches on this machine:
+
+| perf.md claim | Verdict | Evidence |
+|---------------|---------|----------|
+| "hotRead ≈ 2.7 µs" | ✅ CONFIRMED | local bench: native hotRead ~1.7–4 µs; comparative hotRead ~4 µs |
+| "rangeScan/filteredQuery ≈ 110–130 ms for 1,000 records" | ✅ CONFIRMED | `benchmark/bench.dart` unindexed full scan: ~110 ms/1,000 rows (~110 µs/row) |
+| Indexed queries are ~100× faster already | ✅ CONFIRMED | comparative indexed `queryGroup` ~1 ms and `rangeScan` ~3 ms for 1,000 rows |
+| "bulk ≈ 175k ops/s; hot reads ≈ 367k/s; inserts ≈ 900/s" | ✅ CONFIRMED | native bulk ~175k/s, hotRead ~575k/s, single insert ~13k/s (bench) — insert ~1.6 ms/op in comparative (transactional commit + change tracking) |
+| "redb itself is not the bottleneck" | ✅ AGREED | writes are durability-bound; reads are boundary/decode-bound |
+| "query engine is the biggest 10× opportunity" | ✅ VALID | full-scan path decodes every row into a Dart `Map` then copies it again (`_mapOf`), predicates in Dart — ~110 µs/row even with a single batched `scanAll`; the durable Rust index is unused for live queries |
+| Projection-aware decode (`decodeField`, not full row) | ✅ VALID | predicate evaluation should not require materializing every field |
+| Real query planner: index choice → candidate IDs → residual predicates → **early LIMIT** | ✅ VALID | current `_indexCandidates` handles eq/range/prefix intersection, but sort is a full materialize+sort and `limit` applies **after** full collection |
+| Indexed sorting (B-tree traversal instead of materialize+sort) | ✅ VALID | `QueryImpl` sorts a fully-decoded list even when the index could stream ordered keys (ADR-0008 composite keys are ordered for exactly this) |
+| Covering indexes | ⏸ DEFER | agree — do not build now; keep the index-key design extensible |
+| Incremental reactivity / query maintenance | ✅ VALID at scale | coarse `watchAll` re-emits full collections; `watchAllDiff` exists; per-query incremental updates are the fix |
+| Snapshot lifetime (one snapshot per scan, not per record) | ✅ VALID AS A CHECK, mostly fine | `QueryImpl._scan()` opens **one** snapshot per scan and `rawRangeScan` is one transaction; verify with the Phase-A profiler rather than redesigning |
+| `getMany`/batch reads | ✅ VALID | no public `getMany`; relationship manager already batches some loads — generalize it |
+| Boundary micro-benchmark (A–F: Dart call / isolate / FFI / Rust no-op / redb get / rawGet) | ✅ VALID, do FIRST | exactly the right next instrument (see roadmap Phase 1) |
+
+### C. Remaining open items from `plan.md` (not covered above)
+
+1. **Six-platform matrix** (Windows, macOS, Linux, Android, iOS, Web) against one shared integration suite — Linux/macOS CI jobs exist; iOS is explicitly CI-pending; web runs the wasm/OPFS smoke in a browser.
+2. **Comparative benchmark completeness** — Isar, Drift, SQLite (sqflite/`sqlite3`) are still missing; Hive CE + Sembast are done.
+3. **Doc-test extraction harness** — extract every README/doc snippet as a real CI test (runnable examples exist; full extraction does not).
+4. **Full 12-criteria traceability table + a checking script** asserting every listed test exists and passes (partially populated; checker not yet written).
+5. **Dependency / Rust audit + license scan** — recorded manually at release (documented in WS8); could be automated (`dart pub outdated`, `cargo audit`, license scanner).
+
+### D. Proposed roadmap (ordered; each phase gates the next)
+
+**Phase 1 — Instrument the read/query path (perf.md Phase A+B).** Concrete steps:
+- Add per-stage timing to `QueryImpl`/scan: planner → backend read → decode → map copy → predicate → model conversion → sort; plus a Dart/isolate/FFI/Rust no-op/`redb` get breakdown micro-bench (`benchmark/boundary.dart`).
+- Re-run `benchmark/bench.dart` and `benchmark/comparative.dart` and record the split. **Do not optimize before this.** Deliverable: a boundary report that says where the 110 µs/row actually goes.
+
+**Phase 2 — Native query fast path (perf.md Phase C).** Concrete steps:
+- Add a Rust `query` operation that (a) traverses the durable `__gecko_index` table for eq/range/prefix when a matching index exists, (b) falls back to a Rust-side full scan with predicate pushdown, and (c) returns only matching (id → encoded row) pairs — one FRB hop, no Dart decode of non-matches.
+- Keep the Dart `SecondaryIndex` as an optional in-memory cache, but make the Rust path the default for indexed queries.
+- Targets: 1,000 rows indexed < 1 ms; 100k rows highly-selective < 5 ms; full-scan per-row cost cut by 10×.
+
+**Phase 3 — Projection + batch reads (perf.md Phase D+E).** Concrete steps:
+- `decodeField(bytes, field)` for predicate evaluation without full-row decode.
+- Public `getMany(keys)` / `Query.iterateBatch()` to collapse N boundary crossings into one.
+- Extend relationship eager-loading to use `getMany`.
+
+**Phase 4 — Indexed sorting + early LIMIT (perf.md Phase F).** Concrete steps:
+- When sort fields are index-ordered, stream keys from the index and stop at `limit` (no materialize+sort).
+- Apply `limit`/`offset` during the scan, not after.
+
+**Phase 5 — Incremental reactivity.** Concrete steps:
+- Per-query result-set maintenance: on a change batch, compute affected indexes/queries and update only those result sets (start in Dart; re-evaluate Rust routing afterwards).
+
+**Phase 6 — Boundary-elimination decision.** Concrete steps:
+- Use the Phase-1 numbers to decide whether the VM worker isolate and/or the Dart logical-encryption layer earn their cost; remove only with measured justification and an opt-in path (ADR).
+
+**Phase 7 — Mechanical completion (independent, can proceed in parallel).**
+- Six-platform matrix + iOS CI; Isar/Drift/SQLite comparative; doc-test extraction harness; traceability checking script; automated dependency/license audit.
+
+**Phase 8 — Release-hygiene decisions from `improvements.md`.**
+- Decide and lock: no runtime `NativeResolver` downloads for release artifacts (air-gapped/Gatekeeper); plan a wire-format v2 for LE offset-binary encodings with a migration path (ADR-0002 extension).
+
+> Rule for every phase: benchmark before and after with the pinned baseline (`tool/perf_gate.dart`), and record the boundary/query instrumentation in the release notes. Nothing in this appendix changes the Phase 0 design principles; in particular the single-writer, always-batched, and coverage-gate rules still apply.
