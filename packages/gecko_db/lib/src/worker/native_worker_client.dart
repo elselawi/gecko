@@ -15,6 +15,7 @@ import '../errors/errors.dart';
 import '../errors/native_error.dart';
 import '../native/generated/api.dart';
 import '../native/generated/worker.dart' show StorageStats;
+import '../native/native_resolver.dart' show bundledArtifactPath;
 import '../wire/compatibility.dart';
 import '../native/generated/frb_generated.dart';
 
@@ -337,10 +338,15 @@ Future<void> _nativeWorkerMain(List<Object?> args) async {
   final physicalKeyGeneration = args[5] as int;
   final isolateName = Isolate.current.debugName ?? 'gecko-native-worker';
   try {
+    // No-build-steps fallback: when no explicit library path is given, use the
+    // artifact bundled in the package (built by `tool/build_artifacts.dart
+    // bundle`) before falling back to the FRB default loader.
+    final effectiveLibraryPath =
+        nativeLibraryPath ?? await bundledArtifactPath();
     await RustLib.init(
-      externalLibrary: nativeLibraryPath == null
+      externalLibrary: effectiveLibraryPath == null
           ? null
-          : ExternalLibrary.open(nativeLibraryPath),
+          : ExternalLibrary.open(effectiveLibraryPath),
     );
     final worker = physicalKey == null
         ? await NativeWorker.open(path: path, readOnly: readOnly)

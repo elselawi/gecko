@@ -34,7 +34,7 @@ package required.
 | Phase | What | State |
 |-------|------|-------|
 | 0 | Foundations & contracts (API, error taxonomy, wire format, ADRs, coverage gate) | ✅ |
-| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⬜ pending |
+| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; iOS + FRB web glue/OPFS explicitly CI-pending |
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
@@ -234,6 +234,14 @@ The design is documented in [`plan.md`](plan.md) and in the
 - **Runnable examples.** Phase 13 keeps plain-Dart quickstart and advanced
   examples under `examples/`, with equivalent package tests in
   `test/phase13_examples_test.dart`.
+- **Zero-setup native artifacts (Workstream 7).** `tool/build_artifacts.dart`
+  builds and checksum-verifies the native artifact for every release target
+  from a pinned Rust toolchain; `bundle` lays them into
+  `packages/gecko_db/lib/native/<target>/<arch>/`, and the resolver's
+  `bundledArtifactPath()` fallback means `Database.open` works with **no
+  nativeLibraryPath, no Rust, no FFI, no build steps** on Windows and Android
+  today (see [ADR-0012](docs/adr/0012-cross-platform-artifact-matrix.md) and
+  [docs/compatibility.md](docs/compatibility.md)).
 - **Attachment metadata.** Phase 9 tracks binaries that live outside the
   database: parent references, content-hash dedupe with shared blobs, and
   transactionally-advanced upload/delete/retry states with pending/failed/

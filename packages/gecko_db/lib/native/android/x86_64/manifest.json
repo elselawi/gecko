@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "artifact": "gecko_db_rust.so",
+  "target": "android",
+  "architecture": "x86_64",
+  "triple": "x86_64-linux-android",
+  "version": "0.0.1",
+  "sha256": "93a785cbe55f312a5b43e413b8e94b54cde97324c32f2ae88d3e89752e760243",
+  "sizeBytes": 2353840,
+  "build": {
+    "commit": "3de95e81c16373b98bceb9f5607b707ab5873c7f",
+    "workflow": "local",
+    "rustToolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "frbCodegenVersion": "2.12.0",
+    "hostPlatform": "windows-3.10.8 (stable) (Tue Jan 27 00:02:04 2026 -0800) on \"windows_x64\"",
+    "sourceDateEpoch": "unset"
+  }
+}

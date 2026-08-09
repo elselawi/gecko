@@ -22,14 +22,19 @@ side enforces these through the compatibility handshake
 
 ## Supported platforms
 
-| Platform | Native artifact | Status |
-|---|---|---|
-| Windows (x64) | `gecko_db_rust.dll` | ✅ built and tested locally |
-| macOS | `libgecko_db_rust.dylib` | ⬜ matrix pending (WS 7) |
-| Linux | `libgecko_db_rust.so` | ⬜ matrix pending (WS 7) |
-| Android | ABI plugin artifacts | ⬜ pending (WS 7) |
-| iOS | framework artifacts | ⬜ pending (WS 7) |
-| Web | OPFS worker | ⬜ pending (Phase 1) |
+| Platform | Architecture | Native artifact | Status |
+|---|---|---|---|
+| Windows | x64 | `gecko_db_rust.dll` | ✅ built + verified (bundled in `lib/native/windows/x64/`; CI job `release-matrix` windows-x64) |
+| Linux | x64 | `libgecko_db_rust.so` | ⬜ CI job written (`release-matrix` linux-x64); needs a Linux runner to execute |
+| macOS | x64 / arm64 | `libgecko_db_rust.dylib` | ⬜ CI jobs written (`release-matrix` macos); need macOS runners to execute |
+| Android | arm64-v8a, armeabi-v7a, x86, x86_64 | `gecko_db_rust.so` | ✅ all 4 ABIs built + verified locally and bundled (`lib/native/android/*/`); CI job `release-matrix` android |
+| iOS | device + simulator | FRB iOS plugin artifact | ⬜ **explicitly CI-pending** — requires the FRB iOS plugin scaffold (Xcode); marked unsupported until it lands |
+| Web | wasm32 | `gecko_db_rust.wasm` | ⚠️ wasm artifact built + bundled (`lib/native/web/wasm32/`); **FRB web glue (wasm-bindgen) + OPFS worker explicitly CI-pending** (documented fallback: in-memory) |
+| Pure Dart CLI/server | desktop | — | ✅ no artifact needed |
+
+> **Release gate:** a release is blocked if any target is skipped without being
+> explicitly marked above. iOS and the FRB web glue + OPFS are explicitly
+> marked CI-pending (not silently skipped).
 
 ## Compatibility rules
 

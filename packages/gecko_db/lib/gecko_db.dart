@@ -98,6 +98,8 @@ export 'src/native/native_resolver.dart'
         ResolverDownloader,
         LocalResolverStorage,
         IoResolverDownloader,
+        bundledArtifactPath,
+        bundledNativeDir,
         nativeArtifactSha256,
         nativeArtifactManifest;
 export 'src/native/generated/api.dart' show NativeWorker;

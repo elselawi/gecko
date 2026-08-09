@@ -7,11 +7,64 @@
 library;
 
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 
 import '../errors/errors.dart';
+
+/// The conventional bundled-artifact directory inside the package
+/// (`packages/gecko_db/lib/native/<os>/<arch>/<file>`), produced by
+/// `tool/build_artifacts.dart bundle`. It lives under `lib/` so `package:`
+/// URIs resolve to it.
+const String bundledNativeDir = 'native';
+
+/// Returns the bundled artifact path for the *current* platform and
+/// architecture, or null when this host has no bundled artifact. Used as the
+/// no-build-steps fallback when a consumer does not supply an explicit
+/// [DatabaseConfig.nativeLibraryPath]. Resolved through the package URI so it
+/// works regardless of the process working directory.
+Future<String?> bundledArtifactPath() async {
+  final os = switch (Platform.operatingSystem) {
+    'windows' => 'windows',
+    'android' => 'android',
+    'macos' => 'macos',
+    'linux' => 'linux',
+    _ => null,
+  };
+  if (os == null) return null;
+  final arch = _hostArchitecture();
+  final file = _artifactFileName(os);
+  if (file == null) return null;
+  final uri = await Isolate.resolvePackageUri(
+    Uri.parse('package:gecko_db/$bundledNativeDir/$os/$arch/$file'),
+  );
+  return uri?.toFilePath();
+}
+
+/// Host CPU architecture mapped to the release-matrix keys. The `Abi` enum
+/// uses names like `windows_x64`, `android_arm64`, `linux_ia32`.
+String _hostArchitecture() {
+  final abi = Abi.current().toString().toLowerCase();
+  if (abi.endsWith('x64')) return 'x64';
+  if (abi.endsWith('arm64')) {
+    return Platform.isAndroid ? 'arm64-v8a' : 'arm64';
+  }
+  if (abi.contains('arm')) return Platform.isAndroid ? 'armeabi-v7a' : 'arm';
+  if (abi.contains('ia32')) return Platform.isAndroid ? 'x86' : 'x86';
+  return abi;
+}
+
+/// File name of the bundled artifact for [os] (matching `build_artifacts.dart`).
+String? _artifactFileName(String os) => switch (os) {
+  'windows' => 'gecko_db_rust.dll',
+  'android' => 'gecko_db_rust.so',
+  'macos' => 'libgecko_db_rust.dylib',
+  'linux' => 'libgecko_db_rust.so',
+  _ => null,
+};
 
 /// A pinned native artifact descriptor.
 class NativeArtifact {

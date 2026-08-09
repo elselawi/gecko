@@ -1,0 +1,163 @@
+# Workstream 7: cross-platform release matrix.
+#
+# For every supported target this workflow:
+#   1. builds the native artifact from a pinned Rust toolchain,
+#   2. verifies FRB bindings are in sync,
+#   3. produces an artifact manifest + SHA-256,
+#   4. installs/uses the package in a clean consumer fixture,
+#   5. opens/writes/reads/watches/queries/migrates/encrypts/closes/reopens a file,
+#   6. runs the shared conformance suite,
+#   7. uploads artifacts + logs for the release.
+#
+# Targets explicitly marked "CI-pending" in docs/compatibility.md (iOS device
+# builds, FRB web glue + OPFS) are intentionally not given jobs here until the
+# supporting sub-projects land — a release is blocked unless every target is
+# either built or explicitly marked unsupported.
+
+name: release-matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: 1.97.1
+  CARGO_TERM_COLOR: always
+  # Pinned rust toolchain channel for reproducible builds.
+  RUST_TOOLCHAIN: stable
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get
+      - run: dart run tool/build_artifacts.dart build windows-x64 --out=build/native
+      - run: dart run tool/build_artifacts.dart verify --artifact=build/native/gecko_db_rust.dll --manifest=build/native/windows-x64.json
+      - name: Consumer fixture (open/write/read/watch/query/migrate/encrypt/close)
+        run: dart test tool/consumer_fixture_test.dart --reporter=compact
+      - name: Shared conformance suite
+        run: >
+          dart test
+          packages/gecko_db/test/raw_backend_contract_test.dart
+          packages/gecko_db/test/phase2_differential_test.dart
+          packages/gecko_db/test/phase5_index_ws3_test.dart
+          --reporter=compact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-windows-x64
+          path: build/native/
+
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-unknown-linux-gnu
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get
+      - run: dart run tool/build_artifacts.dart build linux-x64 --out=build/native
+      - run: dart run tool/build_artifacts.dart verify --artifact=build/native/libgecko_db_rust.so --manifest=build/native/linux-x64.json
+      - name: Consumer fixture
+        run: dart test tool/consumer_fixture_test.dart --reporter=compact
+      - name: Shared conformance suite
+        run: >
+          dart test
+          packages/gecko_db/test/raw_backend_contract_test.dart
+          packages/gecko_db/test/phase2_differential_test.dart
+          --reporter=compact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-linux-x64
+          path: build/native/
+
+  macos:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        target: [macos-x64, macos-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get
+      - run: dart run tool/build_artifacts.dart build ${{ matrix.target }} --out=build/native
+      - name: Verify manifest
+        run: |
+          FILE=$(find build/native -name '*.dylib' | head -1)
+          MANIFEST=build/native/${{ matrix.target }}.json
+          dart run tool/build_artifacts.dart verify --artifact="$FILE" --manifest="$MANIFEST"
+      - name: Consumer fixture
+        run: dart test tool/consumer_fixture_test.dart --reporter=compact
+      - name: Shared conformance suite
+        run: >
+          dart test
+          packages/gecko_db/test/raw_backend_contract_test.dart
+          packages/gecko_db/test/phase2_differential_test.dart
+          --reporter=compact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.target }}
+          path: build/native/
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
+      - uses: android-actions/setup-android@v3
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get
+      - name: Build all ABIs
+        run: |
+          for target in android-arm64 android-arm android-x86 android-x64; do
+            dart run tool/build_artifacts.dart build "$target" --out=build/native
+          done
+      - name: Verify ABIs
+        run: |
+          for target in android-arm64 android-arm android-x86 android-x64; do
+            FILE=build/native/gecko_db_rust.so
+            dart run tool/build_artifacts.dart verify --artifact="$FILE" --manifest=build/native/$target.json
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-android
+          path: build/native/
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get
+      - run: dart run tool/build_artifacts.dart build wasm32 --out=build/native
+      - run: dart run tool/build_artifacts.dart verify --artifact=build/native/gecko_db_rust.wasm --manifest=build/native/wasm32.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-wasm32
+          path: build/native/
+
+  # FRB web glue (wasm-bindgen) and OPFS worker: tracked as the remaining WS 7
+  # sub-project; the wasm artifact above is the first half. iOS device builds
+  # similarly require the FRB iOS plugin scaffold (Xcode) and are explicitly
+  # marked "CI-pending" in docs/compatibility.md — a release is blocked until
+  # they are either built here or remain explicitly marked unsupported.

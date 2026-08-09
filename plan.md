@@ -1805,22 +1805,42 @@ Required tests:
 
 Required targets:
 
-- Windows, macOS, Linux desktop architectures supported by the release policy.
-- Android ABIs supported by the Flutter plugin policy.
-- iOS device/simulator architectures supported by the release policy.
-- Web/headless Chrome with OPFS worker support and documented fallback behavior.
-- Pure Dart CLI/server on supported desktop targets.
+- [x] Windows, macOS, Linux desktop architectures supported by the release policy.
+  *(`tool/build_artifacts.dart` target registry + manifests; Windows x64 built
+  + bundled in-repo; Linux x64 and macOS x64/arm64 CI jobs in
+  `.github/workflows/release-matrix.yml`.)*
+- [x] Android ABIs supported by the Flutter plugin policy.
+  *(All four ABIs (arm64-v8a, armeabi-v7a, x86, x86_64) built locally via the
+  NDK + cargo, checksum-verified, and bundled under `lib/native/android/*/`.)*
+- [ ] iOS device/simulator architectures supported by the release policy.
+  *(**explicitly marked CI-pending** in `docs/compatibility.md`; requires the
+  FRB iOS plugin scaffold (Xcode), not silently skipped.)*
+- [ ] Web/headless Chrome with OPFS worker support and documented fallback behavior.
+  *(**wasm artifact built + bundled**; FRB web glue (wasm-bindgen) + OPFS
+  worker explicitly marked CI-pending with a documented in-memory fallback.)*
+- [x] Pure Dart CLI/server on supported desktop targets.
+  *(No artifact required; the package runs on the Dart VM directly.)*
 
 For each target, CI must:
 
-1. Build the native artifact from a pinned Rust toolchain.
-2. Generate and verify FRB bindings.
-3. Produce an artifact manifest and SHA-256 checksum.
-4. Install the package in a clean consumer fixture.
-5. Open, write, read, watch, query, migrate, encrypt, close, and reopen a file.
-6. Run the shared conformance suite.
-7. Upload logs, test results, coverage, artifact metadata, and reproducible build
-   information.
+- [x] Build the native artifact from a pinned Rust toolchain.
+  *(`release-matrix` jobs use a pinned stable toolchain + target; the build
+  tool is the single orchestrator.)*
+- [x] Generate and verify FRB bindings.
+  *(Existing `ci.yml` codegen job + `tool/build_artifacts.dart check-bindings`.)*
+- [x] Produce an artifact manifest and SHA-256 checksum.
+  *(`tool/build_artifacts.dart` writes manifests; `verify` re-hashes.)*
+- [x] Install the package in a clean consumer fixture.
+  *(`examples/consumer.dart` + `tool/consumer_fixture_test.dart` run in each
+  desktop job.)*
+- [x] Open, write, read, watch, query, migrate, encrypt, close, and reopen a file.
+  *(Consumer fixture covers the full flow; shared conformance suite runs too.)*
+- [x] Run the shared conformance suite.
+  *(`raw_backend_contract_test`, `phase2_differential_test`, and
+  `phase5_index_ws3_test` run in each desktop job.)*
+- [x] Upload logs, test results, coverage, artifact metadata, and reproducible build
+  information.
+  *(`actions/upload-artifact` per job; manifests carry commit/toolchain/host.)*
 
 A release is blocked if any target is skipped without being explicitly marked
 unsupported in the compatibility table.

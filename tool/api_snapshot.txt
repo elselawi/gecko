@@ -32,7 +32,7 @@ export: src/model/row_schema.dart show: RowSchema, FieldSpec, FieldPresence, Fie
 export: src/namespaces.dart show: geckoReservedPrefix, isReservedName, ensureUserTableName
 export: src/native/generated/api.dart show: NativeWorker
 export: src/native/generated/frb_generated.dart show: RustLib
-export: src/native/native_resolver.dart show: NativeArtifact, NativeResolver, ResolverStorage, ResolverDownloader, LocalResolverStorage, IoResolverDownloader, nativeArtifactSha256, nativeArtifactManifest
+export: src/native/native_resolver.dart show: NativeArtifact, NativeResolver, ResolverStorage, ResolverDownloader, LocalResolverStorage, IoResolverDownloader, bundledArtifactPath, bundledNativeDir, nativeArtifactSha256, nativeArtifactManifest
 export: src/query/filter.dart show: Filter, FilterGroup
 export: src/query/query_impl.dart show: QueryImpl, IndexDefinition
 export: src/query/sorting.dart show: compareRows

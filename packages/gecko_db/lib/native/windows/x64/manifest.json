@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "artifact": "gecko_db_rust.dll",
+  "target": "windows",
+  "architecture": "x64",
+  "triple": "x86_64-pc-windows-msvc",
+  "version": "0.0.1",
+  "sha256": "79fb19948edc40c34048439dd22b1beb2f785fa401c7bba7ab25c78ad418fe08",
+  "sizeBytes": 1605120,
+  "build": {
+    "commit": "3de95e81c16373b98bceb9f5607b707ab5873c7f",
+    "workflow": "local",
+    "rustToolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "frbCodegenVersion": "2.12.0",
+    "hostPlatform": "windows-3.10.8 (stable) (Tue Jan 27 00:02:04 2026 -0800) on \"windows_x64\"",
+    "sourceDateEpoch": "unset"
+  }
+}
