@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DART_VERSION: "3.10.8"
+  RUST_VERSION: "1.97.1"
+  CARGO_LLVM_COV_VERSION: "0.6.16"
+
+jobs:
+  dart-quality:
+    name: Dart quality and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: dart pub get
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - working-directory: rust
+        run: cargo build --release
+      - run: dart run tool/api_snapshot.dart tool/api_snapshot.txt
+      - run: git diff --exit-code -- tool/api_snapshot.txt
+      - run: dart analyze
+      - run: dart test packages/gecko_db/test --reporter=compact --coverage=packages/gecko_db/coverage
+      - run: dart test tool --reporter=compact
+      - run: dart run tool/traceability_check.dart
+      - run: dart run tool/workstream0_contract_test.dart
+      - run: >-
+          dart run coverage:format_coverage --lcov
+          --in=packages/gecko_db/coverage
+          -o packages/gecko_db/coverage/lcov.info
+          --report-on=packages/gecko_db/lib
+          --ignore-files="**/native/generated/**"
+      - run: dart run tool/coverage_gate.dart packages/gecko_db/coverage/lcov.info
+
+  rust-quality:
+    name: Rust quality, tests, and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: dart pub get
+      - run: dart run tool/api_snapshot.dart tool/api_snapshot.txt
+      - run: git diff --exit-code -- tool/api_snapshot.txt
+      - working-directory: rust
+        run: cargo fmt --check
+      - working-directory: rust
+        run: cargo check --all-targets
+      - working-directory: rust
+        run: cargo test
+      - working-directory: rust
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - working-directory: rust
+        run: cargo install cargo-llvm-cov --version ${{ env.CARGO_LLVM_COV_VERSION }} --locked
+      - working-directory: rust
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path coverage.lcov
+      - run: dart run tool/rust_coverage_gate.dart rust/coverage.lcov
+
+  generated-bindings:
+    name: Generated bindings are reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: dart pub get
+      - run: cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
+      - run: flutter_rust_bridge_codegen generate --config-file frb.yaml
+      - run: dart run tool/api_snapshot.dart tool/api_snapshot.txt
+      - run: git diff --exit-code -- packages/gecko_db/lib/src/native/generated rust/src/frb_generated.rs tool/api_snapshot.txt
+
+  api-contract:
+    name: Public API snapshot is clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: dart pub get
+      - run: dart run tool/api_snapshot.dart tool/api_snapshot.txt
+      - run: git diff --exit-code -- tool/api_snapshot.txt
+      - run: dart run tool/api_contract_gate.dart --base="${{ github.event.repository.default_branch }}"
+      - run: dart run tool/artifact_manifest.dart --artifact=rust/target/release/gecko_db_rust.dll --target=windows --arch=x64 --version=0.0.1 --output=artifact-manifest.json
+      - run: dart test packages/gecko_db/test/compatibility_test.dart packages/gecko_db/test/native_bridge_contract_test.dart packages/gecko_db/test/native_error_test.dart --reporter=compact

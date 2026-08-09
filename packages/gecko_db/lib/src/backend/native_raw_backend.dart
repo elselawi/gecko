@@ -1,0 +1,329 @@
+/// FRB-backed native RawBackend adapter.
+///
+/// The adapter keeps Dart transaction handles out of FFI. Each mutation batch
+/// is encoded once with the existing versioned `Op` contract and sent to the
+/// Rust `NativeWorker`, which applies it in one redb write transaction.
+library;
+
+import 'dart:typed_data';
+
+import '../errors/native_error.dart';
+import '../namespaces.dart';
+import '../native/generated/worker.dart' show StorageStats;
+import '../wire/compatibility.dart';
+import '../wire/op.dart';
+import '../wire/wire_codec.dart';
+import '../worker/native_worker_client.dart';
+import 'byte_key.dart';
+import 'raw_backend.dart';
+
+/// A file-backed backend using the generated flutter_rust_bridge worker.
+class NativeRawBackend implements RawBackend {
+  NativeRawBackend._(this._worker, this._readOnly);
+
+  final NativeWorkerClient _worker;
+  final bool _readOnly;
+
+  /// Snapshot ids handed out by the worker that have not been released yet.
+  /// Dropped on [close] so a closed backend never leaks MVCC read
+  /// transactions; individual snapshots are also released by
+  /// `_NativeSnapshot.dispose` (and by a `Finalizer` for GC safety).
+  final Set<int> _openSnapshots = <int>{};
+
+  @override
+  bool get isReadOnly => _readOnly;
+
+  /// Whether the worker isolate is alive and has completed its startup
+  /// handshake. Test/qualification surface (ADR-0005).
+  bool get workerAlive => _worker.isWorkerAlive;
+
+  /// The worker isolate's own name, proving reads/writes execute off the
+  /// caller's isolate. Test/qualification surface (ADR-0005).
+  String? get workerIsolateName => _worker.workerIsolateName;
+
+  /// Test/qualification surface (ADR-0005): runs the [`Finalizer`] teardown
+  /// path deterministically (instead of waiting for garbage collection),
+  /// after which the worker isolate is shut down and [workerAlive] is false.
+  Future<void> disposeForTest() => _worker.debugFinalize();
+
+  /// Number of MVCC snapshots currently held in the worker (open snapshot-
+  /// bound cursors/transactions). Compaction refuses to run while this is
+  /// non-zero.
+  int get openSnapshotCount => _openSnapshots.length;
+
+  /// Compacts the database file in place (Workstream 5). Returns true when
+  /// space was reclaimed. Requires no open snapshots and a writable database.
+  Future<bool> compact() async {
+    try {
+      return await _worker.compact();
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// Reports physical/logical size and health counters from the worker.
+  Future<StorageStats> storageStats() async {
+    try {
+      return await _worker.storageStats();
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// Opens a file-backed worker after `RustLib.init()` has loaded the native
+  /// artifact through the generated FRB loader.
+  ///
+  /// When [physicalKey] is supplied (32 bytes), the file is opened with
+  /// physical AES-256-GCM page encryption; [physicalKeyGeneration] selects
+  /// the key generation for interrupted-rotation recovery.
+  static Future<NativeRawBackend> open(
+    String path, {
+    bool readOnly = false,
+    String? nativeLibraryPath,
+    List<int>? physicalKey,
+    int physicalKeyGeneration = 1,
+  }) async {
+    try {
+      final backend = NativeRawBackend._(
+        await NativeWorkerClient.open(
+          path: path,
+          readOnly: readOnly,
+          nativeLibraryPath: nativeLibraryPath,
+          physicalKey: physicalKey,
+          physicalKeyGeneration: physicalKeyGeneration,
+        ),
+        readOnly,
+      );
+      try {
+        final handshake = CompatibilityHandshake.decode(
+          await backend._worker.compatibilityHandshake(),
+        );
+        handshake.validateCompatibility();
+        return backend;
+      } catch (error) {
+        await backend.close();
+        rethrow;
+      }
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  @override
+  Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops) async {
+    final wireOps = <Op>[for (final op in ops) _toWireOp(op)];
+    // Delete-range ops must report every key they actually remove so the
+    // affected-set contract matches the in-memory backend exactly. The engine
+    // is single-writer, so the pre-scan sees precisely the keys the batch is
+    // about to delete (nothing can interleave between scan and apply).
+    final preRemoved = <(String, ByteKey)>{};
+    final deleteRanges = [
+      for (final op in ops)
+        if (op is RawDeleteRange) op,
+    ];
+    if (deleteRanges.isNotEmpty) {
+      final snap = await snapshot();
+      for (final range in deleteRanges) {
+        for (final entry in await snap.scan(
+          range.table,
+          start: range.start,
+          end: range.end,
+        )) {
+          preRemoved.add((range.table, entry.key));
+        }
+      }
+    }
+    try {
+      await _worker.applyBatch(Op.encodeBatch(wireOps));
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+    return {
+      for (final op in ops)
+        switch (op) {
+          RawPut(:final table, :final key) => (table, key),
+          RawDelete(:final table, :final key) => (table, key),
+          RawDeleteRange(:final table, :final start) => (table, start),
+          RawClear(:final table) => (table, ByteKey(const [])),
+        },
+      ...preRemoved,
+    };
+  }
+
+  @override
+  Future<RawSnapshot> snapshot() async {
+    final id = await _worker.createSnapshot();
+    _openSnapshots.add(id);
+    return _NativeSnapshot(
+      _worker,
+      id,
+      onDispose: () => _openSnapshots.remove(id),
+    );
+  }
+
+  @override
+  Future<bool> tableExists(String table) async =>
+      (await tables()).contains(table);
+
+  @override
+  Future<List<String>> tables() async {
+    try {
+      return await _worker.tables();
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  @override
+  Future<int> lastCommitSeq() async {
+    try {
+      final snapshot = await this.snapshot();
+      final raw = await snapshot.read(
+        geckoSyncMetaTable,
+        ByteKey(const DefaultWireCodec().encode(geckoLsnKey)),
+      );
+      if (raw == null) return 0;
+      return (const DefaultWireCodec().decode(raw) as int?) ?? 0;
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    for (final id in List<int>.of(_openSnapshots)) {
+      try {
+        await _worker.dropSnapshot(id);
+      } catch (_) {
+        // Best effort: the worker may already be gone; the redb database is
+        // torn down with the worker regardless.
+      }
+    }
+    _openSnapshots.clear();
+    await _worker.close();
+  }
+
+  static Op _toWireOp(RawOp op) => switch (op) {
+    RawPut(:final table, :final key, :final value) => Op(
+      op: OpKind.put,
+      table: table,
+      key: Uint8List.fromList(key.bytes),
+      value: Uint8List.fromList(value),
+    ),
+    RawDelete(:final table, :final key) => Op(
+      op: OpKind.delete,
+      table: table,
+      key: Uint8List.fromList(key.bytes),
+    ),
+    RawDeleteRange(:final table, :final start, :final end) => Op(
+      op: OpKind.deleteRange,
+      table: table,
+      start: Uint8List.fromList(start.bytes),
+      end: Uint8List.fromList(end.bytes),
+    ),
+    RawClear(:final table) => Op(op: OpKind.clear, table: table),
+  };
+}
+
+class _NativeSnapshot implements RawSnapshot {
+  _NativeSnapshot(this._worker, this._snapshotId, {required this.onDispose})
+    : _token = _SnapshotToken(_worker, _snapshotId) {
+    _finalizer.attach(this, _token, detach: this);
+  }
+
+  /// Releases the worker-side MVCC read transaction when the snapshot object
+  /// is garbage collected, so a long-lived database that creates many short
+  /// snapshots never accumulates held redb read transactions.
+  static final Finalizer<_SnapshotToken> _finalizer = Finalizer<_SnapshotToken>(
+    (token) {
+      token.worker.dropSnapshotUnawaited(token.id);
+    },
+  );
+
+  final NativeWorkerClient _worker;
+  final int _snapshotId;
+  final void Function() onDispose;
+  final _SnapshotToken _token;
+  bool _disposed = false;
+
+  /// Deterministically releases the worker-side snapshot. Idempotent.
+  @override
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    _finalizer.detach(this);
+    onDispose();
+    try {
+      await _worker.dropSnapshot(_snapshotId);
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  @override
+  Future<List<int>?> read(String table, ByteKey key) async {
+    try {
+      return await _worker.snapshotGet(
+        snapshot: _snapshotId,
+        table: table,
+        key: key.bytes,
+      );
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  @override
+  Future<List<RawEntry>> scan(
+    String table, {
+    ByteKey? start,
+    ByteKey? end,
+    bool startInclusive = true,
+    bool endInclusive = true,
+  }) async {
+    if (!startInclusive || !endInclusive) {
+      final entries = await scanAll(table);
+      return entries.where((entry) {
+        final afterStart =
+            start == null ||
+            entry.key.compareTo(start) > 0 ||
+            (startInclusive && entry.key == start);
+        final beforeEnd =
+            end == null ||
+            entry.key.compareTo(end) < 0 ||
+            (endInclusive && entry.key == end);
+        return afterStart && beforeEnd;
+      }).toList();
+    }
+    try {
+      final pairs = await _worker.snapshotRangeScan(
+        snapshot: _snapshotId,
+        table: table,
+        start: start?.bytes,
+        end: end?.bytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  @override
+  Future<List<RawEntry>> scanAll(String table) async {
+    try {
+      final pairs = await _worker.snapshotRangeScan(
+        snapshot: _snapshotId,
+        table: table,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+}
+
+class _SnapshotToken {
+  _SnapshotToken(this.worker, this.id);
+  final NativeWorkerClient worker;
+  final int id;
+}

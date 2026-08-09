@@ -1,0 +1,6 @@
+rust_input: crate::api
+rust_root: rust/
+dart_output: packages/gecko_db/lib/src/native/generated
+web: false
+full_dep: false
+default_rust_opaque_codec: Moi

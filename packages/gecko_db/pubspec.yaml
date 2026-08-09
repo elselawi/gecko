@@ -1,0 +1,23 @@
+name: gecko_db
+description: >-
+  A local-first, reactive embedded database for Dart and Flutter. Tier 1
+  (get/put/delete/watch) is usable with zero knowledge of indexes, queries,
+  relationships, transactions, or sync.
+version: 0.0.1
+publish_to: none
+resolution: workspace
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  meta: ^1.9.0
+  collection: ^1.18.0
+  crypto: ^3.0.3
+  path: ^1.9.0
+
+  flutter_rust_bridge: 2.12.0
+dev_dependencies:
+  coverage: ^1.15.1
+  lints: ^4.0.0
+  test: ^1.24.0

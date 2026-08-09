@@ -1,0 +1,515 @@
+/// Phase 5 query engine over the byte-level engine.
+///
+/// Queries decode each stored row into a plain map, evaluate [`FilterGroup`]s,
+/// apply the documented sort ordering, and support pagination, count, distinct,
+/// lazy iteration, and cursor pagination. A secondary-index layer is layered on
+/// top for efficiency (indexed vs fallback-scan is observable via `usedIndex`).
+library;
+
+import 'dart:async';
+
+import '../api/change.dart';
+import '../api/maintenance.dart';
+import '../api/query.dart';
+import '../backend/byte_key.dart';
+import '../backend/raw_backend.dart';
+import '../errors/errors.dart';
+import '../raw/raw_engine.dart';
+import '../wire/wire_codec.dart';
+import 'filter.dart';
+import 'secondary_index.dart';
+import 'sorting.dart';
+
+/// A decoded row plus its raw key, carried during query evaluation.
+class _Decoded {
+  _Decoded(this.key, this.row);
+  final ByteKey key;
+  final Map<Object?, Object?> row;
+}
+
+/// Immutable secondary index metadata used by the engine.
+class IndexDefinition {
+  const IndexDefinition({required this.name, required this.fields});
+  final String name;
+  final List<String> fields;
+
+  bool get isCompound => fields.length > 1;
+}
+
+/// A single in-memory secondary index bound to a collection, used by queries
+/// on that collection plus the write path that keeps it in sync.
+class CollectionIndex {
+  CollectionIndex({
+    required List<String> fields,
+    Iterable<String>? prefixFields,
+  }) : secondary = SecondaryIndex(
+         fields: fields,
+         prefixFields: prefixFields ?? const [],
+       );
+
+  final SecondaryIndex secondary;
+  final Completer<void> _ready = Completer<void>();
+
+  /// Completes once the index has been populated from the primary table at
+  /// collection-open. Queries await this before consulting the index so a
+  /// freshly-opened collection can never read a partially-built index.
+  Future<void> get ready => _ready.future;
+
+  /// Marks the index fully populated.
+  void markReady() {
+    if (!_ready.isCompleted) _ready.complete();
+  }
+
+  /// True if the index is ready for queries.
+  bool get isReady => _ready.isCompleted;
+
+  /// The primary decoded row key (the typed collection's record id).
+  void onPut(Object? id, Object? previous, Object? row) {
+    final oldMap = previous is Map
+        ? Map<Object?, Object?>.from(previous)
+        : <Object?, Object?>{};
+    final newMap = row is Map
+        ? Map<Object?, Object?>.from(row)
+        : <Object?, Object?>{};
+    if (oldMap.isNotEmpty) secondary.remove(id, oldMap);
+    secondary.insert(id, newMap);
+  }
+
+  /// Removes [row] under [id] when a record is deleted.
+  void onDelete(Object? id, Object? previous) {
+    final oldMap = previous is Map
+        ? Map<Object?, Object?>.from(previous)
+        : <Object?, Object?>{};
+    secondary.remove(id, oldMap);
+  }
+}
+
+/// The concrete [`Query`] implementation.
+class QueryImpl<T> implements Query<T> {
+  QueryImpl(
+    this._engine,
+    this._table, {
+    required this.toRow,
+    required this.fromRow,
+    Map<String, Object?>? initialEq,
+    CollectionIndex? secondary,
+  }) : _filters = <Filter>[
+         for (final entry in (initialEq ?? const {}).entries)
+           Filter.eq(entry.key.toString(), entry.value),
+       ],
+       _secondary = secondary;
+
+  final RawEngine _engine;
+  final String _table;
+  final Object? Function(T) toRow;
+  final T Function(Object?) fromRow;
+  final CollectionIndex? _secondary;
+
+  final List<Filter> _filters;
+  List<SortSpec> _sort = const [];
+  int? _limit;
+  int? _offset;
+  final DefaultWireCodec _codec = const DefaultWireCodec();
+
+  /// Diagnostics: which plan the last execution used.
+  @override
+  IndexPlan lastPlan = IndexPlan.fullScan;
+
+  @override
+  Query<T> filter(String field, Object? value) {
+    final q = _copy();
+    q._filters.add(Filter.eq(field, value));
+    return q;
+  }
+
+  @override
+  Query<T> range(String field, {Object? min, Object? max}) {
+    final q = _copy();
+    q._filters.add(Filter.between(field, min: min, max: max));
+    return q;
+  }
+
+  @override
+  Query<T> prefix(String field, String prefix) {
+    final q = _copy();
+    q._filters.add(Filter.prefix(field, prefix));
+    return q;
+  }
+
+  @override
+  Query<T> sort(List<SortSpec> specs) {
+    final q = _copy();
+    q._sort = List<SortSpec>.from(specs);
+    return q;
+  }
+
+  @override
+  Query<T> limit(int n) {
+    final q = _copy();
+    q._limit = n;
+    return q;
+  }
+
+  @override
+  Query<T> offset(int n) {
+    final q = _copy();
+    q._offset = n;
+    return q;
+  }
+
+  QueryImpl<T> _copy() =>
+      QueryImpl<T>(
+          _engine,
+          _table,
+          toRow: toRow,
+          fromRow: fromRow,
+          secondary: _secondary,
+        )
+        .._filters.addAll(_filters)
+        .._sort = List<SortSpec>.from(_sort)
+        .._limit = _limit
+        .._offset = _offset;
+
+  FilterGroup get _group => FilterGroup(_filters);
+
+  /// Lazy iteration over matching decoded rows in sort order, consulting the
+  /// optional secondary index when the equality filters are covered.
+  Stream<_Decoded> _scan() async* {
+    final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
+    final snap = await _engine.backend.snapshot();
+    try {
+      yield* _scanWith(snap, secondary?.secondary);
+    } finally {
+      await snap.dispose();
+    }
+  }
+
+  /// Computes the candidate-id set from any index-usable filters (equality,
+  /// range, prefix), intersecting all of them. Returns null when no filter is
+  /// index-served (full scan required).
+  Set<Object?>? _indexCandidates(SecondaryIndex? idx) {
+    if (idx == null) return null;
+    Set<Object?>? candidates;
+    final eqs = <String, Object?>{
+      for (final f in _filters)
+        if (f.isIndexUsable) f.field: f.value,
+    };
+    if (eqs.isNotEmpty && idx.coversEq(eqs)) {
+      candidates = idx.lookupEq(eqs);
+    }
+    for (final f in _filters) {
+      if (f.isRangeFilter && idx.isRangeIndexed(f.field)) {
+        final rangeIds = idx.lookupRange(f.field, min: f.min, max: f.max)!;
+        candidates = candidates == null
+            ? rangeIds
+            : candidates.intersection(rangeIds);
+      }
+    }
+    for (final f in _filters) {
+      if (f.isPrefixFilter && idx.isPrefixed(f.field)) {
+        final prefixIds = idx.lookupPrefix(f.field, f.prefix!)!;
+        candidates = candidates == null
+            ? prefixIds
+            : candidates.intersection(prefixIds);
+      }
+    }
+    return candidates;
+  }
+
+  Stream<_Decoded> _scanWith(RawSnapshot snap, SecondaryIndex? idx) async* {
+    final candidateIds = _indexCandidates(idx);
+    if (candidateIds != null) {
+      lastPlan = IndexPlan.secondaryIndex;
+      final decoded = <_Decoded>[];
+      for (final id in candidateIds) {
+        final raw = await snap.read(_table, ByteKey(_codec.encode(id)));
+        if (raw == null) continue;
+        decoded.add(
+          _Decoded(ByteKey(_codec.encode(id)), _mapOf(_codec.decode(raw))),
+        );
+      }
+      if (_sort.isNotEmpty) {
+        decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+      }
+      for (final item in decoded) {
+        if (_group.test(item.row)) yield item;
+      }
+      return;
+    }
+    lastPlan = IndexPlan.fullScan;
+    final entries = await snap.scanAll(_table);
+    final decoded = <_Decoded>[
+      for (final entry in entries)
+        _Decoded(entry.key, _mapOf(_codec.decode(entry.value ?? const []))),
+    ];
+    if (_sort.isNotEmpty) {
+      decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+    }
+    for (final item in decoded) {
+      if (_group.test(item.row)) yield item;
+    }
+  }
+
+  Map<Object?, Object?> _mapOf(Object? value) =>
+      value is Map ? Map<Object?, Object?>.from(value) : <Object?, Object?>{};
+
+  /// Applies limit/offset after an already-ordered stream.
+  Future<List<_Decoded>> _collectOrdered() async {
+    final matching = <_Decoded>[];
+    await for (final item in _scan()) {
+      matching.add(item);
+    }
+    var start = _offset ?? 0;
+    var end = matching.length;
+    if (_limit != null) end = start + _limit!;
+    if (start > matching.length) start = matching.length;
+    if (end > matching.length) end = matching.length;
+    return matching.sublist(start, end);
+  }
+
+  /// Applies limit/offset to an unordered (scan) result.
+  Future<List<_Decoded>> _collect() async {
+    final all = await _collectOrdered();
+    return all;
+  }
+
+  @override
+  Future<List<T>> findAll() async {
+    final stopwatch = _engine.slowQueryThresholdMicros > 0
+        ? (Stopwatch()..start())
+        : null;
+    final items = await _collect();
+    if (stopwatch != null) {
+      _engine.reportSlowQuery(
+        SlowQueryRecord(
+          durationMicros: stopwatch.elapsedMicroseconds,
+          table: _table,
+          indexed: lastPlan == IndexPlan.secondaryIndex,
+          filters: [for (final f in _filters) f.toString()],
+          sort: [for (final s in _sort) s.toString()],
+        ),
+      );
+    }
+    return [for (final item in items) fromRow(item.row)];
+  }
+
+  /// Lazily streams matching rows without materializing the full result set.
+  /// Unsorted queries stream directly from the backend; sorted queries must
+  /// materialize order and are therefore equivalent to [findAll], which is
+  /// documented.
+  @override
+  Stream<T> iterate() {
+    final secondary = _secondary;
+    final snapFuture = () async {
+      if (secondary != null) await secondary.ready;
+      return _engine.backend.snapshot();
+    }();
+    final index = secondary?.secondary;
+    late final Stream<_Decoded> source;
+    if (_sort.isNotEmpty) {
+      source = _scan();
+    } else {
+      final candidateIds = _indexCandidates(index);
+      source = _streamUnsorted(candidateIds, snapFuture);
+    }
+    return source.map((d) => fromRow(d.row));
+  }
+
+  Stream<_Decoded> _streamUnsorted(
+    Set<Object?>? candidateIds,
+    Future<RawSnapshot> snapFuture,
+  ) async* {
+    final snap = await snapFuture;
+    try {
+      if (candidateIds != null) {
+        lastPlan = IndexPlan.secondaryIndex;
+        for (final id in candidateIds) {
+          final raw = await snap.read(_table, ByteKey(_codec.encode(id)));
+          if (raw == null) continue;
+          final d = _Decoded(
+            ByteKey(_codec.encode(id)),
+            _mapOf(_codec.decode(raw)),
+          );
+          if (_group.test(d.row)) yield d;
+        }
+        return;
+      }
+      lastPlan = IndexPlan.fullScan;
+      final entries = await snap.scanAll(_table);
+      for (final entry in entries) {
+        final d = _Decoded(
+          entry.key,
+          _mapOf(_codec.decode(entry.value ?? const [])),
+        );
+        if (_group.test(d.row)) yield d;
+      }
+    } finally {
+      await snap.dispose();
+    }
+  }
+
+  @override
+  Future<T?> first() async {
+    final limited = _copy().._limit = 1;
+    final items = await limited._collect();
+    return items.isEmpty ? null : fromRow(items.first.row);
+  }
+
+  @override
+  Future<int> count() async {
+    var n = 0;
+    await for (final _ in _scan()) {
+      n++;
+    }
+    return n;
+  }
+
+  @override
+  Future<List<Object?>> distinct(String field) async {
+    final seen = <Object?>{};
+    await for (final item in _scan()) {
+      if (item.row.containsKey(field)) {
+        seen.add(item.row[field]);
+      }
+    }
+    return seen.toList();
+  }
+
+  /// Cursor-based pagination.
+  ///
+  /// [afterKey] (when provided) is the encoded key bytes returned by a previous
+  /// page's `nextCursor`. The next cursor is likewise opaque key bytes; resume
+  /// by passing it straight back. Pages are disjoint, order-preserving, and
+  /// together exhaust the query.
+  @override
+  Future<(List<T>, Object? nextCursor)> findPage({
+    Object? afterKey,
+    int? pageSize,
+  }) async {
+    final limit = pageSize ?? _limit ?? 50;
+    final rawCursor = afterKey == null ? null : ByteKey(afterKey as List<int>);
+    final page = <_Decoded>[];
+    var sawAfter = afterKey == null;
+    await for (final item in _scan()) {
+      if (!sawAfter) {
+        if (rawCursor != null && item.key.compareTo(rawCursor) <= 0) continue;
+        sawAfter = true;
+      }
+      page.add(item);
+      if (page.length >= limit) break;
+    }
+    final nextCursor = page.isEmpty ? null : page.last.key.bytes;
+    return ([for (final item in page) fromRow(item.row)], nextCursor);
+  }
+
+  /// Opens a snapshot-bound cursor (WS3). The cursor materializes the ordered
+  /// matching set once from a frozen MVCC snapshot and pages through it, so
+  /// concurrent writes cannot duplicate or drop records across pages.
+  @override
+  QueryCursor<T> cursor({int? pageSize}) {
+    final secondary = _secondary;
+    final snapFuture = () async {
+      if (secondary != null) await secondary.ready;
+      return _engine.backend.snapshot();
+    }();
+    return _QueryCursorImpl<T>(this, snapFuture, pageSize ?? _limit);
+  }
+
+  /// Reactive filtered query: re-emits the matching list whenever a change in
+  /// this collection might affect membership.
+  @override
+  Stream<List<T>> watch() {
+    late StreamController<List<T>> controller;
+    late StreamSubscription<ChangeSet> sub;
+    controller = StreamController<List<T>>(
+      onListen: () async {
+        // Emit current snapshot immediately.
+        unawaited(findAll().then(controller.add));
+        sub = _engine.changes.stream.listen((ChangeSet changeSet) {
+          if (changeSet.changes.any((Change c) => c.table == _table)) {
+            unawaited(_decodeSnapshot().then(controller.add));
+          }
+        });
+      },
+      onCancel: () => sub.cancel(),
+    );
+    return controller.stream;
+  }
+
+  Future<List<T>> _decodeSnapshot() async {
+    return findAll();
+  }
+
+  /// Materializes the ordered matching set against [snap] (used by the
+  /// snapshot-bound cursor).
+  Future<List<_Decoded>> _materialize(RawSnapshot snap) async {
+    final result = <_Decoded>[];
+    await for (final item in _scanWith(snap, _secondary?.secondary)) {
+      result.add(item);
+    }
+    return result;
+  }
+}
+
+/// Snapshot-bound cursor implementation (WS3).
+///
+/// The ordered matching set is materialized once from the captured snapshot on
+/// the first page, then paged by offset. This is O(result) memory but
+/// guarantees the documented contract: pages are disjoint, order-preserving,
+/// exhaustive, and stable under concurrent mutation because the snapshot is
+/// frozen at cursor creation.
+class _QueryCursorImpl<T> implements QueryCursor<T> {
+  _QueryCursorImpl(this._query, this._snapFuture, this._pageSize);
+
+  final QueryImpl<T> _query;
+  final Future<RawSnapshot> _snapFuture;
+  final int? _pageSize;
+  RawSnapshot? _snap;
+  List<_Decoded>? _rows;
+  int _offset = 0;
+  bool _disposed = false;
+
+  @override
+  Future<(List<T>, Object? nextCursor)> next({int? pageSize}) async {
+    if (_disposed) {
+      throw const GeckoError(
+        GeckoErrorType.invalidOperation,
+        'Cursor has been disposed',
+      );
+    }
+    final snap = _snap ??= await _snapFuture;
+    _rows ??= await _query._materialize(snap);
+    final limit = pageSize ?? _pageSize ?? 50;
+    if (_offset >= _rows!.length) return (<T>[], null);
+    final end = (_offset + limit > _rows!.length)
+        ? _rows!.length
+        : _offset + limit;
+    final page = _rows!.sublist(_offset, end);
+    _offset = end;
+    final lastKey = page.last.key.bytes;
+    return ([for (final item in page) _query.fromRow(item.row)], lastKey);
+  }
+
+  @override
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    final snap = _snap;
+    _snap = null;
+    if (snap != null) {
+      await snap.dispose();
+      return;
+    }
+    // The snapshot future created the worker snapshot at cursor creation even
+    // if `next()` was never called; release it so a created-but-unused cursor
+    // can never block compaction or leak an MVCC read transaction.
+    try {
+      final pending = await _snapFuture;
+      await pending.dispose();
+    } catch (_) {
+      // The snapshot may already be gone (backend closed); release is
+      // best-effort.
+    }
+  }
+}

@@ -1,0 +1,23 @@
+name: gecko_db_monorepo
+description: >-
+  Monorepo root for gecko_db, a local-first reactive embedded database for
+  Dart and Flutter. This package exists only to declare the workspace; all
+  real code lives under packages/.
+publish_to: none
+version: 0.0.0
+
+dependencies:
+  crypto: ^3.0.3
+  path: ^1.9.0
+
+dev_dependencies:
+  test: ^1.24.0
+  gecko_db:
+    path: packages/gecko_db
+
+environment:
+  sdk: ^3.10.8
+
+# Dart workspaces let a single `dart pub get` at the root resolve all packages.
+workspace:
+  - packages/gecko_db

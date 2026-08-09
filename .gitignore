@@ -1,0 +1,17 @@
+# Dart
+.dart_tool/
+.packages
+build/
+pubspec.lock
+
+# Rust
+rust/**/target/
+
+# Coverage
+coverage/
+*.lcov
+*.info
+
+# OS
+.DS_Store
+Thumbs.db

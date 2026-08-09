@@ -1,0 +1,34 @@
+# melos manages the gecko_db monorepo: bootstrapping, running tests across all
+# packages in one command, and coordinating the multi-package CI matrix.
+name: gecko_db
+
+packages:
+  - packages/**
+
+scripts:
+  # Run every package's test suite, failing fast on the first red suite.
+  test:
+    run: dart test --reporter=expanded
+    exec:
+      concurrency: 1
+      failFast: true
+
+  # Coverage gate: measure line+branch coverage and fail below the threshold.
+  # The actual threshold is enforced by tool/coverage_gate.dart.
+  coverage:
+    run: dart run tool/coverage_gate.dart
+
+  analyze:
+    run: dart analyze
+    exec:
+      concurrency: 1
+
+  verify:
+    run: >-
+      dart analyze &&
+      dart test packages/gecko_db/test --reporter=compact &&
+      dart run tool/api_snapshot.dart tool/api_snapshot.txt &&
+      dart run tool/workstream0_contract_test.dart
+    exec:
+      concurrency: 1
+      failFast: true
