@@ -53,6 +53,93 @@ class StorageStats {
       'tables=$tableCount, snapshots=$openSnapshots, lsn=$commitSequence)';
 }
 
+/// Per-stage breakdown of a single query execution (Phase 1 instrumentation).
+///
+/// Every stage is measured in microseconds and is 0 when the stage did not
+/// run (e.g. `sort` is 0 for an unsorted query, `indexLookup` is 0 for a full
+/// scan). Populated only when slow-query logging is armed
+/// ([DatabaseConfig.slowQueryThresholdMicros] > 0); otherwise the record
+/// carries a null [SlowQueryRecord.timings] and query execution pays no
+/// timing overhead.
+///
+/// Stages, in execution order:
+/// - `plan`        — building the [FilterGroup] and copying filters/sort.
+/// - `indexLookup` — consulting the in-memory [SecondaryIndex] for candidate
+///                   ids (0 for a full scan).
+/// - `backendRead` — snapshot open + `scanAll`/per-id `read` calls.
+/// - `decode`      — [WireCodec.decode] of every scanned row's bytes.
+/// - `mapCopy`     — the defensive [_mapOf] copy of each decoded row.
+/// - `predicate`   — [FilterGroup.test] over the candidate set.
+/// - `model`       — `fromRow` materialization of matched rows.
+/// - `sort`        — [compareRows] ordering of the matched set.
+class QueryStageTimings {
+  const QueryStageTimings({
+    this.plan = 0,
+    this.indexLookup = 0,
+    this.backendRead = 0,
+    this.decode = 0,
+    this.mapCopy = 0,
+    this.predicate = 0,
+    this.model = 0,
+    this.sort = 0,
+    this.rowsScanned = 0,
+    this.rowsMatched = 0,
+  });
+
+  /// Filter-group construction + filter/sort copy (µs).
+  final int plan;
+
+  /// In-memory secondary-index candidate-id lookup (µs; 0 for a full scan).
+  final int indexLookup;
+
+  /// Snapshot open + backend reads (µs).
+  final int backendRead;
+
+  /// Row byte decode (µs).
+  final int decode;
+
+  /// Defensive map copy of each decoded row (µs).
+  final int mapCopy;
+
+  /// Predicate evaluation over the candidate set (µs).
+  final int predicate;
+
+  /// `fromRow` model materialization of matched rows (µs).
+  final int model;
+
+  /// Sort of the matched set (µs; 0 when unsorted).
+  final int sort;
+
+  /// Rows decoded & predicated (the full-scan candidate count).
+  final int rowsScanned;
+
+  /// Rows that passed the predicate (the result count before limit/offset).
+  final int rowsMatched;
+
+  /// Total of all stage timings (µs). May be slightly less than
+  /// [SlowQueryRecord.durationMicros] because the record's total also includes
+  /// limit/offset slicing and small un-instrumented glue.
+  int get total =>
+      plan + indexLookup + backendRead + decode + mapCopy + predicate +
+      model + sort;
+
+  @override
+  String toString() {
+    final parts = <String>[
+      'plan=$planµs',
+      'index=$indexLookupµs',
+      'read=$backendReadµs',
+      'decode=$decodeµs',
+      'mapCopy=$mapCopyµs',
+      'pred=$predicateµs',
+      'model=$modelµs',
+      'sort=$sortµs',
+    ];
+    return 'QueryStageTimings(${parts.join(', ')}, '
+        'scanned=$rowsScanned, matched=$rowsMatched)';
+  }
+}
+
 /// A recorded slow-query entry (Workstream 5 slow-query logging).
 class SlowQueryRecord {
   const SlowQueryRecord({
@@ -61,6 +148,7 @@ class SlowQueryRecord {
     required this.indexed,
     required this.filters,
     required this.sort,
+    this.timings,
   });
 
   /// Observed execution time in microseconds.
@@ -79,10 +167,15 @@ class SlowQueryRecord {
   /// Human-readable sort specifications.
   final List<String> sort;
 
+  /// Per-stage breakdown, populated only when slow-query logging is armed.
+  /// Null when the query ran with timing disabled ([slowQueryThresholdMicros]
+  /// == 0) or before the SlowQueryRecord was constructed.
+  final QueryStageTimings? timings;
+
   @override
   String toString() =>
       'SlowQuery($durationMicrosµs, $table, ${indexed ? 'indexed' : 'scan'}, '
-      '${filters.join('; ')})';
+      '${filters.join('; ')})${timings == null ? '' : '\n  $timings'}';
 }
 
 /// Maintenance/compaction controller.

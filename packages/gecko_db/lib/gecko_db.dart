@@ -12,7 +12,12 @@ export 'src/api/collection_diff.dart' show CollectionDiff;
 export 'src/api/query.dart'
     show Query, QueryCursor, SortOrder, SortSpec, IndexPlan;
 export 'src/api/maintenance.dart'
-    show MaintenanceApi, MaintenanceState, StorageStats, SlowQueryRecord;
+    show
+        MaintenanceApi,
+        MaintenanceState,
+        StorageStats,
+        SlowQueryRecord,
+        QueryStageTimings;
 export 'src/api/transaction.dart' show Transaction;
 export 'src/api/bulk.dart' show BulkMutation, BulkWriteResult;
 export 'src/api/diagnostics.dart' show DiagnosticsApi, DiagnosticsSnapshot;

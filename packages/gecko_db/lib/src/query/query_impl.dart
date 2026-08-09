@@ -179,7 +179,7 @@ class QueryImpl<T> implements Query<T> {
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      yield* _scanWith(snap, secondary?.secondary);
+      yield* _scanWith(snap, secondary?.secondary, null);
     } finally {
       await snap.dispose();
     }
@@ -217,47 +217,95 @@ class QueryImpl<T> implements Query<T> {
     return candidates;
   }
 
-  Stream<_Decoded> _scanWith(RawSnapshot snap, SecondaryIndex? idx) async* {
+  Stream<_Decoded> _scanWith(
+    RawSnapshot snap,
+    SecondaryIndex? idx,
+    _QueryTimings? t,
+  ) async* {
+    if (t != null) t.start(_QueryStage.plan);
+    if (t != null && idx != null) t.start(_QueryStage.indexLookup);
     final candidateIds = _indexCandidates(idx);
+    if (t != null) {
+      if (idx != null) t.stop(_QueryStage.indexLookup);
+      t.stop(_QueryStage.plan);
+    }
     if (candidateIds != null) {
       lastPlan = IndexPlan.secondaryIndex;
       final decoded = <_Decoded>[];
       for (final id in candidateIds) {
+        if (t != null) t.start(_QueryStage.backendRead);
         final raw = await snap.read(_table, ByteKey(_codec.encode(id)));
         if (raw == null) continue;
-        decoded.add(
-          _Decoded(ByteKey(_codec.encode(id)), _mapOf(_codec.decode(raw))),
-        );
+        if (t != null) {
+          t.scanned++;
+          t.stop(_QueryStage.backendRead);
+          t.start(_QueryStage.decode);
+        }
+        final decodedValue = _codec.decode(raw);
+        if (t != null) {
+          t.stop(_QueryStage.decode);
+          t.start(_QueryStage.mapCopy);
+        }
+        final row = _mapOf(decodedValue);
+        if (t != null) t.stop(_QueryStage.mapCopy);
+        decoded.add(_Decoded(ByteKey(_codec.encode(id)), row));
       }
       if (_sort.isNotEmpty) {
+        if (t != null) t.start(_QueryStage.sort);
         decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+        if (t != null) t.stop(_QueryStage.sort);
       }
+      if (t != null) t.start(_QueryStage.predicate);
       for (final item in decoded) {
-        if (_group.test(item.row)) yield item;
+        if (_group.test(item.row)) {
+          if (t != null) t.matched++;
+          yield item;
+        }
       }
+      if (t != null) t.stopAccum(_QueryStage.predicate);
       return;
     }
     lastPlan = IndexPlan.fullScan;
+    if (t != null) t.start(_QueryStage.backendRead);
     final entries = await snap.scanAll(_table);
-    final decoded = <_Decoded>[
-      for (final entry in entries)
-        _Decoded(entry.key, _mapOf(_codec.decode(entry.value ?? const []))),
-    ];
+    if (t != null) t.stop(_QueryStage.backendRead);
+    final decoded = <_Decoded>[];
+    for (final entry in entries) {
+      if (t != null) {
+        t.scanned++;
+        t.start(_QueryStage.decode);
+      }
+      final decodedValue = _codec.decode(entry.value ?? const []);
+      if (t != null) {
+        t.stop(_QueryStage.decode);
+        t.start(_QueryStage.mapCopy);
+      }
+      final row = _mapOf(decodedValue);
+      if (t != null) t.stop(_QueryStage.mapCopy);
+      decoded.add(_Decoded(entry.key, row));
+    }
     if (_sort.isNotEmpty) {
+      if (t != null) t.start(_QueryStage.sort);
       decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+      if (t != null) t.stop(_QueryStage.sort);
     }
+    if (t != null) t.start(_QueryStage.predicate);
     for (final item in decoded) {
-      if (_group.test(item.row)) yield item;
+      if (_group.test(item.row)) {
+        if (t != null) t.matched++;
+        yield item;
+      }
     }
+    if (t != null) t.stopAccum(_QueryStage.predicate);
   }
 
   Map<Object?, Object?> _mapOf(Object? value) =>
       value is Map ? Map<Object?, Object?>.from(value) : <Object?, Object?>{};
 
   /// Applies limit/offset after an already-ordered stream.
-  Future<List<_Decoded>> _collectOrdered() async {
+  Future<List<_Decoded>> _collectOrdered({_QueryTimings? t}) async {
     final matching = <_Decoded>[];
-    await for (final item in _scan()) {
+    await for (final item in _scanTimed(t)) {
       matching.add(item);
     }
     var start = _offset ?? 0;
@@ -268,18 +316,39 @@ class QueryImpl<T> implements Query<T> {
     return matching.sublist(start, end);
   }
 
+  /// [Iterable] timed scan: wraps [_scan] so the per-stage accumulator [t]
+  /// (when non-null) is threaded into [_scanWith]. When null, behaves exactly
+  /// like [_scan] and pays no timing overhead.
+  Stream<_Decoded> _scanTimed(_QueryTimings? t) async* {
+    if (t == null) {
+      yield* _scan();
+      return;
+    }
+    final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
+    final snap = await _engine.backend.snapshot();
+    try {
+      yield* _scanWith(snap, secondary?.secondary, t);
+    } finally {
+      await snap.dispose();
+    }
+  }
+
   /// Applies limit/offset to an unordered (scan) result.
-  Future<List<_Decoded>> _collect() async {
-    final all = await _collectOrdered();
+  Future<List<_Decoded>> _collect({_QueryTimings? t}) async {
+    final all = await _collectOrdered(t: t);
     return all;
   }
 
   @override
   Future<List<T>> findAll() async {
-    final stopwatch = _engine.slowQueryThresholdMicros > 0
-        ? (Stopwatch()..start())
-        : null;
-    final items = await _collect();
+    final armed = _engine.slowQueryThresholdMicros > 0;
+    final stopwatch = armed ? (Stopwatch()..start()) : null;
+    final t = armed ? _QueryTimings() : null;
+    final items = await _collect(t: t);
+    if (t != null) t.start(_QueryStage.model);
+    final out = [for (final item in items) fromRow(item.row)];
+    if (t != null) t.stop(_QueryStage.model);
     if (stopwatch != null) {
       _engine.reportSlowQuery(
         SlowQueryRecord(
@@ -288,10 +357,11 @@ class QueryImpl<T> implements Query<T> {
           indexed: lastPlan == IndexPlan.secondaryIndex,
           filters: [for (final f in _filters) f.toString()],
           sort: [for (final s in _sort) s.toString()],
+          timings: t?.toRecord(),
         ),
       );
     }
-    return [for (final item in items) fromRow(item.row)];
+    return out;
   }
 
   /// Lazily streams matching rows without materializing the full result set.
@@ -445,7 +515,7 @@ class QueryImpl<T> implements Query<T> {
   /// snapshot-bound cursor).
   Future<List<_Decoded>> _materialize(RawSnapshot snap) async {
     final result = <_Decoded>[];
-    await for (final item in _scanWith(snap, _secondary?.secondary)) {
+    await for (final item in _scanWith(snap, _secondary?.secondary, null)) {
       result.add(item);
     }
     return result;
@@ -512,4 +582,59 @@ class _QueryCursorImpl<T> implements QueryCursor<T> {
       // best-effort.
     }
   }
+}
+
+/// Per-stage query timers (Phase 1 instrumentation).
+/// A single accumulator is only allocated when slow-query logging is armed
+/// ([RawEngine.slowQueryThresholdMicros] > 0); queries that run with timing
+/// disabled pass `null` and pay no overhead.
+enum _QueryStage {
+  plan,
+  indexLookup,
+  backendRead,
+  decode,
+  mapCopy,
+  predicate,
+  model,
+  sort,
+}
+
+/// Accumulates per-stage microseconds + row counts for one query execution.
+/// Stages are timed with a single reused [Stopwatch]; [start] / [stop]
+/// bracket a stage, [stopAccum] stops a stage that was accumulating across
+/// interleaved yields (e.g. the predicate loop yields matches).
+class _QueryTimings {
+  final Stopwatch _watch = Stopwatch();
+  final Map<_QueryStage, int> _micros = {
+    for (final s in _QueryStage.values) s: 0,
+  };
+  int scanned = 0;
+  int matched = 0;
+
+  void start(_QueryStage stage) {
+    _watch.reset();
+    _watch.start();
+  }
+
+  void stop(_QueryStage stage) {
+    _watch.stop();
+    _micros[stage] = (_micros[stage] ?? 0) + _watch.elapsedMicroseconds;
+  }
+
+  /// Stops a stage whose [start] ran across a yield/await boundary; the
+  /// elapsed time is the accumulated total since the last [start].
+  void stopAccum(_QueryStage stage) => stop(stage);
+
+  QueryStageTimings toRecord() => QueryStageTimings(
+        plan: _micros[_QueryStage.plan]!,
+        indexLookup: _micros[_QueryStage.indexLookup]!,
+        backendRead: _micros[_QueryStage.backendRead]!,
+        decode: _micros[_QueryStage.decode]!,
+        mapCopy: _micros[_QueryStage.mapCopy]!,
+        predicate: _micros[_QueryStage.predicate]!,
+        model: _micros[_QueryStage.model]!,
+        sort: _micros[_QueryStage.sort]!,
+        rowsScanned: scanned,
+        rowsMatched: matched,
+      );
 }

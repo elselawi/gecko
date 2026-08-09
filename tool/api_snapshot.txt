@@ -12,7 +12,7 @@ export: src/api/conflict.dart show: ConflictApi, ConflictRequest, ConflictResolu
 export: src/api/crypto.dart show: CryptoBackend, CryptoPage, Aes256GcmCryptoBackend
 export: src/api/database.dart show: Database, DatabaseConfig, WriteCallback
 export: src/api/diagnostics.dart show: DiagnosticsApi, DiagnosticsSnapshot
-export: src/api/maintenance.dart show: MaintenanceApi, MaintenanceState, StorageStats, SlowQueryRecord
+export: src/api/maintenance.dart show: MaintenanceApi, MaintenanceState, StorageStats, SlowQueryRecord, QueryStageTimings
 export: src/api/query.dart show: Query, QueryCursor, SortOrder, SortSpec, IndexPlan
 export: src/api/schema.dart show: SchemaApi, MigrationStep, MigrationPlan, MigrationFailure, RecordRewriter
 export: src/api/sync_state.dart show: SyncState, SyncPhase

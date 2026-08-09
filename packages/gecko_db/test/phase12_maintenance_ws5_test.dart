@@ -552,6 +552,96 @@ void main() {
       await db.close();
     });
 
+    test(
+      'Phase 1 per-stage timers attribute full-scan vs index-served costs',
+      () async {
+        final db = await openNative(
+          config: DatabaseConfig(
+            nativeLibraryPath: nativePath,
+            slowQueryThresholdMicros: 1,
+          ),
+        );
+        final col = db.collection<Map<String, Object?>>(
+          'items',
+          toRow: (m) => m,
+          fromRow: (m) => Map<String, Object?>.from(m as Map),
+          id: (m) => m['id'],
+          indexFields: const ['group'],
+        );
+        for (var i = 0; i < 60; i++) {
+          await col.put({
+            'id': 'k-$i',
+            'group': i.isEven ? 'even' : 'odd',
+            'n': i,
+          });
+        }
+
+        // Full scan: no usable index, decode every row, predicate in Dart.
+        await col.where({'n': 7}).findAll();
+        final scanRec = db.engine.recentSlowQueries.last;
+        final scanT = scanRec.timings!;
+        expect(scanRec.indexed, isFalse);
+        expect(scanT.rowsScanned, 60, reason: 'every row is decoded & tested');
+        expect(scanT.rowsMatched, 1);
+        // The 'group' index exists but does not cover 'n', so the engine
+        // still consults the index object (returns no candidates) before
+        // falling back to a full scan. indexLookup may be > 0; what makes
+        // this a full scan is rowsScanned == total, not indexLookup == 0.
+        expect(scanT.decode, greaterThan(0));
+        expect(scanT.mapCopy, greaterThan(0));
+        expect(scanT.predicate, greaterThan(0));
+        expect(scanT.model, greaterThan(0));
+        expect(scanT.sort, 0, reason: 'unsorted query');
+        expect(
+          scanT.total,
+          lessThanOrEqualTo(scanRec.durationMicros),
+          reason: 'stage sum must not exceed the query total',
+        );
+
+        // Index-served: indexLookup runs, only matching ids are read.
+        final indexed = col.where({'group': 'even'});
+        await indexed.findAll();
+        final idxRec = db.engine.recentSlowQueries.last;
+        final idxT = idxRec.timings!;
+        expect(idxRec.indexed, isTrue);
+        expect(idxT.rowsScanned, 30, reason: 'only the 30 even ids are read');
+        expect(idxT.rowsMatched, 30);
+        expect(idxT.indexLookup, greaterThan(0), reason: 'index was consulted');
+        expect(idxT.decode, greaterThan(0));
+        expect(idxT.total, lessThanOrEqualTo(idxRec.durationMicros));
+        await db.close();
+      },
+    );
+
+    test(
+      'Phase 1 per-stage timers report the sort stage on ordered queries',
+      () async {
+        final db = await openNative(
+          config: DatabaseConfig(
+            nativeLibraryPath: nativePath,
+            slowQueryThresholdMicros: 1,
+          ),
+        );
+        final col = db.collection<Map<String, Object?>>(
+          'items',
+          toRow: (m) => m,
+          fromRow: (m) => Map<String, Object?>.from(m as Map),
+          id: (m) => m['id'],
+        );
+        for (var i = 0; i < 40; i++) {
+          await col.put({'id': 'k-$i', 'n': i});
+        }
+        await col.where().sort([const SortSpec('n')]).findAll();
+        final rec = db.engine.recentSlowQueries.last;
+        final t = rec.timings!;
+        expect(t.rowsScanned, 40);
+        expect(t.rowsMatched, 40);
+        expect(t.sort, greaterThan(0), reason: 'sorted query must time sort');
+        expect(t.total, lessThanOrEqualTo(rec.durationMicros));
+        await db.close();
+      },
+    );
+
     test('lock-contention and active-subscriber counters', () async {
       final db = await openNative(
         config: DatabaseConfig(
