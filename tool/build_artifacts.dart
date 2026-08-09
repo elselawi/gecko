@@ -254,11 +254,55 @@ Future<Map<String, Object?>> build(BuildTarget target, String outDir) async {
     throw StateError('build succeeded but artifact is missing: ${source.path}');
   }
   Directory(outDir).createSync(recursive: true);
+  if (target.targetKey == 'web') {
+    return _packageWebGlue(target, source, outDir);
+  }
   final destination = File('$outDir${Platform.pathSeparator}${target.artifactName}');
   source.copySync(destination.path);
   final manifest = makeManifest(target, destination);
   File('$outDir${Platform.pathSeparator}${target.name}.json')
       .writeAsStringSync('${const JsonEncoder.withIndent('  ').convert(manifest)}\n');
+  return manifest;
+}
+
+/// Web target: the raw wasm is not directly loadable by the FRB web runtime —
+/// it must first go through `wasm-bindgen --target no-modules`, which emits the
+/// glue pair the FRB loader expects: `gecko_db_rust.js` (defines the global
+/// `wasm_bindgen`) + `gecko_db_rust_bg.wasm`. Both are packaged and the wasm
+/// is checksummed in the manifest.
+///
+/// Requires `wasm-bindgen-cli` at the exact version pinned in `rust/Cargo.toml`
+/// (0.2.92): `cargo install wasm-bindgen-cli --version 0.2.92 --locked`.
+Future<Map<String, Object?>> _packageWebGlue(
+  BuildTarget target,
+  File source,
+  String outDir,
+) async {
+  final result = await Process.run(
+    'wasm-bindgen',
+    ['--target', 'no-modules', '--out-dir', outDir, source.path],
+  );
+  if (result.exitCode != 0) {
+    throw StateError(
+      'wasm-bindgen failed:\n${result.stdout}\n${result.stderr}',
+    );
+  }
+  final stem = target.artifactName.replaceAll(RegExp(r'\.wasm$'), '');
+  final glue = File('$outDir${Platform.pathSeparator}$stem.js');
+  final wasm = File('$outDir${Platform.pathSeparator}${stem}_bg.wasm');
+  if (!glue.existsSync() || !wasm.existsSync()) {
+    throw StateError(
+      'wasm-bindgen did not produce the expected glue pair '
+      '(${glue.path}, ${wasm.path})',
+    );
+  }
+  final manifest = makeManifest(target, wasm)
+    ..['glueJs'] = glue.uri.pathSegments.last
+    ..['glueWasm'] = wasm.uri.pathSegments.last;
+  File('$outDir${Platform.pathSeparator}${target.name}.json')
+      .writeAsStringSync('${const JsonEncoder.withIndent('  ').convert(manifest)}\n');
+  stdout.writeln('WEB GLUE: ${glue.uri.pathSegments.last} '
+      '+ ${wasm.uri.pathSegments.last} -> $outDir');
   return manifest;
 }
 
@@ -327,6 +371,13 @@ void bundle(String fromDir) {
     )..createSync(recursive: true);
     final dest = File('${destDir.path}${Platform.pathSeparator}$artifactName');
     source.copySync(dest.path);
+    // Web glue: the FRB loader also needs the glue JS next to the wasm.
+    final glueJs = manifest['glueJs'] as String?;
+    if (glueJs != null) {
+      final glueSource = File('$fromDir${Platform.pathSeparator}$glueJs');
+      glueSource.copySync('${destDir.path}${Platform.pathSeparator}$glueJs');
+      stdout.writeln('BUNDLED $target/$arch/$glueJs');
+    }
     manifestFile.copySync(
       '${destDir.path}${Platform.pathSeparator}manifest.json',
     );
