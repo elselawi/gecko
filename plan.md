@@ -2040,7 +2040,7 @@ complete before Phases 2–6 start; Phase 7 can run in parallel with Phases 3–
   only used to rebuild/validate the in-memory Dart index at open, not to serve
   live queries.
 
-### 2. Phase 1 — Instrument the read/query path
+### 2. Phase 1 — Instrument the read/query path  ✅ DONE (ADR-0015)
 
 **Goal:** know where time goes before changing anything.
 
@@ -2055,7 +2055,10 @@ complete before Phases 2–6 start; Phase 7 can run in parallel with Phases 3–
 4. Re-run `benchmark/bench.dart` and the comparative suite; record the split.
 
 **Done when:** a written breakdown shows where the ≈110 µs/row full-scan cost
-and the per-query cost come from, and the boundary costs are quantified.
+and the per-query cost come from, and the boundary costs are quantified. ✅
+(Findings recorded in ADR-0015: cost is overwhelmingly in boundary crossings —
+`backendRead` is 70% of a 100k-row full scan and 88% of an indexed eq query —
+not Dart decode/predicate. Phase 2 attacks both.)
 
 ### 3. Phase 2 — Native query fast path
 

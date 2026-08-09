@@ -38,7 +38,7 @@ package required.
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
-| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics |
+| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015) |
 | 6 | Relationships & referential integrity (Tier 3): FK helpers, delete behaviors, eager load, cycle detection | ✅ many-to-many joins, delete hooks, restrict-naming; typed-collection wiring open |
 | 7 | Transactions, durable change tracking, sync hooks, LSN ordering, origin tagging, idempotency, and GC watermark | ✅ |
 | 8 | Pluggable conflict resolution, three-way merge, preserved manual conflicts, and atomic resolution | ✅ |
@@ -360,6 +360,8 @@ the repo root; long modes via `GECKO_LONG_TEST=1`, nightly in CI):
 | Soak | `test/phase14_soak_ws8_test.dart` | Sustained writes/watches/queries/migrations/compaction/reopen cycles under physical AES-256-GCM encryption; raw file leaks no plaintext |
 | Regression gate | `benchmark/bench.dart` + `tool/perf_gate.dart` | Pins `benchmark/baseline.json`; fails if any workload regresses beyond tolerance (`dart run tool/perf_gate.dart`; `--update` to refresh) |
 | Comparative (Phase 13) | `benchmark/comparative.dart` | Same workloads on gecko_db (redb), Hive CE (box), and Sembast (file) on one machine, `--json` output. Hive CE / Sembast are dev-only dependencies |
+| Boundary (Phase 1) | `benchmark/boundary.dart` | Per-layer read-path latency (dartCall → isolate → FRB → Rust → redb → rawGet); advisory breakdown, not a regression gate (ADR-0015) |
+| Query profile (Phase 1) | `benchmark/query_profile.dart` | Per-stage `QueryStageTimings` split for a full scan and an indexed eq query at 1k/100k rows; advisory (ADR-0015) |
 | Offline lint | `tool/offline_lint.dart` | Forbids network + `DateTime.now()` in all test sources (determinism) |
 | Security review | `tool/security_review.dart` | Scans Dart + Rust for secret literals, key logging, raw values in errors, base64 credential blobs |
 

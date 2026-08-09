@@ -7,6 +7,23 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Phase 1 — Read/query path instrumentation** (ADR-0015):
+  - `benchmark/boundary.dart`: per-layer latency micro-benchmark
+    (dartCall → isolateRoundTrip → frbCall → rustNoop → redbGet →
+    rawGet cold/hot) on the native backend; advisory, not a regression gate.
+  - `benchmark/query_profile.dart`: per-stage split for a full scan and an
+    indexed equality query at 1k and 100k rows.
+  - `QueryStageTimings` (public, on `SlowQueryRecord.timings`): per-stage µs
+    for the 8 query-path stages (plan → indexLookup → backendRead → decode →
+    mapCopy → predicate → model → sort) + `rowsScanned`/`rowsMatched`;
+    populated only when `slowQueryThresholdMicros > 0` (zero overhead when
+    disabled).
+  - `NativeRawBackend.commitSequenceProbe()`: perf instrumentation accessor
+    that runs a worker-isolate round trip with trivial Rust work, isolating
+    the isolate/port + FRB marshalling cost.
+  - Finding: the cost is overwhelmingly in boundary crossings
+    (`backendRead` is 70% of a 100k-row full scan and 88% of an indexed eq
+    query), not Dart decode/predicate — directly motivates Phase 2.
 - Workstream 4 — **Physical encryption and key management** (ADR-0009):
   - `EncryptingStorageBackend`: AES-256-GCM per physical page below redb
     (`[gen 1][ciphertext‖tag 4112][nonce 12]`), length-preserving and
