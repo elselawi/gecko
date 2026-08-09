@@ -422,6 +422,58 @@ class NativeRawSnapshot implements RawSnapshot {
       throw mapNativeError(error);
     }
   }
+
+  /// M3: batched point-read, snapshot-bound — all reads observe one
+  /// consistent committed state. See [NativeRawBackend.getMany].
+  @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) async {
+    try {
+      final pairs = await _worker.snapshotGetMany(
+        snapshot: _snapshotId,
+        table: table,
+        keys: [for (final k in keys) k.bytes],
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M3: aggregate pushdown, snapshot-bound. See
+  /// [NativeRawBackend.queryFilteredCount].
+  Future<int> queryFilteredCount({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    try {
+      return await _worker.snapshotQueryFilteredCount(
+        snapshot: _snapshotId,
+        table: table,
+        predicateBytes: predicateBytes,
+      );
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M3: aggregate pushdown, snapshot-bound. See
+  /// [NativeRawBackend.queryFilteredDistinct].
+  Future<List<List<int>>> queryFilteredDistinct({
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) async {
+    try {
+      return await _worker.snapshotQueryFilteredDistinct(
+        snapshot: _snapshotId,
+        table: table,
+        predicateBytes: predicateBytes,
+        field: field,
+      );
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
 }
 
 class _SnapshotToken {

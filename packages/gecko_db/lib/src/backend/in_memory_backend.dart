@@ -137,6 +137,17 @@ class _MemSnapshot implements RawSnapshot {
   }
 
   @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) async {
+    final out = <RawEntry>[];
+    for (final key in keys) {
+      final value = await read(table, key);
+      if (value == null) continue;
+      out.add(RawEntry(key, value));
+    }
+    return out;
+  }
+
+  @override
   Future<List<RawEntry>> scan(
     String table, {
     ByteKey? start,

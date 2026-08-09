@@ -328,6 +328,58 @@ impl RedbWorker {
         Ok(value)
     }
 
+    /// M3: batched point-read — fetches N keys in ONE read transaction,
+    /// returning `(key, value)` pairs for keys that exist. Keys whose row is
+    /// absent are omitted (the caller can compute the missing set if it
+    /// needs). A missing table is an empty result, never an error. This kills
+    /// the relationship N+1: callers that previously did one `get` per child
+    /// id now do one `get_many` for the whole batch.
+    pub fn get_many(&self, table: &str, keys: &[&[u8]]) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.get_many_with(&transaction, table, keys)
+    }
+
+    /// Snapshot-bound variant of [Self::get_many]: all reads observe one
+    /// consistent committed state.
+    pub fn snapshot_get_many(
+        &self,
+        snapshot: u64,
+        table: &str,
+        keys: &[&[u8]],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.get_many_with(transaction, table, keys)
+    }
+
+    fn get_many_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        keys: &[&[u8]],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let user_def = table_definition(table);
+        let user_table = match transaction.open_table(user_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut result = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(value) = user_table
+                .get(*key)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+            {
+                result.push((key.to_vec(), value.value().to_vec()));
+            }
+            // Absent keys are silently omitted; the durable contract is that
+            // only existing rows appear in the result.
+        }
+        Ok(result)
+    }
+
     /// Reads a sorted inclusive range using one consistent snapshot.
     pub fn range_scan(
         &self,
@@ -587,6 +639,126 @@ impl RedbWorker {
             if predicate.test_bytes(row_bytes) {
                 result.push((key.value().to_vec(), row_bytes.to_vec()));
             }
+        }
+        Ok(result)
+    }
+
+    /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+    /// them. Scans [table], evaluates [predicate_bytes] against each row's
+    /// bytes IN RUST, and returns only the matching count in one hop. A
+    /// `count()` query no longer pays the decode + transfer cost of every
+    /// matching row.
+    pub fn query_filtered_count(
+        &self,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<u64, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_filtered_count_with(&transaction, table, predicate_bytes)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_count].
+    pub fn snapshot_query_filtered_count(
+        &self,
+        snapshot: u64,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<u64, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_filtered_count_with(transaction, table, predicate_bytes)
+    }
+
+    fn query_filtered_count_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<u64, WorkerError> {
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let definition = table_definition(table);
+        let table = match transaction.open_table(definition) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut count: u64 = 0;
+        for entry in table
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            if predicate.test_bytes(value.value()) {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// M3: aggregate pushdown — emits only the bytes of [field] for each
+    /// matching row, so a `distinct(field)` query transfers one value per row
+    /// instead of the whole row. Returns the raw encoded `RowValue` bytes
+    /// (the same bytes `find_field` would read the value into); the Dart side
+    /// decodes and dedups them. Rows where [field] is absent are omitted (a
+    /// missing field is not a distinct value — matches Dart `distinct()`,
+    /// which only adds `row[field]` when present).
+    pub fn query_filtered_distinct(
+        &self,
+        table: &str,
+        predicate_bytes: &[u8],
+        field: &str,
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_filtered_distinct_with(&transaction, table, predicate_bytes, field)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_distinct].
+    pub fn snapshot_query_filtered_distinct(
+        &self,
+        snapshot: u64,
+        table: &str,
+        predicate_bytes: &[u8],
+        field: &str,
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_filtered_distinct_with(transaction, table, predicate_bytes, field)
+    }
+
+    fn query_filtered_distinct_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        predicate_bytes: &[u8],
+        field: &str,
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let definition = table_definition(table);
+        let table = match transaction.open_table(definition) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut result = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row_bytes = value.value();
+            if !predicate.test_bytes(row_bytes) {
+                continue;
+            }
+            // Locate [field] within the row's encoded bytes and emit the
+            // value's bytes verbatim (the slice starting at the value's tag
+            // byte, self-delimiting under the codec). Use find_field_offset so
+            // we slice instead of allocating the decoded value.
+            let range = crate::value_codec::find_field_range(row_bytes, field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let Some((start, end)) = range else {
+                continue;
+            };
+            result.push(row_bytes[start..end].to_vec());
         }
         Ok(result)
     }
@@ -1078,6 +1250,242 @@ mod tests {
         let missing = worker.query_filtered("nope", &pred_bytes).unwrap();
         assert!(missing.is_empty());
         let _ = (TAG_BOOL,); // suppress unused import noise
+        let _ = std::fs::remove_file(path);
+    }
+
+    // M3: shared row/encoder helpers used by the new aggregate + get_many
+    // tests. Keeps the test rows byte-identical to the query_filtered suite.
+    fn encode_test_row(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        use crate::value_codec::{TAG_MAP, TAG_STRING};
+        let mut out = vec![TAG_MAP];
+        out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for (k, v) in entries {
+            out.push(TAG_STRING);
+            let kb = k.as_bytes();
+            out.extend_from_slice(&(kb.len() as u32).to_be_bytes());
+            out.extend_from_slice(kb);
+            out.extend_from_slice(v);
+        }
+        out
+    }
+    fn encode_test_int64(n: i64) -> Vec<u8> {
+        use crate::value_codec::TAG_INT64;
+        let mut out = vec![TAG_INT64];
+        out.extend_from_slice(&n.to_be_bytes());
+        out
+    }
+    fn encode_test_string(s: &str) -> Vec<u8> {
+        use crate::value_codec::TAG_STRING;
+        let mut out = vec![TAG_STRING];
+        let b = s.as_bytes();
+        out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+        out.extend_from_slice(b);
+        out
+    }
+    // Seeds the same 4 rows used by `query_filtered_returns_only_matching_rows`
+    // (g0/g0/g1/g1, ages 10/20/30/40) into `items` and returns the file path
+    // so the caller can clean up.
+    fn seed_aggregate_fixture(label: &str) -> (std::path::PathBuf, RedbWorker) {
+        let path = temp_path(label);
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let rows = [
+            (
+                b"k0".to_vec(),
+                encode_test_row(&[
+                    ("g", encode_test_string("g0")),
+                    ("age", encode_test_int64(10)),
+                ]),
+            ),
+            (
+                b"k1".to_vec(),
+                encode_test_row(&[
+                    ("g", encode_test_string("g0")),
+                    ("age", encode_test_int64(20)),
+                ]),
+            ),
+            (
+                b"k2".to_vec(),
+                encode_test_row(&[
+                    ("g", encode_test_string("g1")),
+                    ("age", encode_test_int64(30)),
+                ]),
+            ),
+            (
+                b"k3".to_vec(),
+                encode_test_row(&[
+                    ("g", encode_test_string("g1")),
+                    ("age", encode_test_int64(40)),
+                ]),
+            ),
+        ];
+        let ops: Vec<Op> = rows
+            .iter()
+            .map(|(k, v)| Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(k.clone()),
+                value: Some(v.clone()),
+                start: None,
+                end: None,
+            })
+            .collect();
+        worker.apply_batch(&ops).unwrap();
+        (path, worker)
+    }
+
+    #[test]
+    fn get_many_returns_existing_rows_and_omits_absent() {
+        let (path, mut worker) = seed_aggregate_fixture("getmany");
+        // k1 and k3 exist; kX is absent; an empty keys list is a no-op.
+        let keys: Vec<&[u8]> = vec![b"k1", b"kX", b"k3"];
+        let got = worker.get_many("items", &keys).unwrap();
+        assert_eq!(got.len(), 2);
+        // Only existing rows appear, in input order.
+        assert_eq!(got[0].0, b"k1");
+        assert_eq!(got[1].0, b"k3");
+
+        // An empty keys list returns an empty result.
+        let empty = worker.get_many("items", &[]).unwrap();
+        assert!(empty.is_empty());
+        // A missing table is an empty result, never an error.
+        let missing_table = worker.get_many("nope", &[b"k1"]).unwrap();
+        assert!(missing_table.is_empty());
+
+        // Snapshot-bound variant observes the same state.
+        let snap = worker.create_snapshot().unwrap();
+        let snap_got = worker.snapshot_get_many(snap, "items", &keys).unwrap();
+        assert_eq!(snap_got.len(), 2);
+        worker.drop_snapshot(snap);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_filtered_count_counts_matches_without_transfer() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::RowValue;
+        let (path, mut worker) = seed_aggregate_fixture("qfc");
+        // g == "g0" AND age >= 15 → 1 row (k1).
+        let pred = predicate::encode_predicate(&[
+            Filter::Equals {
+                field: "g".into(),
+                value: RowValue::String("g0".into()),
+            },
+            Filter::Range {
+                field: "age".into(),
+                min: Some(RowValue::Int64(15)),
+                max: None,
+            },
+        ]);
+        assert_eq!(worker.query_filtered_count("items", &pred).unwrap(), 1);
+
+        // g == "g1" → 2 rows (k2, k3).
+        let g1 = predicate::encode_predicate(&[Filter::Equals {
+            field: "g".into(),
+            value: RowValue::String("g1".into()),
+        }]);
+        assert_eq!(worker.query_filtered_count("items", &g1).unwrap(), 2);
+
+        // Empty predicate matches all 4.
+        assert_eq!(
+            worker
+                .query_filtered_count("items", &predicate::encode_predicate(&[]))
+                .unwrap(),
+            4
+        );
+        // A missing table counts as zero, never an error.
+        assert_eq!(worker.query_filtered_count("nope", &pred).unwrap(), 0);
+
+        // Snapshot-bound variant agrees with the live count.
+        let snap = worker.create_snapshot().unwrap();
+        assert_eq!(
+            worker
+                .snapshot_query_filtered_count(snap, "items", &g1)
+                .unwrap(),
+            2
+        );
+        worker.drop_snapshot(snap);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_filtered_distinct_emits_only_field_bytes() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::{self, RowValue};
+        let (path, mut worker) = seed_aggregate_fixture("qfd");
+        // Distinct `g` across all rows → {g0, g1}. The distinct pushdown
+        // emits the encoded value bytes per matching row; check the decoded
+        // set is exactly {g0, g1} and is unsorted (the caller dedups).
+        let empty_pred = predicate::encode_predicate(&[]);
+        let field_bytes = worker
+            .query_filtered_distinct("items", &empty_pred, "g")
+            .unwrap();
+        // M3 contract: the pushdown emits the field's bytes for EACH
+        // matching row (NOT deduped) — the Dart caller dedups. With 4 seeded
+        // rows that all have `g`, we get 4 byte slices that decode to
+        // g0/g0/g1/g1.
+        let values: Vec<RowValue> = field_bytes
+            .iter()
+            .map(|b| value_codec::decode_value(b).unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                RowValue::String("g0".into()),
+                RowValue::String("g0".into()),
+                RowValue::String("g1".into()),
+                RowValue::String("g1".into()),
+            ]
+        );
+
+        // Distinct `age` for g0 → {10, 20}.
+        let g0_pred = predicate::encode_predicate(&[Filter::Equals {
+            field: "g".into(),
+            value: RowValue::String("g0".into()),
+        }]);
+        let age_bytes = worker
+            .query_filtered_distinct("items", &g0_pred, "age")
+            .unwrap();
+        // g0 has 2 rows (ages 10, 20) — both emitted, undeduped.
+        let mut ages: Vec<i64> = age_bytes
+            .iter()
+            .map(|b| match value_codec::decode_value(b).unwrap() {
+                RowValue::Int64(n) => n,
+                _ => panic!("expected int64"),
+            })
+            .collect();
+        ages.sort();
+        assert_eq!(ages, vec![10, 20]);
+
+        // A row missing the requested field is omitted from the stream (a
+        // missing field is not a distinct value). Seed a row without `g`.
+        let no_g_row = encode_test_row(&[("age", encode_test_int64(99))]);
+        worker
+            .apply_batch(&[Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(b"k4".to_vec()),
+                value: Some(no_g_row),
+                start: None,
+                end: None,
+            }])
+            .unwrap();
+        // Distinct `g` now still emits 5 byte slices (4 with g + the
+        // missing-field row is skipped), verifying the missing-field skip.
+        let after_missing = worker
+            .query_filtered_distinct("items", &empty_pred, "g")
+            .unwrap();
+        assert_eq!(
+            after_missing.len(),
+            4,
+            "missing-field row skipped, 4 rows with g remain"
+        );
+
+        // A missing table is an empty result, never an error.
+        let missing_table = worker
+            .query_filtered_distinct("nope", &empty_pred, "g")
+            .unwrap();
+        assert!(missing_table.is_empty());
         let _ = std::fs::remove_file(path);
     }
 }

@@ -7,6 +7,29 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M3 — Read-path completion + `getMany`** (ADR-0018): every native read path
+  now uses the Rust fast path, and reads aggregate / batch instead of moving
+  whole rows to Dart.
+  - `iterate()` now routes through `_scanWith` (indexed-eq → `query_indexed`,
+    unindexed → `query_filtered` on native); the old `_streamUnsorted` per-id
+    `snap.read` loop is deleted.
+  - `count()` / `distinct()` push the aggregate to Rust on native:
+    `RedbWorker::query_filtered_count` (returns only a `u64` count — no row
+    transfer) and `query_filtered_distinct` (emits only the encoded bytes of
+    the requested field per matching row via the new
+    `value_codec::find_field_range`; Dart decodes + dedups, and rows missing
+    the field are omitted, matching Dart `distinct()`).
+  - **`Collection.getMany(ids)`** — a public batched point-read: one
+    `RedbWorker::get_many` Rust call fetches N keys in one read transaction,
+    returning rows in input order and skipping absent ids. Inside a
+    transaction it observes the staged overlay.
+  - `RelationshipManager._childRowsFrom` batches indexed FK lookups through
+    `snap.getMany` (one boundary crossing instead of one per child id).
+  - `RawSnapshot.getMany` (per-key default; native override does the single
+    hop) added to the raw contract.
+  - 14 new parity tests in `packages/gecko_db/test/m3_read_path_test.dart`
+    (in-memory + native) + Rust unit tests for `get_many`,
+    `query_filtered_count`, `query_filtered_distinct`, `find_field_range`.
 - **Phase 2 step 2 — Native predicate push for unindexed full scans**
   (ADR-0017): unindexed queries on the native backend now push the predicate
   to Rust, evaluating it against each row's bytes IN Rust (decoding only the

@@ -27,7 +27,9 @@ maintainer/consumer orientation guide.
 `Database.collection<T>(name, toRow:, fromRow:, id:, schema:, indexFields:,
 prefixFields:)` returns a `Collection<T>`:
 
-- `get(id)` / `put(model)` / `delete(id)` / `patch(id, fields)` / `getAll()`
+- `get(id)` / `getMany(ids)` (batched point-read — rows in input order,
+  absent ids skipped; one native hop) / `put(model)` / `delete(id)` /
+  `patch(id, fields)` / `getAll()`
 - `watch(id)` → `Stream<T?>`, `watchAll()` → `Stream<List<T>>`,
   `watchAllDiff()` → `Stream<CollectionDiff<T>>`
 - `where([predicates])` → `Query<T>`
@@ -37,7 +39,8 @@ prefixFields:)` returns a `Collection<T>`:
 - `Query<T>`: `filter` / `range` / `prefix` / `sort` / `limit` / `offset` /
   `findAll` / `iterate` (lazy) / `count` / `distinct` / `watch` /
   `cursor({pageSize})` (snapshot-bound `QueryCursor<T>`).
-- `IndexPlan` (secondaryIndex / fullScan) via `Query.lastPlan`.
+- `IndexPlan` (secondaryIndex / fullScan / nativeFilteredScan) via
+  `Query.lastPlan`.
 - Durable secondary + range indexes (`__gecko_index`, ADR-0008).
 
 ## Tier 3 — relationships, transactions, sync

@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -128,6 +130,33 @@ void main() {
         throwsA(isA<GeckoError>()),
       );
     });
+
+    test('encrypted snapshot getMany batches decrypted rows in input order', () async {
+      final inner = InMemoryBackend();
+      final encrypted = EncryptedRawBackend(
+        inner,
+        crypto: Aes256GcmCryptoBackend(List<int>.filled(32, 6)),
+        random: Random(3),
+      );
+      const rows = {1: [1], 2: [2, 2], 3: [3, 3, 3]};
+      await encrypted.applyBatch([
+        for (final entry in rows.entries)
+          RawPut('items', ByteKey([entry.key]), entry.value),
+      ]);
+      final snap = await encrypted.snapshot();
+      // Input order preserved; a missing key is skipped.
+      final got = await snap.getMany('items', [
+        ByteKey(const [3]),
+        ByteKey(const [99]),
+        ByteKey(const [1]),
+      ]);
+      expect(got, hasLength(2));
+      expect(got[0].value, [3, 3, 3]);
+      expect(got[1].value, [1]);
+      expect(await snap.getMany('items', []), isEmpty);
+      await snap.dispose();
+      await encrypted.close();
+    });
   });
 
   group('Phase 11 DatabaseConfig encryption', () {
@@ -145,6 +174,72 @@ void main() {
         await db.close();
       },
     );
+  });
+
+  group('Phase 11 physical key decoding and providers', () {
+    final key32 = List<int>.filled(32, 7);
+    String hex32() => [for (final b in key32) b.toRadixString(16).padLeft(2, '0')].join();
+
+    test('decodeKey accepts hex/base64 and rejects malformed input', () {
+      expect(decodeKey(hex32()), key32);
+      // Whitespace is stripped before decoding.
+      expect(decodeKey('  ${hex32()} \n'), key32);
+      final base64Key = base64Encode(key32);
+      expect(decodeKey(base64Key, encoding: KeyEncoding.base64), key32);
+      // Raw encoding is binary-only.
+      expect(
+        () => decodeKey('anything', encoding: KeyEncoding.raw),
+        throwsA(
+          isA<GeckoError>().having((e) => e.type, 'type', GeckoErrorType.cryptoBackend),
+        ),
+      );
+      // Malformed hex: odd length and non-hex characters.
+      expect(() => decodeKey('a'), throwsA(isA<GeckoError>()));
+      expect(() => decodeKey('zz'), throwsA(isA<GeckoError>()));
+      // Wrong length.
+      expect(() => decodeKey('abcd'), throwsA(isA<GeckoError>()));
+    });
+
+    test('validatePhysicalKey enforces 32 bytes', () {
+      validatePhysicalKey(key32);
+      expect(
+        () => validatePhysicalKey(const [1, 2]),
+        throwsA(
+          isA<GeckoError>().having((e) => e.type, 'type', GeckoErrorType.cryptoBackend),
+        ),
+      );
+    });
+
+    test('FileKeyProvider reads keys from files and handles missing/empty/raw', () async {
+      final dir = await Directory.systemTemp.createTemp('gecko-keyfile-');
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      final hexFile = File('${dir.path}${Platform.pathSeparator}key.hex');
+      await hexFile.writeAsString(hex32());
+      expect(await FileKeyProvider(hexFile.path).obtain(), key32);
+      // Missing file → null.
+      expect(await FileKeyProvider('${dir.path}${Platform.pathSeparator}nope').obtain(), isNull);
+      // Empty file → null.
+      final emptyFile = File('${dir.path}${Platform.pathSeparator}empty');
+      await emptyFile.writeAsString('');
+      expect(await FileKeyProvider(emptyFile.path).obtain(), isNull);
+      // Raw encoding returns the file bytes verbatim.
+      final rawFile = File('${dir.path}${Platform.pathSeparator}raw');
+      await rawFile.writeAsBytes(key32);
+      expect(await FileKeyProvider(rawFile.path, encoding: KeyEncoding.raw).obtain(), key32);
+    });
+
+    test('EnvironmentKeyProvider returns null when the variable is absent', () async {
+      // The test process cannot mutate Platform.environment, so we only assert
+      // the absent-variable branch (never a real key in a default var).
+      final provider = EnvironmentKeyProvider(
+        environmentVariable: 'GECKO_DB_TEST_VAR_THAT_IS_ABSENT_xyz',
+      );
+      expect(await provider.obtain(), isNull);
+    });
   });
 }
 

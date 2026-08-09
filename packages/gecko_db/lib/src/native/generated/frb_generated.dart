@@ -65,7 +65,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1037544603;
+  int get rustContentHash => -173435288;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -109,6 +109,12 @@ abstract class RustLibApi extends BaseApi {
     required List<int> key,
   });
 
+  Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerGetMany({
+    required NativeWorker that,
+    required String table,
+    required List<Uint8List> keys,
+  });
+
   Future<NativeWorker> crateApiNativeWorkerOpen({
     required String path,
     required bool readOnly,
@@ -124,6 +130,19 @@ abstract class RustLibApi extends BaseApi {
     required NativeWorker that,
     required String table,
     required List<int> predicateBytes,
+  });
+
+  Future<BigInt> crateApiNativeWorkerQueryFilteredCount({
+    required NativeWorker that,
+    required String table,
+    required List<int> predicateBytes,
+  });
+
+  Future<List<Uint8List>> crateApiNativeWorkerQueryFilteredDistinct({
+    required NativeWorker that,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
   });
 
   Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerQueryIndexed({
@@ -155,12 +174,34 @@ abstract class RustLibApi extends BaseApi {
     required List<int> key,
   });
 
+  Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerSnapshotGetMany({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String table,
+    required List<Uint8List> keys,
+  });
+
   Future<List<(Uint8List, Uint8List)>>
   crateApiNativeWorkerSnapshotQueryFiltered({
     required NativeWorker that,
     required BigInt snapshot,
     required String table,
     required List<int> predicateBytes,
+  });
+
+  Future<BigInt> crateApiNativeWorkerSnapshotQueryFilteredCount({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  });
+
+  Future<List<Uint8List>> crateApiNativeWorkerSnapshotQueryFilteredDistinct({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
   });
 
   Future<List<(Uint8List, Uint8List)>>
@@ -493,6 +534,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerGetMany({
+    required NativeWorker that,
+    required String table,
+    required List<Uint8List> keys,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_String(table, serializer);
+          sse_encode_list_list_prim_u_8_strict(keys, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerGetManyConstMeta,
+        argValues: [that, table, keys],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerGetManyConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_get_many",
+        argNames: ["that", "table", "keys"],
+      );
+
+  @override
   Future<NativeWorker> crateApiNativeWorkerOpen({
     required String path,
     required bool readOnly,
@@ -506,7 +588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 10,
             port: port_,
           );
         },
@@ -543,7 +625,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -584,7 +666,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -604,6 +686,88 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "NativeWorker_query_filtered",
         argNames: ["that", "table", "predicateBytes"],
+      );
+
+  @override
+  Future<BigInt> crateApiNativeWorkerQueryFilteredCount({
+    required NativeWorker that,
+    required String table,
+    required List<int> predicateBytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_String(table, serializer);
+          sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 13,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_64,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerQueryFilteredCountConstMeta,
+        argValues: [that, table, predicateBytes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerQueryFilteredCountConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_query_filtered_count",
+        argNames: ["that", "table", "predicateBytes"],
+      );
+
+  @override
+  Future<List<Uint8List>> crateApiNativeWorkerQueryFilteredDistinct({
+    required NativeWorker that,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_String(table, serializer);
+          sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_String(field, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerQueryFilteredDistinctConstMeta,
+        argValues: [that, table, predicateBytes, field],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerQueryFilteredDistinctConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_query_filtered_distinct",
+        argNames: ["that", "table", "predicateBytes", "field"],
       );
 
   @override
@@ -629,7 +793,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 15,
             port: port_,
           );
         },
@@ -672,7 +836,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 16,
             port: port_,
           );
         },
@@ -712,7 +876,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 17,
             port: port_,
           );
         },
@@ -754,7 +918,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 18,
             port: port_,
           );
         },
@@ -773,6 +937,49 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "NativeWorker_snapshot_get",
         argNames: ["that", "snapshot", "table", "key"],
+      );
+
+  @override
+  Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerSnapshotGetMany({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String table,
+    required List<Uint8List> keys,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(snapshot, serializer);
+          sse_encode_String(table, serializer);
+          sse_encode_list_list_prim_u_8_strict(keys, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerSnapshotGetManyConstMeta,
+        argValues: [that, snapshot, table, keys],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerSnapshotGetManyConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_snapshot_get_many",
+        argNames: ["that", "snapshot", "table", "keys"],
       );
 
   @override
@@ -797,7 +1004,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 20,
             port: port_,
           );
         },
@@ -817,6 +1024,93 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "NativeWorker_snapshot_query_filtered",
         argNames: ["that", "snapshot", "table", "predicateBytes"],
+      );
+
+  @override
+  Future<BigInt> crateApiNativeWorkerSnapshotQueryFilteredCount({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(snapshot, serializer);
+          sse_encode_String(table, serializer);
+          sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 21,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_64,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerSnapshotQueryFilteredCountConstMeta,
+        argValues: [that, snapshot, table, predicateBytes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerSnapshotQueryFilteredCountConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_snapshot_query_filtered_count",
+        argNames: ["that", "snapshot", "table", "predicateBytes"],
+      );
+
+  @override
+  Future<List<Uint8List>> crateApiNativeWorkerSnapshotQueryFilteredDistinct({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(snapshot, serializer);
+          sse_encode_String(table, serializer);
+          sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_String(field, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerSnapshotQueryFilteredDistinctConstMeta,
+        argValues: [that, snapshot, table, predicateBytes, field],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiNativeWorkerSnapshotQueryFilteredDistinctConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_snapshot_query_filtered_distinct",
+        argNames: ["that", "snapshot", "table", "predicateBytes", "field"],
       );
 
   @override
@@ -845,7 +1139,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 23,
             port: port_,
           );
         },
@@ -890,7 +1184,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 24,
             port: port_,
           );
         },
@@ -927,7 +1221,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 25,
             port: port_,
           );
         },
@@ -963,7 +1257,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1041,6 +1335,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
+  List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_list_prim_u_8_strict).toList();
   }
 
   @protected
@@ -1194,6 +1494,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <String>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<Uint8List> sse_decode_list_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <Uint8List>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_list_prim_u_8_strict(deserializer));
     }
     return ans_;
   }
@@ -1373,6 +1687,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_list_prim_u_8_strict(
+    List<Uint8List> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_list_prim_u_8_strict(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_u_8_loose(
     List<int> self,
     SseSerializer serializer,
@@ -1531,6 +1857,19 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
         key: key,
       );
 
+  /// M3: batched point-read — fetches N keys in ONE read transaction,
+  /// returning `(key, row)` pairs for keys that exist. Absent keys are
+  /// omitted; a missing table is an empty result, never an error. Kills the
+  /// relationship N+1 (one boundary crossing instead of one per id).
+  Future<List<(Uint8List, Uint8List)>> getMany({
+    required String table,
+    required List<Uint8List> keys,
+  }) => RustLib.instance.api.crateApiNativeWorkerGetMany(
+    that: this,
+    table: table,
+    keys: keys,
+  );
+
   /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
   /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
   /// (decoding only the referenced fields), and returns only the matching
@@ -1543,6 +1882,36 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     that: this,
     table: table,
     predicateBytes: predicateBytes,
+  );
+
+  /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+  /// them. Scans [table], evaluates [predicate_bytes] against each row's
+  /// bytes IN RUST, and returns only the count. A `count()` query no longer
+  /// pays the decode + transfer cost of every matching row.
+  Future<BigInt> queryFilteredCount({
+    required String table,
+    required List<int> predicateBytes,
+  }) => RustLib.instance.api.crateApiNativeWorkerQueryFilteredCount(
+    that: this,
+    table: table,
+    predicateBytes: predicateBytes,
+  );
+
+  /// M3: aggregate pushdown — emits only the bytes of [field] for each
+  /// matching row, so a `distinct(field)` query transfers one value per row
+  /// instead of the whole row. Returns a list of raw encoded `RowValue`
+  /// bytes (the slice starting at the value's tag byte, self-delimiting
+  /// under the codec); the Dart side decodes and dedups them. Rows where
+  /// [field] is absent are omitted (matches Dart `distinct()`).
+  Future<List<Uint8List>> queryFilteredDistinct({
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) => RustLib.instance.api.crateApiNativeWorkerQueryFilteredDistinct(
+    that: this,
+    table: table,
+    predicateBytes: predicateBytes,
+    field: field,
   );
 
   /// Phase 2 native query fast path: range-scans the durable index table
@@ -1586,6 +1955,19 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     key: key,
   );
 
+  /// Snapshot-bound variant of [Self::get_many]: every read observes one
+  /// consistent committed state.
+  Future<List<(Uint8List, Uint8List)>> snapshotGetMany({
+    required BigInt snapshot,
+    required String table,
+    required List<Uint8List> keys,
+  }) => RustLib.instance.api.crateApiNativeWorkerSnapshotGetMany(
+    that: this,
+    snapshot: snapshot,
+    table: table,
+    keys: keys,
+  );
+
   /// Snapshot-bound variant of [Self::query_filtered]: the scan + predicate
   /// evaluation observe one consistent committed state.
   Future<List<(Uint8List, Uint8List)>> snapshotQueryFiltered({
@@ -1597,6 +1979,32 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     snapshot: snapshot,
     table: table,
     predicateBytes: predicateBytes,
+  );
+
+  /// Snapshot-bound variant of [Self::query_filtered_count].
+  Future<BigInt> snapshotQueryFilteredCount({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryFilteredCount(
+    that: this,
+    snapshot: snapshot,
+    table: table,
+    predicateBytes: predicateBytes,
+  );
+
+  /// Snapshot-bound variant of [Self::query_filtered_distinct].
+  Future<List<Uint8List>> snapshotQueryFilteredDistinct({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryFilteredDistinct(
+    that: this,
+    snapshot: snapshot,
+    table: table,
+    predicateBytes: predicateBytes,
+    field: field,
   );
 
   /// Snapshot-bound variant of [Self::query_indexed]: reads through an

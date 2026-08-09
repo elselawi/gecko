@@ -64,6 +64,13 @@ abstract class RawSnapshot {
   /// Reads the value at [key] in [table], or null if absent.
   Future<List<int>?> read(String table, ByteKey key);
 
+  /// M3: batched point-read — reads [keys] in [table], returning `(key,
+  /// value)` pairs for keys that exist in input order. Absent keys are
+  /// omitted. Backends with a native batch primitive (the Rust worker)
+  /// implement this as one boundary crossing; in-memory backends loop over
+  /// [read].
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys);
+
   /// Scans keys in [[start], [end]] (inclusive both ends), in ascending
   /// byte-wise order. Returns key/value pairs.
   Future<List<RawEntry>> scan(

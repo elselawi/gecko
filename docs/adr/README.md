@@ -49,6 +49,7 @@ What becomes easier, harder, or riskier because of this choice.
 | [0015](0015-phase1-query-instrumentation.md) | Per-stage query instrumentation (Phase 1 boundary + timing) | accepted |
 | [0016](0016-phase2-native-query-fast-path.md) | Native query fast path over the durable index (Phase 2 step 1) | accepted |
 | [0017](0017-phase2-predicate-push.md) | Native query fast path — predicate push (Phase 2 step 2) | accepted |
+| [0018](0018-m3-read-path-getmany.md) | M3 read-path completion — getMany + aggregate pushdown | accepted |
 | [0011](0011-public-entry-and-release-contracts.md) | Public entry point and release contracts | accepted |
 | [0012](0012-cross-platform-artifact-matrix.md) | Cross-platform artifact matrix and bundled distribution | accepted |
 | [0013](0013-web-runtime-frb-glue-and-opfs.md) | Web runtime: FRB wasm glue and OPFS persistence | accepted |

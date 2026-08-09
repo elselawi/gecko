@@ -118,6 +118,35 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// M3: batched point-read — fetches N keys in ONE read transaction,
+    /// returning `(key, row)` pairs for keys that exist. Absent keys are
+    /// omitted; a missing table is an empty result, never an error. Kills the
+    /// relationship N+1 (one boundary crossing instead of one per id).
+    pub async fn get_many(
+        &self,
+        table: String,
+        keys: Vec<Vec<u8>>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        let borrowed: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+        self.worker
+            .get_many(&table, &borrowed)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::get_many]: every read observes one
+    /// consistent committed state.
+    pub async fn snapshot_get_many(
+        &self,
+        snapshot: u64,
+        table: String,
+        keys: Vec<Vec<u8>>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        let borrowed: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+        self.worker
+            .snapshot_get_many(snapshot, &table, &borrowed)
+            .map_err(encode_worker_error)
+    }
+
     /// Creates a point-in-time MVCC snapshot handle (a held redb read
     /// transaction). Reads through the returned id observe the committed state
     /// at creation time, not later writes.
@@ -207,6 +236,62 @@ impl NativeWorker {
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_filtered(snapshot, &table, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
+    /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+    /// them. Scans [table], evaluates [predicate_bytes] against each row's
+    /// bytes IN RUST, and returns only the count. A `count()` query no longer
+    /// pays the decode + transfer cost of every matching row.
+    pub async fn query_filtered_count(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+    ) -> Result<u64, String> {
+        self.worker
+            .query_filtered_count(&table, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_count].
+    pub async fn snapshot_query_filtered_count(
+        &self,
+        snapshot: u64,
+        table: String,
+        predicate_bytes: Vec<u8>,
+    ) -> Result<u64, String> {
+        self.worker
+            .snapshot_query_filtered_count(snapshot, &table, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
+    /// M3: aggregate pushdown — emits only the bytes of [field] for each
+    /// matching row, so a `distinct(field)` query transfers one value per row
+    /// instead of the whole row. Returns a list of raw encoded `RowValue`
+    /// bytes (the slice starting at the value's tag byte, self-delimiting
+    /// under the codec); the Dart side decodes and dedups them. Rows where
+    /// [field] is absent are omitted (matches Dart `distinct()`).
+    pub async fn query_filtered_distinct(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        field: String,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        self.worker
+            .query_filtered_distinct(&table, &predicate_bytes, &field)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_distinct].
+    pub async fn snapshot_query_filtered_distinct(
+        &self,
+        snapshot: u64,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        field: String,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        self.worker
+            .snapshot_query_filtered_distinct(snapshot, &table, &predicate_bytes, &field)
             .map_err(encode_worker_error)
     }
 

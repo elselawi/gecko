@@ -184,6 +184,12 @@ impl<'a> ValueReader<'a> {
         self.bytes.len() - self.pos
     }
 
+    /// The current cursor position (bytes consumed so far). Used by callers
+    /// that slice into the underlying buffer after walking part of it.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
     fn read_u8(&mut self) -> Result<u8> {
         let b = *self
             .bytes
@@ -378,6 +384,40 @@ pub fn skip_value(r: &mut ValueReader) -> Result<()> {
     Ok(())
 }
 
+/// Like [find_field], but returns the byte range `(start, end)` of the
+/// field's encoded value within [bytes] instead of decoding it. The slice
+/// `bytes[start..end]` is the self-delimiting `RowValue` payload (tag +
+/// payload), so a caller can hand it back to `decode_value` or emit it as-is.
+/// Returns None if the row is not a map or the field is absent. Used by the
+/// distinct aggregate pushdown so per-row transfer is one value slice, not
+/// the whole row.
+pub fn find_field_range(bytes: &[u8], field: &str) -> Result<Option<(usize, usize)>> {
+    let mut r = ValueReader::new(bytes);
+    let tag = r.read_u8()?;
+    if tag != TAG_MAP {
+        return Ok(None);
+    }
+    let count = r.read_u32_be()? as usize;
+    for _ in 0..count {
+        // Decode the key to compare; the cursor sits just before the value.
+        let key = r.read_value()?;
+        if let RowValue::String(s) = &key {
+            if s == field {
+                // Slice the value's bytes: skip it without allocating,
+                // capturing the [start, end) range the distinct pushdown
+                // emits verbatim.
+                let start = r.position();
+                skip_value(&mut r)?;
+                let end = r.position();
+                return Ok(Some((start, end)));
+            }
+        }
+        // Key didn't match: skip the value without decoding it.
+        skip_value(&mut r)?;
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,5 +507,32 @@ mod tests {
         );
         // null is less than everything.
         assert_eq!(RowValue::Null.compare(&RowValue::Int64(0)), Ordering::Less);
+    }
+
+    #[test]
+    fn find_field_range_slices_self_delimiting_value() {
+        // A wide row; find_field_range('flag') must return the exact byte
+        // range that decodes to the flag value, independent of the heavy
+        // 'blob' value that precedes it.
+        let blob = vec![TAG_BYTES, 0, 0, 0, 4, b'b', b'l', b'o', b'b'];
+        let row = encode_map(&[
+            ("id".into(), encode_string("r0")),
+            ("blob".into(), { blob.clone() }),
+            ("flag".into(), vec![TAG_BOOL, 1]),
+        ]);
+        let range = find_field_range(&row, "flag").unwrap();
+        assert!(range.is_some());
+        let (start, end) = range.unwrap();
+        // The slice must decode to the same value as find_field.
+        let sliced = decode_value(&row[start..end]).unwrap();
+        assert_eq!(sliced, RowValue::Bool(true));
+        // The slice must equal the raw encoded bytes for a bool(true).
+        assert_eq!(&row[start..end], &[TAG_BOOL, 1]);
+
+        // A missing field returns None.
+        assert_eq!(find_field_range(&row, "nope").unwrap(), None);
+        // A non-map value returns None.
+        assert_eq!(find_field_range(&encode_int64(7), "x").unwrap(), None);
+        let _ = blob;
     }
 }

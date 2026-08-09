@@ -30,6 +30,19 @@ Future<Object?> dispatchNativeWorker(
         key: List<int>.from(arguments[1] as List),
       );
       return value?.toList();
+    case 'snapshotGetMany':
+      final keys = [
+        for (final k in (arguments[2] as List))
+          Uint8List.fromList(List<int>.from(k as List)),
+      ];
+      final pairs = await worker.snapshotGetMany(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        keys: keys,
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
     case 'rangeScan':
       final pairs = await worker.rangeScan(
         table: arguments[0] as String,
@@ -110,6 +123,25 @@ Future<Object?> dispatchNativeWorker(
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
       ];
+    case 'snapshotQueryFilteredCount':
+      final count = await worker.snapshotQueryFilteredCount(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[2] as List),
+        ),
+      );
+      return count.toString();
+    case 'snapshotQueryFilteredDistinct':
+      final fields = await worker.snapshotQueryFilteredDistinct(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[2] as List),
+        ),
+        field: arguments[3] as String,
+      );
+      return [for (final b in fields) b.toList()];
     case 'dropSnapshot':
       await worker.dropSnapshot(snapshot: _asBigInt(arguments[0]));
       return null;

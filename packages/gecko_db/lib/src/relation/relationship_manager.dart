@@ -134,11 +134,17 @@ class RelationshipManager {
     final index = _indexLookup?.call(r.childCollection);
     if (index != null && index.secondary.isIndexed(fk)) {
       final ids = index.secondary.lookupEq({fk: parentId})!;
+      // M3: one batched read (a single native `get_many` hop on the Rust
+      // backend) instead of one `snap.read` per child id (the relationship
+      // N+1). The FK re-check is kept because the in-memory index may be
+      // stale relative to the snapshot's committed state in edge cases.
+      final entries = await snap.getMany(
+        r.childCollection,
+        [for (final id in ids) _byteOf(id)],
+      );
       final rows = <Map<Object?, Object?>>[];
-      for (final id in ids) {
-        final raw = await snap.read(r.childCollection, _byteOf(id));
-        if (raw == null) continue;
-        final row = _mapOf(_codec.decode(raw));
+      for (final entry in entries) {
+        final row = _mapOf(_codec.decode(entry.value ?? const []));
         if (row[fk] == parentId) rows.add(row);
       }
       return rows;

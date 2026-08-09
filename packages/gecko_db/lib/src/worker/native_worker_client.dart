@@ -263,6 +263,26 @@ class NativeWorkerClient {
     return result == null ? null : List<int>.from(result as List);
   }
 
+  /// M3: batched point-read, snapshot-bound — fetches N keys in ONE read
+  /// transaction, returning `(key, row)` pairs for keys that exist. Absent
+  /// keys are omitted; a missing table is an empty result, never an error.
+  /// Kills the relationship N+1 (one boundary crossing instead of one per id).
+  Future<List<(List<int>, List<int>)>> snapshotGetMany({
+    required int snapshot,
+    required String table,
+    required List<List<int>> keys,
+  }) async {
+    final result = await _request('snapshotGetMany', <Object?>[
+      snapshot,
+      table,
+      keys,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   Future<List<(List<int>, List<int>)>> rangeScan({
     required String table,
     List<int>? start,
@@ -399,6 +419,43 @@ class NativeWorkerClient {
       for (final pair in (result as List))
         (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
     ];
+  }
+
+  /// M3: aggregate pushdown, snapshot-bound — counts matching rows WITHOUT
+  /// transferring them. Scans [table], evaluates [predicateBytes] against each
+  /// row's bytes IN RUST, and returns only the count. A `count()` query no
+  /// longer pays the decode + transfer cost of every matching row.
+  Future<int> snapshotQueryFilteredCount({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    return _asInt(await _request('snapshotQueryFilteredCount', <Object?>[
+      snapshot,
+      table,
+      predicateBytes,
+    ]));
+  }
+
+  /// M3: aggregate pushdown, snapshot-bound — emits only the bytes of [field]
+  /// for each matching row, so a `distinct(field)` query transfers one value
+  /// per row instead of the whole row. Returns a list of raw encoded
+  /// `RowValue` bytes (self-delimiting); the caller decodes and dedups them.
+  /// Rows where [field] is absent are omitted (matches Dart `distinct()`).
+  Future<List<List<int>>> snapshotQueryFilteredDistinct({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) async {
+    final result =
+        await _request('snapshotQueryFilteredDistinct', <Object?>[
+          snapshot,
+          table,
+          predicateBytes,
+          field,
+        ]);
+    return [for (final b in (result as List)) List<int>.from(b as List)];
   }
 
   /// Releases [snapshot] in the worker (idempotent).

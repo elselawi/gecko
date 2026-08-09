@@ -30,6 +30,14 @@ abstract class Collection<T> {
   /// Fetches the record with [id], or null if absent.
   Future<T?> get(Object? id);
 
+  /// M3: batched point-read — fetches the records for [ids] in ONE backend
+  /// read (on the native backend, one Rust call in a single read
+  /// transaction), returning rows in the same order as [ids]. Ids with no
+  /// record are skipped, so the result may be shorter than [ids]. This is the
+  /// batch equivalent of [`get`] and kills the N+1 that per-id reads pay
+  /// (used internally for relationship eager-loading).
+  Future<List<T>> getMany(List<Object?> ids);
+
   /// Inserts or updates [model]. Returns the assigned/stable id.
   Future<Object?> put(T model);
 

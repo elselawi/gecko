@@ -484,59 +484,19 @@ class QueryImpl<T> implements Query<T> {
     return out;
   }
 
-  /// Lazily streams matching rows without materializing the full result set.
-  /// Unsorted queries stream directly from the backend; sorted queries must
-  /// materialize order and are therefore equivalent to [findAll], which is
-  /// documented.
+  /// Lazily streams matching rows without materializing the full result
+  /// set. Unsorted queries stream directly from the backend; sorted queries
+  /// must materialize order and are therefore equivalent to [findAll], which
+  /// is documented.
   @override
   Stream<T> iterate() {
-    final secondary = _secondary;
-    final snapFuture = () async {
-      if (secondary != null) await secondary.ready;
-      return _engine.backend.snapshot();
-    }();
-    final index = secondary?.secondary;
-    late final Stream<_Decoded> source;
-    if (_sort.isNotEmpty) {
-      source = _scan();
-    } else {
-      final candidateIds = _indexCandidates(index);
-      source = _streamUnsorted(candidateIds, snapFuture);
-    }
-    return source.map((d) => fromRow(d.row));
-  }
-
-  Stream<_Decoded> _streamUnsorted(
-    Set<Object?>? candidateIds,
-    Future<RawSnapshot> snapFuture,
-  ) async* {
-    final snap = await snapFuture;
-    try {
-      if (candidateIds != null) {
-        lastPlan = IndexPlan.secondaryIndex;
-        for (final id in candidateIds) {
-          final raw = await snap.read(_table, ByteKey(_codec.encode(id)));
-          if (raw == null) continue;
-          final d = _Decoded(
-            ByteKey(_codec.encode(id)),
-            _mapOf(_codec.decode(raw)),
-          );
-          if (_group.test(d.row)) yield d;
-        }
-        return;
-      }
-      lastPlan = IndexPlan.fullScan;
-      final entries = await snap.scanAll(_table);
-      for (final entry in entries) {
-        final d = _Decoded(
-          entry.key,
-          _mapOf(_codec.decode(entry.value ?? const [])),
-        );
-        if (_group.test(d.row)) yield d;
-      }
-    } finally {
-      await snap.dispose();
-    }
+    // M3: route through `_scan()` (which delegates to `_scanWith`) so the
+    // native fast path (indexed eq + predicate push) applies. Previously
+    // this bypassed it via a per-id `snap.read` loop in `_streamUnsorted`,
+    // which silently fell back to the Dart scan + `_group.test` on native
+    // and missed the M2 predicate-push win (the relationship N+1 pattern).
+    // `_scan` handles snapshot lifecycle + sort materialization uniformly.
+    return _scan().map((d) => fromRow(d.row));
   }
 
   @override
@@ -548,22 +508,69 @@ class QueryImpl<T> implements Query<T> {
 
   @override
   Future<int> count() async {
-    var n = 0;
-    await for (final _ in _scan()) {
-      n++;
+    // M3: aggregate pushdown — on native, an unindexed query counts matching
+    // rows IN RUST without transferring them (no decode + map-copy + Dart
+    // increment loop). Indexed-eq queries keep the existing `queryIndexed`
+    // path (the result set is already small and joined in one hop).
+    final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
+    final snap = await _engine.backend.snapshot();
+    try {
+      if (_nativeEqProbe(secondary?.secondary) == null &&
+          snap is NativeRawSnapshot) {
+        final predicateBytes = encodePredicate(_filters, codec: _codec);
+        lastPlan = IndexPlan.nativeFilteredScan;
+        return snap.queryFilteredCount(
+          table: _table,
+          predicateBytes: predicateBytes,
+        );
+      }
+      var n = 0;
+      await for (final _ in _scanWith(snap, secondary?.secondary, null)) {
+        n++;
+      }
+      return n;
+    } finally {
+      await snap.dispose();
     }
-    return n;
   }
 
   @override
   Future<List<Object?>> distinct(String field) async {
-    final seen = <Object?>{};
-    await for (final item in _scan()) {
-      if (item.row.containsKey(field)) {
-        seen.add(item.row[field]);
+    // M3: aggregate pushdown — on native, an unindexed query emits only the
+    // requested field's bytes per matching row (one value per row, not the
+    // whole row). Dart decodes + dedups. Indexed-eq queries keep the
+    // `queryIndexed` path (small result set, already joined).
+    final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
+    final snap = await _engine.backend.snapshot();
+    try {
+      if (_nativeEqProbe(secondary?.secondary) == null &&
+          snap is NativeRawSnapshot) {
+        final predicateBytes = encodePredicate(_filters, codec: _codec);
+        lastPlan = IndexPlan.nativeFilteredScan;
+        final fieldBytes = await snap.queryFilteredDistinct(
+          table: _table,
+          predicateBytes: predicateBytes,
+          field: field,
+        );
+        final seen = <Object?>{};
+        for (final bytes in fieldBytes) {
+          if (bytes.isEmpty) continue;
+          seen.add(_codec.decode(bytes));
+        }
+        return seen.toList();
       }
+      final seen = <Object?>{};
+      await for (final item in _scanWith(snap, secondary?.secondary, null)) {
+        if (item.row.containsKey(field)) {
+          seen.add(item.row[field]);
+        }
+      }
+      return seen.toList();
+    } finally {
+      await snap.dispose();
     }
-    return seen.toList();
   }
 
   /// Cursor-based pagination.

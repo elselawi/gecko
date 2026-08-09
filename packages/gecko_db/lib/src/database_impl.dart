@@ -657,6 +657,49 @@ class _CollectionImpl<T> implements Collection<T> {
   }
 
   @override
+  Future<List<T>> getMany(List<Object?> ids) async {
+    if (transaction == null) _db._assertOpen();
+    final keys = [for (final id in ids) _keyFor(id)];
+    // Inside a transaction, reads must observe the staged overlay (pending
+    // writes), so fall back to the per-key read path — transactions are the
+    // rare path; the batched native hop matters for the hot eager-load path.
+    if (transaction != null) {
+      final rows = <T>[];
+      for (final key in keys) {
+        final raw = await transaction!.readRaw(name, key);
+        if (raw == null) continue;
+        rows.add(_fromRow(_codec.decode(raw)));
+      }
+      return rows;
+    }
+    // M3: on the native backend, one `get_many` Rust call fetches every key in
+    // a single read transaction (kills the N+1). In-memory falls back to
+    // per-key reads (it has no Rust fast path).
+    final snap = await _db.engine.backend.snapshot();
+    try {
+      final rows = <T>[];
+      if (snap is NativeRawSnapshot) {
+        final entries = await snap.getMany(name, keys);
+        final byKey = {for (final e in entries) e.key: e.value};
+        for (final key in keys) {
+          final raw = byKey[key];
+          if (raw == null) continue;
+          rows.add(_fromRow(_codec.decode(raw)));
+        }
+      } else {
+        for (final key in keys) {
+          final raw = await snap.read(name, key);
+          if (raw == null) continue;
+          rows.add(_fromRow(_codec.decode(raw)));
+        }
+      }
+      return rows;
+    } finally {
+      await snap.dispose();
+    }
+  }
+
+  @override
   Future<Object?> put(T model) async {
     if (transaction == null) _db._assertOpen();
     if (transaction == null) {

@@ -37,6 +37,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
 
   Future<Uint8List?> get_({required String table, required List<int> key});
 
+  /// M3: batched point-read — fetches N keys in ONE read transaction,
+  /// returning `(key, row)` pairs for keys that exist. Absent keys are
+  /// omitted; a missing table is an empty result, never an error. Kills the
+  /// relationship N+1 (one boundary crossing instead of one per id).
+  Future<List<(Uint8List, Uint8List)>> getMany({
+    required String table,
+    required List<Uint8List> keys,
+  });
+
   /// Opens a database. Async so the web (wasm) build dispatches through the
   /// async runtime instead of FRB's sync WorkerPool (see ADR-0013).
   static Future<NativeWorker> open({
@@ -69,6 +78,27 @@ abstract class NativeWorker implements RustOpaqueInterface {
   Future<List<(Uint8List, Uint8List)>> queryFiltered({
     required String table,
     required List<int> predicateBytes,
+  });
+
+  /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+  /// them. Scans [table], evaluates [predicate_bytes] against each row's
+  /// bytes IN RUST, and returns only the count. A `count()` query no longer
+  /// pays the decode + transfer cost of every matching row.
+  Future<BigInt> queryFilteredCount({
+    required String table,
+    required List<int> predicateBytes,
+  });
+
+  /// M3: aggregate pushdown — emits only the bytes of [field] for each
+  /// matching row, so a `distinct(field)` query transfers one value per row
+  /// instead of the whole row. Returns a list of raw encoded `RowValue`
+  /// bytes (the slice starting at the value's tag byte, self-delimiting
+  /// under the codec); the Dart side decodes and dedups them. Rows where
+  /// [field] is absent are omitted (matches Dart `distinct()`).
+  Future<List<Uint8List>> queryFilteredDistinct({
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
   });
 
   /// Phase 2 native query fast path: range-scans the durable index table
@@ -112,12 +142,35 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> key,
   });
 
+  /// Snapshot-bound variant of [Self::get_many]: every read observes one
+  /// consistent committed state.
+  Future<List<(Uint8List, Uint8List)>> snapshotGetMany({
+    required BigInt snapshot,
+    required String table,
+    required List<Uint8List> keys,
+  });
+
   /// Snapshot-bound variant of [Self::query_filtered]: the scan + predicate
   /// evaluation observe one consistent committed state.
   Future<List<(Uint8List, Uint8List)>> snapshotQueryFiltered({
     required BigInt snapshot,
     required String table,
     required List<int> predicateBytes,
+  });
+
+  /// Snapshot-bound variant of [Self::query_filtered_count].
+  Future<BigInt> snapshotQueryFilteredCount({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  });
+
+  /// Snapshot-bound variant of [Self::query_filtered_distinct].
+  Future<List<Uint8List>> snapshotQueryFilteredDistinct({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
   });
 
   /// Snapshot-bound variant of [Self::query_indexed]: reads through an

@@ -149,21 +149,22 @@ the already-done Phases 1–3 of Wave A). **All done.**
 |---|---|---|---|
 | **M1** Instrument the read/query path | `benchmark/boundary.dart` (per-layer latency), `QueryStageTimings` (8 query-path stages on `SlowQueryRecord.timings`), `benchmark/query_profile.dart` (1k/100k split) | ADR-0015 | FRB floor ~18–19µs dwarfs redb's get; full-scan 100k `backendRead` 70%, indexed eq `backendRead` 88% (N+1) |
 | **M2 Native query fast path** | (a) `RedbWorker::query_indexed` — durable-index traversal in one hop (kills N+1); (b) `RedbWorker::query_filtered` + `value_codec.rs` (Rust port of `DefaultWireCodec`) + `predicate.rs` (predicate evaluator) — push predicate to Rust | ADR-0016 (indexed), ADR-0017 (predicate push) | Indexed eq 100k: 38ms→12ms (3.2×); full-scan 100k: 482ms→39ms (**12.4×**, meets ≥10× target) |
+| **M3 Read-path completion + `getMany`** | (a) route `iterate()` through `_scanWith` (deleted the `_streamUnsorted` per-id loop); (b) aggregate pushdown `query_filtered_count` / `query_filtered_distinct` (+ `value_codec::find_field_range`); (c) public `Collection.getMany(ids)` = `RedbWorker::get_many` (one read txn, N keys); (d) relationship `children` batches through `snap.getMany` | ADR-0018 | `count()`/`distinct()` on native transfer zero rows (count) / one field-slice per row (distinct); `getMany` kills the relationship N+1; all read paths now use the native fast path |
 
-**Known gaps after M2** (carried into §2 / M3):
-- `iterate()` / `count()` / `distinct()` / `first()` / `findPage()` on native **bypass** the native
-  fast path (they go through `_scan()` → Dart scan + `_group.test`). Only `findAll()` is routed. This
-  is a silent perf gap + a correctness-parity risk to fix in M3.
+**Known gaps after M2 — closed by M3 (ADR-0018):**
+- `iterate()` / `count()` / `distinct()` / `first()` / `findPage()` on native now **use the native
+  fast path** (`iterate` via `_scanWith`; `count`/`distinct` via aggregate pushdown; `first`/`findPage`
+  were already routed via `_scanWith`).
 - The 1k `< 1ms` indexed target is ~1.7ms (FRB boundary floor; deferred to the M6 arch decision).
 
 ### Current test / ADR inventory
 
-- **67 Dart test files** in `packages/gecko_db/test/` (phase0–14, query, relationship, backend,
-  predicate_codec, durable_index_bounds, etc.).
-- **17 ADRs** in `docs/adr/` (0001–0017).
+- **68 Dart test files** in `packages/gecko_db/test/` (phase0–14, query, relationship, backend,
+  predicate_codec, durable_index_bounds, m3_read_path, etc.).
+- **18 ADRs** in `docs/adr/` (0001–0018).
 - **Rust unit tests** in `rust/src/{worker,value_codec,predicate,wire,format_header,compatibility,
   crypto_storage}.rs` + integration tests in `rust/tests/`.
-- Gates (all green on `origin/main`): `dart analyze`, `dart test packages/gecko_db/test` (494 tests),
+- Gates (all green on `origin/main`): `dart analyze`, `dart test packages/gecko_db/test` (508 tests),
   `dart test tool` (32), coverage 95% line / 100% branch, `tool/coverage_gate`, `tool/offline_lint`,
   `tool/security_review`, `tool/traceability_check`, `tool/api_snapshot`, `tool/build_artifacts
   check-bindings`, `cargo check`/`test`/`clippy -- -D warnings`/`fmt --check`.
@@ -173,48 +174,55 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1, M2 done; M3–M10 open). Each milestone
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M3 done; M4–M10 open). Each milestone
 > has a goal, concrete steps, a "done when" check, and — where it moves Dart→Rust — an ROI note and the
 > Rust tests + Dart deletions it requires.
 >
 > **Ordering.** M3 gates M4–M7 (read-path completion must finish before sort/limit/migration cleanup
 > build on it). **M9 can start immediately in parallel** with anything.
 
-### M3 — Read-path completion + `getMany` (projection & batch reads)  ⏳ next
+### M3 — Read-path completion + `getMany` (projection & batch reads)  ✅ done (ADR-0018)
 
 **Goal:** finish what M2 started — make every read path go through Rust on native, and collapse the
 remaining N+1 reads (relationships) into batched calls.
 
-**Steps:**
-1. **Route `iterate()` / `count()` / `distinct()` / `first()` / `findPage()` through the native fast
-   path.** Today these silently fall back to the Dart scan + `_group.test` on native (only `findAll()`
-   is routed). Wire them through `query_filtered` / `query_indexed`. (`findPage` + `first` already
-   delegate to `_collect`; `count`/`distinct`/`iterate` need their own Rust variants — see step 3.)
-2. **Add `getMany(keys)`** — a public batched point-read: one Rust call fetches N keys in one read
-   transaction, returning `(key → row)` pairs. Kills the relationship N+1 that `RelationshipManager`
-   still pays via per-id `lookupEq` + `snap.read`.
-3. **Aggregate pushdown:** `count()` returns just a count (no row transfer); `distinct(field)` returns
-   just the distinct value-set. Add `query_filtered_count` / `query_filtered_distinct` Rust variants
-   that stream-scan and emit only the aggregate.
-4. **Projection (field-selective decode):** Rust already has `find_field` (skip non-matching values);
-   add a projection-spec to the query payload so Rust returns only requested fields (a column slice),
-   cutting decode + transfer for projection queries.
-5. **Route relationship eager-loading through `getMany`** — eliminate the per-child `snap.read` in
-   `RelationshipManager.children`.
+**Status:** All done-when items landed (508 tests green, both backends): `iterate` routes through
+`_scanWith` (the `_streamUnsorted` per-id loop is deleted); `count`/`distinct` push the aggregate to
+Rust on native (`query_filtered_count` / `query_filtered_distinct`); `getMany` is public + tested
+(one `get_many` Rust call per batch); relationship `children` batches through `snap.getMany`.
 
-**Dart deletions enabled:** the per-id `snap.read` loop in `_streamUnsorted` (the `iterate()` path)
-becomes native-only on native; the Dart predicate eval (`FilterGroup.test`) stays for the **in-memory
-backend only** (it has no Rust). Do NOT delete `Filter`/`FilterGroup` — they're the public authoring API
-that `encodePredicate` reads.
+**Steps:**
+1. ✅ **Route `iterate()` / `count()` / `distinct()` / `first()` / `findPage()` through the native fast
+   path.** (`findPage` + `first` already delegate to `_collect`; `count`/`distinct`/`iterate` now use
+   the Rust path — see step 3.)
+2. ✅ **Add `getMany(keys)`** — a public batched point-read: one Rust call fetches N keys in one read
+   transaction, returning `(key → row)` pairs. Kills the relationship N+1 that `RelationshipManager`
+   paid via per-id `lookupEq` + `snap.read`.
+3. ✅ **Aggregate pushdown:** `count()` returns just a count (no row transfer); `distinct(field)` returns
+   just the distinct value-set. `query_filtered_count` / `query_filtered_distinct` stream-scan and emit
+   only the aggregate.
+4. ☐ **Projection (field-selective decode) — DEFERRED to M4.** Not in M3's done-when; it needs a public
+   `select(fields)` surface on `Query` whose output is a projected row (not `T`) — a public-API design
+   decision. The Rust primitive (`find_field_range`, added for distinct) already supports slicing a
+   single field's bytes; a projection-spec is an FRB argument, not a wire-format change. Tracked in
+   ADR-0018 Consequences.
+5. ✅ **Route relationship eager-loading through `getMany`** — the per-child `snap.read` in
+   `RelationshipManager._childRowsFrom` is now one `snap.getMany` batch.
+
+**Dart deletions enabled:** the per-id `snap.read` loop in `_streamUnsorted` (the `iterate()` path) is
+**deleted**; the Dart predicate eval (`FilterGroup.test`) stays for the **in-memory backend only** (it
+has no Rust). Do NOT delete `Filter`/`FilterGroup` — they're the public authoring API that
+`encodePredicate` reads.
 
 **Rust tests required:** `get_many` (N keys, missing keys, empty, missing table); `query_filtered_count`
-/ `_distinct` against known datasets; projection returns only requested fields + missing-field handling.
+/ `_distinct` against known datasets — all landed in `rust/src/{worker,value_codec}.rs`.
 
-**Done when:** `getMany` is public + tested; `iterate`/`count`/`distinct`/`first`/`findPage` on native
-use the Rust path (asserted via `IndexPlan.nativeFilteredScan` + `QueryStageTimings.backendRead` being a
-single hop); relationship loads use `getMany` (no per-id reads in a profiler); parity tests pass.
+**Done when (met):** `getMany` is public + tested; `iterate`/`count`/`distinct`/`first`/`findPage` on
+native use the Rust path (asserted via `IndexPlan.nativeFilteredScan` + parity tests); relationship
+loads use `getMany` (no per-id reads in a profiler); parity tests pass
+(`packages/gecko_db/test/m3_read_path_test.dart`).
 
-### M4 — Indexed sorting and early LIMIT  ☐
+### M4 — Indexed sorting and early LIMIT  ⏳ next
 
 **Goal:** `WHERE … ORDER BY indexedField LIMIT 20` on 100k rows < 5 ms — no materialization, no sort.
 
