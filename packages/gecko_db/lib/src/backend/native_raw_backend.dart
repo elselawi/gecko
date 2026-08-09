@@ -51,6 +51,18 @@ class NativeRawBackend implements RawBackend {
   /// non-zero.
   int get openSnapshotCount => _openSnapshots.length;
 
+  /// Returns the current commit LSN (sequence number) via a single
+  /// worker-isolate round trip with trivial Rust work. A perf-instrumentation
+  /// probe (Phase 1 boundary benchmark): measures the isolate/port + FRB
+  /// marshalling cost in isolation, not a storage operation.
+  Future<int> commitSequenceProbe() async {
+    try {
+      return await _worker.commitSequence();
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
   /// Compacts the database file in place (Workstream 5). Returns true when
   /// space was reclaimed. Requires no open snapshots and a writable database.
   Future<bool> compact() async {
