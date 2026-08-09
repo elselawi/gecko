@@ -33,9 +33,7 @@ Future<String?> registerOpfsHandle(String path) async {
           '(requires a secure context: https or localhost)';
     }
     final storageObj = storage as JSObject;
-    final root = await _awaitObject(
-      storageObj.callMethod('getDirectory'.toJS),
-    );
+    final root = await _awaitObject(storageObj.callMethod('getDirectory'.toJS));
     if (root == null) {
       return 'OPFS unavailable: navigator.storage.getDirectory() returned null';
     }

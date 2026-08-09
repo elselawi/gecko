@@ -1,0 +1,89 @@
+{
+  "benchmark": "gecko_db_local_stopgap",
+  "platform": "windows",
+  "dart": "3.10.8",
+  "generatedAt": "2026-08-09T14:13:25.329666Z",
+  "tolerance": 0.3,
+  "results": [
+    {
+      "backend": "in-memory",
+      "workload": "insert",
+      "msPerOp": 3.2812620000000003
+    },
+    {
+      "backend": "in-memory",
+      "workload": "bulkInsert",
+      "msPerOp": 0.307156
+    },
+    {
+      "backend": "in-memory",
+      "workload": "hotRead",
+      "msPerOp": 0.002469
+    },
+    {
+      "backend": "in-memory",
+      "workload": "coldRead",
+      "msPerOp": 0.0021916
+    },
+    {
+      "backend": "in-memory",
+      "workload": "rangeScan",
+      "msPerOp": 53.71776666666667
+    },
+    {
+      "backend": "in-memory",
+      "workload": "filteredQuery",
+      "msPerOp": 45.44756666666667
+    },
+    {
+      "backend": "in-memory",
+      "workload": "watch",
+      "msPerOp": 129.27454
+    },
+    {
+      "backend": "in-memory",
+      "workload": "txnCommit",
+      "msPerOp": 129.92491
+    },
+    {
+      "backend": "native file",
+      "workload": "insert",
+      "msPerOp": 1.028354
+    },
+    {
+      "backend": "native file",
+      "workload": "bulkInsert",
+      "msPerOp": 0.061787999999999996
+    },
+    {
+      "backend": "native file",
+      "workload": "hotRead",
+      "msPerOp": 0.0015582
+    },
+    {
+      "backend": "native file",
+      "workload": "coldRead",
+      "msPerOp": 0.0174738
+    },
+    {
+      "backend": "native file",
+      "workload": "rangeScan",
+      "msPerOp": 115.26156666666667
+    },
+    {
+      "backend": "native file",
+      "workload": "filteredQuery",
+      "msPerOp": 107.71406666666667
+    },
+    {
+      "backend": "native file",
+      "workload": "watch",
+      "msPerOp": 1.1756
+    },
+    {
+      "backend": "native file",
+      "workload": "txnCommit",
+      "msPerOp": 1.181515
+    }
+  ]
+}

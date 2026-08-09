@@ -3,11 +3,12 @@ include: package:lints/recommended.yaml
 analyzer:
   exclude:
     - packages/gecko_db/lib/src/native/generated/**
-    # Web-only smoke entries are validated by `dart compile js` + the live
-    # browser suites (tool/web_smoke/README.md); the VM analyzer resolves
+    # Web-only entries are validated by `dart compile js` + the live browser
+    # suites (tool/web_smoke/README.md); the VM analyzer resolves
     # `flutter_rust_bridge`'s IO variant, so web-only symbols (jsEval,
     # ExternalLibrary) cannot be resolved here.
     - tool/web_smoke/**
+    - packages/gecko_db/web/**
     - build/**
   language:
     strict-casts: true

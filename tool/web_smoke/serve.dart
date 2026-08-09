@@ -27,8 +27,9 @@ Future<void> main(List<String> args) async {
       if (path.startsWith('/packages/gecko_db/native/web/wasm32/')) {
         // The FRB web loader resolves the glue to the conventional
         // `packages/<package>/...` URL (Flutter web serves this prefix).
-        final relative = path
-            .substring('/packages/gecko_db/native/web/wasm32/'.length);
+        final relative = path.substring(
+          '/packages/gecko_db/native/web/wasm32/'.length,
+        );
         file = File('${glueRoot.path}/$relative');
       } else if (path.startsWith(glueUrlPrefix)) {
         final relative = path.substring(glueUrlPrefix.length);
@@ -47,10 +48,7 @@ Future<void> main(List<String> args) async {
           // FRB's wasm runtime uses a Web-Worker pool with SharedArrayBuffer;
           // that requires a cross-origin isolated context (COOP/COEP).
           ..headers.set('Cross-Origin-Opener-Policy', 'same-origin')
-          ..headers.set(
-            'Cross-Origin-Embedder-Policy',
-            'require-corp',
-          )
+          ..headers.set('Cross-Origin-Embedder-Policy', 'require-corp')
           ..add(bytes);
       } else {
         request.response

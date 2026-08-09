@@ -7,15 +7,18 @@
 //   dart run benchmark/bench.dart            # both backends
 //   dart run benchmark/bench.dart --mem      # in-memory only
 //   dart run benchmark/bench.dart --native   # native file only
+//   dart run benchmark/bench.dart --json     # machine-readable JSON on stdout
 //
 // The native backend needs the release artifact built:
 //   cd rust && cargo build --release
 //
-// Output is a table of ms/op and ops/s; numbers are indicative and depend on
-// hardware/JIT state — this is a regression rough-check, not a publishable
-// marketing claim.
+// Output is a table of ms/op and ops/s (or JSON with --json); numbers are
+// indicative and depend on hardware/JIT state — this is a regression
+// rough-check, not a publishable marketing claim. tool/perf_gate.dart
+// consumes the --json output to gate regressions against benchmark/baseline.json.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -87,46 +90,56 @@ Future<void> main(List<String> args) async {
   final nativePath = _nativeLibraryPath(root);
   final runMemory = !args.contains('--native');
   final runNative = !args.contains('--mem');
+  final emitJson = args.contains('--json');
   if (!runMemory && !runNative) {
     stderr.writeln('pass --mem, --native, or nothing (both).');
     exitCode = 2;
     return;
   }
 
-  stdout.writeln('=== gecko_db benchmark (local stopgap harness) ===');
-  stdout.writeln(
-    'platform: ${Platform.operatingSystem} | '
-    'dart ${Platform.version.split(' ').first}',
-  );
-  stdout.writeln(
-    'seed rows: $_seedRows | workloads: '
-    'insert=$_insertOps bulk=${_bulkCalls * _bulkPerCall} '
-    'read=$_readOps scan=$_scanOps query=$_queryOps '
-    'watch=$_watchOps txn=$_txnOps',
-  );
-  stdout.writeln('change-log pruning: disabled (measures the storage path)');
-  stdout.writeln(
-    'note: the in-memory backend deep-copies the whole store per write '
-    '(MVCC copy-on-write), so its write ops are O(n) and not the '
-    'production path; the native file backend is the real target.',
-  );
-  stdout.writeln();
+  if (!emitJson) {
+    stdout.writeln('=== gecko_db benchmark (local stopgap harness) ===');
+    stdout.writeln(
+      'platform: ${Platform.operatingSystem} | '
+      'dart ${Platform.version.split(' ').first}',
+    );
+    stdout.writeln(
+      'seed rows: $_seedRows | workloads: '
+      'insert=$_insertOps bulk=${_bulkCalls * _bulkPerCall} '
+      'read=$_readOps scan=$_scanOps query=$_queryOps '
+      'watch=$_watchOps txn=$_txnOps',
+    );
+    stdout.writeln('change-log pruning: disabled (measures the storage path)');
+    stdout.writeln(
+      'note: the in-memory backend deep-copies the whole store per write '
+      '(MVCC copy-on-write), so its write ops are O(n) and not the '
+      'production path; the native file backend is the real target.',
+    );
+    stdout.writeln();
+  }
 
   final results = <_Result>[];
   // Native (production path) first so partial runs show the interesting data.
   if (runNative) {
     results.addAll(
-      await _benchmark('native file', () => _openNative(nativePath)),
+      await _benchmark('native file', () => _openNative(nativePath), emitJson),
     );
   }
   if (runMemory) {
-    results.addAll(await _benchmark('in-memory', () => _openMemory()));
+    results.addAll(
+      await _benchmark('in-memory', () => _openMemory(), emitJson),
+    );
   }
 
   for (final dir in _tempDirs) {
     try {
       await dir.delete(recursive: true);
     } catch (_) {}
+  }
+
+  if (emitJson) {
+    _printJson(results);
+    return;
   }
 
   stdout.writeln();
@@ -161,8 +174,9 @@ Future<DatabaseImpl> _openNative(String nativePath) async {
 Future<List<_Result>> _benchmark(
   String label,
   Future<DatabaseImpl> Function() open,
+  bool quiet,
 ) async {
-  stdout.writeln('--- $label ---');
+  if (!quiet) stdout.writeln('--- $label ---');
   final db = await open();
   final col = db.collection<_Row>(
     'items',
@@ -187,10 +201,12 @@ Future<List<_Result>> _benchmark(
     await col.put(_Row('r$i', i, 'g${i % 100}'));
   }
   seedWatch.stop();
-  stdout.writeln(
-    '  seed $_seedRows rows in '
-    '${_fmtTime(seedWatch.elapsedMicroseconds / _seedRows)}/op',
-  );
+  if (!quiet) {
+    stdout.writeln(
+      '  seed $_seedRows rows in '
+      '${_fmtTime(seedWatch.elapsedMicroseconds / _seedRows)}/op',
+    );
+  }
 
   // 1. Single-record insert throughput.
   results.add(
@@ -286,7 +302,7 @@ Future<List<_Result>> _benchmark(
   );
 
   await db.close();
-  stdout.writeln();
+  if (!quiet) stdout.writeln();
   return results;
 }
 
@@ -331,4 +347,24 @@ void _printTable(List<_Result> rows) {
       '${row.opsPerSec.toStringAsFixed(0).padLeft(12)}',
     );
   }
+}
+
+/// Machine-readable JSON (consumed by tool/perf_gate.dart).
+void _printJson(List<_Result> rows) {
+  final doc = {
+    'benchmark': 'gecko_db_local_stopgap',
+    'platform': Platform.operatingSystem,
+    'dart': Platform.version.split(' ').first,
+    'generatedAt': DateTime.now().toUtc().toIso8601String(),
+    'results': [
+      for (final r in rows)
+        {
+          'backend': r.backend,
+          'workload': r.workload,
+          'msPerOp': r.msPerOp,
+          'opsPerSec': r.opsPerSec,
+        },
+    ],
+  };
+  stdout.writeln(const JsonEncoder.withIndent('  ').convert(doc));
 }

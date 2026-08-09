@@ -39,12 +39,10 @@ Future<void> main() async {
     // 1. Load the wasm-bindgen glue in the worker (importScripts defines the
     //    global `wasm_bindgen`), then initialize the module by calling it with
     //    the module_or_path option.
-    final prefix = (await bundledWebGluePrefix()) ??
+    final prefix =
+        (await bundledWebGluePrefix()) ??
         'packages/gecko_db/native/web/wasm32/';
-    global.callMethod(
-      'importScripts'.toJS,
-      '$prefix$bundledWebStem.js'.toJS,
-    );
+    global.callMethod('importScripts'.toJS, '$prefix$bundledWebStem.js'.toJS);
     // The glue declares `let wasm_bindgen` — a lexical binding, not a global
     // property. FRB's main-thread loader copies it onto `window`; here we copy
     // it onto the worker global (`self`) so both the module init below and
@@ -60,10 +58,12 @@ Future<void> main() async {
     // Initialize the module by calling `wasm_bindgen` with the wasm URL as a
     // plain string (the glue's `__wbg_init` fetches string inputs; the
     // `{module_or_path}` object form does not work here).
-    final initPromise = (wasmBindgen as JSFunction).callAsFunction(
-      null,
-      '$prefix${bundledWebStem}_bg.wasm'.toJS,
-    ) as JSPromise;
+    final initPromise =
+        (wasmBindgen as JSFunction).callAsFunction(
+              null,
+              '$prefix${bundledWebStem}_bg.wasm'.toJS,
+            )
+            as JSPromise;
     await initPromise.toDart;
 
     // 2. Initialize FRB with the already-loaded glue (skip the document-based
@@ -95,9 +95,7 @@ Future<void> main() async {
           value: Uint8List.fromList(<int>[42]),
         ),
       ]);
-      final seq = await worker.applyBatch(
-        encodedOps: Uint8List.fromList(ops),
-      );
+      final seq = await worker.applyBatch(encodedOps: Uint8List.fromList(ops));
       final value = await worker.get_(
         table: 'smoke',
         key: Uint8List.fromList(<int>[1]),

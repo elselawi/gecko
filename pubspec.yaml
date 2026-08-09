@@ -14,6 +14,9 @@ dev_dependencies:
   test: ^1.24.0
   gecko_db:
     path: packages/gecko_db
+  # Phase 13 comparative benchmark targets (VM-only, dev tooling).
+  hive_ce: ^2.19.3
+  sembast: ">=3.8.0 <3.8.7"
 
 environment:
   sdk: ^3.10.8

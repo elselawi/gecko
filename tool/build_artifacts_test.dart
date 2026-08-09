@@ -44,7 +44,10 @@ void main() {
     final windows = kTargets.firstWhere((t) => t.name == 'windows-x64');
     expect(hostBuildable(windows), Platform.isWindows);
     // On every host, wasm is declared buildable (target installed by setup).
-    expect(hostBuildable(kTargets.firstWhere((t) => t.name == 'wasm32')), isTrue);
+    expect(
+      hostBuildable(kTargets.firstWhere((t) => t.name == 'wasm32')),
+      isTrue,
+    );
   });
 
   test('manifest round-trips and verify accepts a matching artifact', () {
@@ -76,8 +79,11 @@ void main() {
     }
     expect(bundled, isNotNull);
     final artifact = File(bundled!);
-    expect(artifact.existsSync(), isTrue,
-        reason: 'bundled artifact must exist at $bundled');
+    expect(
+      artifact.existsSync(),
+      isTrue,
+      reason: 'bundled artifact must exist at $bundled',
+    );
     final manifestFile = File(
       '${artifact.parent.path}${Platform.pathSeparator}manifest.json',
     );

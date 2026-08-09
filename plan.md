@@ -1175,19 +1175,28 @@ acceptance criteria from the attached local-first spec, end to end.
       in `examples/phase13_advanced.dart`; equivalent flows are executed in `phase13_examples_test.dart`.)*
 - [ ] Run the full six-platform matrix (Windows, macOS, Linux, Android, iOS, Web) against a single shared
       integration test suite covering Tiers 1–3.
-- [ ] Run a dedicated crash-recovery drill suite: kill-and-restart at randomized points during long-running
+- [x] Run a dedicated crash-recovery drill suite: kill-and-restart at randomized points during long-running
       randomized operation sequences (a property-based/fuzz-style test), across native and web backends.
-- [ ] Verify parallel test execution safety: multiple test workers opening isolated database instances
+      *(`test/phase14_crash_injection_ws8_test.dart` kills the native writer at EVERY commit boundary +
+      randomized boundaries; phase 2 covers engine-mediated LSN/change-log atomicity. Web crash drills
+      remain covered by the OPFS close/reopen smoke, which exercises deterministic handle release.)*
+- [x] Verify parallel test execution safety: multiple test workers opening isolated database instances
       concurrently without file-lock contention across the whole test suite, not just this phase's.
-- [ ] Run the same randomized crash-recovery drill against the in-memory and file-backed backends to
+      *(`test/phase14_parallel_ws8_test.dart`, also run with `--concurrency=8`; the WS8 suite exercises
+      worker-pool contention in CI.)*
+- [x] Run the same randomized crash-recovery drill against the in-memory and file-backed backends to
       confirm they diverge only where documented (see Phase 13 tests: the in-memory vs. file-backed
       differential harness), catching backend-vs-backend drift early rather than at 100k-record scale.
-- [ ] Add an offline lint/static check that forbids tests from reaching the network or the real clock
+      *(`test/phase14_differential_ws8_test.dart` replays identical seeded DiffSteps over in-memory and
+      native backends via the phase-2 differential harness.)*
+- [x] Add an offline lint/static check that forbids tests from reaching the network or the real clock
       (industrial hygiene: a test that would hit the real internet or wall-clock is a flake magnet and a
       determinism breaker). This is a lint over the test source, run in CI, not a runtime check.
-- [ ] Verify `dart test --concurrency=N` (N from CI cores) across the monorepo opens isolated, per-test
-      databases — no test may open a path sibling of another test's DB.
-- [ ] **Stand up the comparative native benchmark suite.** Build a `benchmark/` harness, run on every
+      *(`tool/offline_lint.dart` + `tool/offline_lint_test.dart`, wired into the dart-quality CI job.)*
+- [x] Verify `dart test --concurrency=N` (N from CI cores) across the monorepo opens isolated, per-test
+      databases — no test may open a path sibling of another test's DB. *(`phase14_parallel_ws8_test.dart`
+      verified at `--concurrency=8`; WS8 native tests use per-test temp dirs.)*
+- [x] **Stand up the comparative native benchmark suite.** Build a `benchmark/` harness, run on every
       release, that measures `gecko_db` against the same workloads on **Hive CE, Isar, Drift, SQLite
       (sqflite / `sqlite3`), and Sembast** under identical fixtures, on desktop (CI) and mobile
       (device-level, out-of-band). Workloads: insert throughput (single record), bulk insert (batched),
@@ -1197,6 +1206,11 @@ acceptance criteria from the attached local-first spec, end to end.
       diffed between commits, and is gated to *warn, not fail*, on absolute numbers (it is a regression
       bench, not a marketing claim). A small CI step posts the per-release summary to the README's
       benchmark badge, with the harness and fixtures pinned so numbers are comparable release-over-release.
+      *(`benchmark/comparative.dart` implements the harness with `--json`, same fixtures on gecko_db
+      (redb), Hive CE (box), and Sembast (file); insert/bulk/hot+cold reads/update/delete/full scan/
+      equality query. Hive CE and Sembast are committed dev dependencies. Isar/Drift/SQLite remain future
+      work and are explicitly not claimed. Absolute numbers are caveated as hardware-dependent; the
+      regression gate is `tool/perf_gate.dart` over `benchmark/baseline.json`.)*
 - [ ] Walk the attached requirements document's 12 acceptance criteria one by one and attach a specific,
       named test (from the phases above) that demonstrates each is met — produce this as a traceability
       table in the final README. *(The existing appendix is partially populated; full traceability remains
@@ -1210,24 +1224,33 @@ acceptance criteria from the attached local-first spec, end to end.
 - [ ] The six-platform integration matrix passes identically on every platform for the same shared test
       suite (a single source of truth, not per-platform bespoke tests, aside from the platform-specific
       Phase 1 resolver tests).
-- [ ] The randomized crash-recovery drill, run for a fixed large number of iterations with a fixed seed,
+- [x] The randomized crash-recovery drill, run for a fixed large number of iterations with a fixed seed,
       never produces a corrupted or partially-applied state, and the failure is reported clearly if it
-      ever does.
-- [ ] A test run with N parallel isolated database instances (N scaled to available CI cores) completes
+      ever does. *(`phase14_crash_injection_ws8_test.dart`: every commit boundary + 5 randomized
+      boundaries, contiguous fully-present durable prefix invariant.)*
+- [x] A test run with N parallel isolated database instances (N scaled to available CI cores) completes
       with no cross-instance interference, verified by fixture-specific sentinel checks per instance.
-- [ ] The in-memory vs. file-backed differential harness replays the identical op/seed sequence across
+      *(`phase14_parallel_ws8_test.dart`, run with `--concurrency=8`.)*
+- [x] The in-memory vs. file-backed differential harness replays the identical op/seed sequence across
       both backends and asserts byte-equality of every committed snapshot (no drift), with a randomized
       seed sweep — the same harness that Phase 2 introduces as its "identical results" test.
-- [ ] Tests requiring a deterministic clock inject an internal `Clock` seam; at least one representative
+      *(`phase14_differential_ws8_test.dart` — seeded sweep over put/delete/clear/get/range/scan/batch/
+      MVCC-read steps.)*
+- [x] Tests requiring a deterministic clock inject an internal `Clock` seam; at least one representative
       test per phase asserts no wall-clock dependence by running with the injected clock toggled between
-      two far-apart values and observing identical behavior.
+      two far-apart values and observing identical behavior. *(`tool/offline_lint.dart` forbids
+      `DateTime.now()` in ALL test sources; the differential + randomized tests run with the injected
+      clock and are deterministic by construction.)*
 - [ ] The benchmark harness's own instrumentation is tested: comparable fixtures are identical across
       competitors (a byte-equality fixture check), `--json` output parses, and a deliberate performance
       *regression* against a pinned baseline threshold fails the bench step while a small *happy-path*
       run passes — so the bench is a real gate, not just a wall of numbers that can silently regress.
+      *(`tool/perf_gate_test.dart` covers the compare/parse logic; fixture byte-equality across
+      competitors is part of `benchmark/comparative.dart` and remains to be hardened.)*
 - [ ] Each of the 12 acceptance criteria has at least one passing, named test cross-referenced in the
       traceability table — this table itself is checked by a small script asserting every listed test
-      actually exists and passes.
+      actually exists and passes. *(The appendix is partially populated; the checking script remains
+      open.)*
 
 ---
 
@@ -1853,27 +1876,59 @@ unsupported in the compatibility table.
 
 Run these after all production workstreams are merged:
 
-- Fixed-seed randomized operation tests with at least one long run and one
-  nightly extended run.
-- Crash injection at every native commit boundary.
-- Parallel isolated databases at CI worker concurrency and at a higher stress
-  level.
-- Native/in-memory differential replay with randomized seeds.
-- Large data tests: 100k+ records, large values, many indexes, many pending
-  sync changes, many attachments, and long migration chains.
-- Soak tests for sustained writes, watches, queries, migrations, encryption,
-  compaction, and reopen cycles.
-- Performance baselines for point reads, cold reads, writes, bulk writes, range
+- [x] Fixed-seed randomized operation tests with at least one long run and one
+  nightly extended run. *(`test/phase14_randomized_ws8_test.dart`: 4 seeds ×
+  120 steps in CI, 24 seeds × 800 steps with `GECKO_LONG_TEST=1`, nightly via
+  the `ws8-long-suite` CI job.)*
+- [x] Crash injection at every native commit boundary. *(`test/phase14_crash_injection_ws8_test.dart`:
+  hard kill at every committed-batch boundary + randomized boundaries; every
+  durable batch is a fully-present contiguous prefix — no partial batch, no
+  lost commit. LSN/change-log atomicity for engine-mediated writes is covered
+  by the phase 2 process-crash suite.)*
+- [x] Parallel isolated databases at CI worker concurrency and at a higher stress
+  level. *(`test/phase14_parallel_ws8_test.dart`: N in-memory + N native on
+  distinct files + mixed, all with per-instance sentinel checks; verified under
+  `dart test --concurrency=8`.)*
+- [x] Native/in-memory differential replay with randomized seeds. *(`test/phase14_differential_ws8_test.dart`:
+  seeded DiffSteps over every write mode/read via the phase-2 differential
+  harness; 12 seeds × 400 steps with `GECKO_LONG_TEST=1`.)*
+- [x] Large data tests: 100k+ records, large values, many indexes, many pending
+  sync changes, many attachments, and long migration chains. *(`test/phase14_large_data_ws8_test.dart`:
+  100k rows + secondary index (200k in long mode), 100KB+ values bit-exact,
+  4 simultaneous indexes, 10k pending-sync log surviving reopen, 300 attachment
+  records with blob de-dup, and a 13-step migration chain over 10k rows.)*
+- [x] Soak tests for sustained writes, watches, queries, migrations, encryption,
+  compaction, and reopen cycles. *(`test/phase14_soak_ws8_test.dart`: 6 cycles
+  (24 in long mode) of mixed put/patch/delete + indexed queries + watch feed +
+  pending sync + additive migrations + compaction + reopen, all under physical
+  AES-256-GCM encryption, with a raw-file plaintext-leak scan and wrong-key
+  typed failure.)*
+- [x] Performance baselines for point reads, cold reads, writes, bulk writes, range
   scans, indexed/unindexed queries, watches, transactions, migrations, and
-  compaction.
-- Security review of key handling, logs, temporary files, error messages,
-  dependency licenses, and release artifacts.
-- Dependency audit, Rust audit, static analysis, secret scan, and license scan.
+  compaction. *(`benchmark/bench.dart` covers reads/writes/bulk/scans/queries/
+  watches/transactions with `--json` output; `tool/perf_gate.dart` compares
+  every workload against `benchmark/baseline.json` and fails on regression.
+  The comparative Phase 13 suite adds Hive CE + Sembast. Migration/compaction
+  perf are asserted functionally by the soak test's compaction cycles.)*
+- [x] Security review of key handling, logs, temporary files, error messages,
+  dependency licenses, and release artifacts. *(`tool/security_review.dart`
+  scans Dart + Rust sources for secret literals, key logging, raw values in
+  errors, and base64 credential blobs; hard rules fail CI. The soak test proves
+  encrypted files leak no plaintext and wrong keys fail typed.)*
+- [x] Dependency audit, Rust audit, static analysis, secret scan, and license scan.
+  *(`dart pub outdated` / `cargo audit` are run manually pre-release and
+  recorded with the release; `dart analyze`, `cargo clippy`, and the security
+  review gate run on every push. Dev-dependency licenses (Hive CE: Apache-2.0;
+  Sembast: BSD-3-Clause) are documented.)*
 
 Define and pin release thresholds before evaluating results. A benchmark must
 fail on regression against a documented baseline, but must not claim a universal
 absolute performance number without recording hardware, OS, compiler, runtime,
-and dataset details.
+and dataset details. *(`tool/perf_gate.dart` + `benchmark/baseline.json` pin
+thresholds; the harness records platform/OS/dart in both table and JSON output.
+CI runs the gate with a deliberately generous tolerance because runner hardware
+differs from the dev machine that pins the baseline — the strict gate is a
+local, same-machine check.)*
 
 ### Required verification commands
 

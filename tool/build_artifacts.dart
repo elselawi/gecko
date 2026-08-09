@@ -1,4 +1,5 @@
 #!/usr/bin/env dart
+
 // Workstream 7: cross-platform native artifact build orchestrator.
 //
 // Builds the `gecko_db_rust` cdylib for every release target from a pinned
@@ -143,7 +144,8 @@ String repoRoot() {
 
 /// Best-effort NDK llvm bin directory (Windows/macOS/Linux host layouts).
 String? findAndroidNdkBin() {
-  final sdk = Platform.environment['ANDROID_SDK_ROOT'] ??
+  final sdk =
+      Platform.environment['ANDROID_SDK_ROOT'] ??
       Platform.environment['ANDROID_HOME'] ??
       (Platform.isWindows
           ? '${Platform.environment['LOCALAPPDATA']}${Platform.pathSeparator}Android${Platform.pathSeparator}Sdk'
@@ -186,31 +188,38 @@ Map<String, String> crossEnv(BuildTarget target) {
   if (!target.needsAndroidNdk) return const {};
   final bin = findAndroidNdkBin();
   if (bin == null) return const {};
-  final linker = '$bin${Platform.pathSeparator}${target.androidClang}'
+  final linker =
+      '$bin${Platform.pathSeparator}${target.androidClang}'
       '${Platform.isWindows ? '.cmd' : ''}';
-  final key = 'CARGO_TARGET_${target.triple.toUpperCase().replaceAll('-', '_')}';
+  final key =
+      'CARGO_TARGET_${target.triple.toUpperCase().replaceAll('-', '_')}';
   final ccKey = 'CC_${target.triple.replaceAll('-', '_')}';
   return {
     '${key}_LINKER': linker,
     ccKey: linker,
     'CXX_${target.triple.replaceAll('-', '_')}': linker,
-    'AR_${target.triple.replaceAll('-', '_')}': '$bin${Platform.pathSeparator}llvm-ar${Platform.isWindows ? '.exe' : ''}',
-    'RANLIB_${target.triple.replaceAll('-', '_')}': '$bin${Platform.pathSeparator}llvm-ranlib${Platform.isWindows ? '.exe' : ''}',
+    'AR_${target.triple.replaceAll('-', '_')}':
+        '$bin${Platform.pathSeparator}llvm-ar${Platform.isWindows ? '.exe' : ''}',
+    'RANLIB_${target.triple.replaceAll('-', '_')}':
+        '$bin${Platform.pathSeparator}llvm-ranlib${Platform.isWindows ? '.exe' : ''}',
   };
 }
 
 /// Verifies FRB bindings are up to date (regenerate + clean git diff).
 Future<void> checkBindings() async {
   final root = repoRoot();
-  final result = await Process.run(
-    'flutter_rust_bridge_codegen',
-    ['generate', '--config-file', '$root${Platform.pathSeparator}frb.yaml'],
-    workingDirectory: root,
-  );
+  final result = await Process.run('flutter_rust_bridge_codegen', [
+    'generate',
+    '--config-file',
+    '$root${Platform.pathSeparator}frb.yaml',
+  ], workingDirectory: root);
   if (result.exitCode != 0) {
     throw StateError('FRB codegen failed:\n${result.stderr}');
   }
-  final diff = await Process.run('git', ['diff', '--exit-code'], workingDirectory: root);
+  final diff = await Process.run('git', [
+    'diff',
+    '--exit-code',
+  ], workingDirectory: root);
   if (diff.exitCode != 0) {
     throw StateError(
       'FRB bindings are not in sync; run '
@@ -234,10 +243,7 @@ Future<Map<String, Object?>> build(BuildTarget target, String outDir) async {
     'cargo',
     ['build', '--release', '--target', target.triple],
     workingDirectory: rustDir,
-    environment: {
-      ...Platform.environment,
-      ...crossEnv(target),
-    },
+    environment: {...Platform.environment, ...crossEnv(target)},
   );
   if (cargoResult.exitCode != 0) {
     throw StateError(
@@ -257,11 +263,14 @@ Future<Map<String, Object?>> build(BuildTarget target, String outDir) async {
   if (target.targetKey == 'web') {
     return _packageWebGlue(target, source, outDir);
   }
-  final destination = File('$outDir${Platform.pathSeparator}${target.artifactName}');
+  final destination = File(
+    '$outDir${Platform.pathSeparator}${target.artifactName}',
+  );
   source.copySync(destination.path);
   final manifest = makeManifest(target, destination);
-  File('$outDir${Platform.pathSeparator}${target.name}.json')
-      .writeAsStringSync('${const JsonEncoder.withIndent('  ').convert(manifest)}\n');
+  File('$outDir${Platform.pathSeparator}${target.name}.json').writeAsStringSync(
+    '${const JsonEncoder.withIndent('  ').convert(manifest)}\n',
+  );
   return manifest;
 }
 
@@ -278,10 +287,13 @@ Future<Map<String, Object?>> _packageWebGlue(
   File source,
   String outDir,
 ) async {
-  final result = await Process.run(
-    'wasm-bindgen',
-    ['--target', 'no-modules', '--out-dir', outDir, source.path],
-  );
+  final result = await Process.run('wasm-bindgen', [
+    '--target',
+    'no-modules',
+    '--out-dir',
+    outDir,
+    source.path,
+  ]);
   if (result.exitCode != 0) {
     throw StateError(
       'wasm-bindgen failed:\n${result.stdout}\n${result.stderr}',
@@ -299,10 +311,13 @@ Future<Map<String, Object?>> _packageWebGlue(
   final manifest = makeManifest(target, wasm)
     ..['glueJs'] = glue.uri.pathSegments.last
     ..['glueWasm'] = wasm.uri.pathSegments.last;
-  File('$outDir${Platform.pathSeparator}${target.name}.json')
-      .writeAsStringSync('${const JsonEncoder.withIndent('  ').convert(manifest)}\n');
-  stdout.writeln('WEB GLUE: ${glue.uri.pathSegments.last} '
-      '+ ${wasm.uri.pathSegments.last} -> $outDir');
+  File('$outDir${Platform.pathSeparator}${target.name}.json').writeAsStringSync(
+    '${const JsonEncoder.withIndent('  ').convert(manifest)}\n',
+  );
+  stdout.writeln(
+    'WEB GLUE: ${glue.uri.pathSegments.last} '
+    '+ ${wasm.uri.pathSegments.last} -> $outDir',
+  );
   return manifest;
 }
 
@@ -321,7 +336,8 @@ Map<String, Object?> makeManifest(BuildTarget target, File artifact) {
     'build': {
       'commit': Platform.environment['GITHUB_SHA'] ?? _gitCommit() ?? 'local',
       'workflow': Platform.environment['GITHUB_WORKFLOW'] ?? 'local',
-      'rustToolchain': Platform.environment['RUST_VERSION'] ?? _rustVersion() ?? 'unknown',
+      'rustToolchain':
+          Platform.environment['RUST_VERSION'] ?? _rustVersion() ?? 'unknown',
       'frbCodegenVersion': _frbVersion,
       'hostPlatform': '${Platform.operatingSystem}-${Platform.version}',
       'sourceDateEpoch': Platform.environment['SOURCE_DATE_EPOCH'] ?? 'unset',

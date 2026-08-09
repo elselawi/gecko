@@ -46,7 +46,7 @@ package required.
 | 10 | Schema versioning & migrations: version stamping, ordered transactional steps, additive fast paths, open-time compatibility gate | ✅ |
 | 11 | Logical-value encryption, pluggable authenticated crypto, opaque backend storage, and typed decryption failures | ✅ logical + physical AES-256-GCM page encryption, key providers, atomic key rotation (ADR-0009) |
 | 12 | Bulk writes, bounded cache/lazy iteration, per-row diff watches, and opt-in diagnostics | ✅ + in-place compaction, maintenance state machine, size reporting, slow-query logging, counters (ADR-0010) |
-| 13 | Runnable quickstart/advanced examples and release-hardening documentation | ✅ examples/tests, consumer fixture, policies/compatibility/migration docs, traceability checker; platform matrix and benchmark open |
+| 13 | Runnable quickstart/advanced examples and release-hardening documentation | ✅ examples/tests, consumer fixture, policies/compatibility/migration docs, traceability checker, **WS8 reliability/security/perf qualification** (randomized, differential, crash-injection, parallel-isolation, 100k+ large-data, soak, perf gate, security + offline lints) and **Phase 13 comparative benchmark** (Hive CE + Sembast; Isar/Drift/SQLite future work); six-platform matrix remains open |
 
 ### Coverage
 
@@ -56,7 +56,7 @@ adapter/resolver edge branches remain). The Rust crate is gated separately as CI
 lands (Phase 0/1 item).
 
 ```text
-Dart unit tests: 442 passing (package) + 19 (tool)
+Dart unit tests: 472 passing (package) + 32 (tool)
 Coverage gate:   95% line / 100% branch  → PASS
 ```
 
@@ -246,9 +246,14 @@ The design is documented in [`plan.md`](plan.md) and in the
   (`gecko_db_rust.js` + `_bg.wasm`, bundled under
   `packages/gecko_db/lib/native/web/wasm32/`) lets the same redb engine run on
   wasm: `Database.open(':memory:')` works on the main thread, and file-backed
-  databases persist durably through OPFS inside a Web Worker (reference worker:
-  `tool/web_smoke/opfs_worker.dart`; see
-  [ADR-0013](docs/adr/0013-web-runtime-frb-glue-and-opfs.md)).
+  databases persist durably through OPFS inside a Web Worker. The **reusable
+  in-package worker entry** (`packages/gecko_db/web/gecko_db_worker.dart`) and
+  a first-class **`WebWorkerClient`** make the worker path a one-liner
+  (`WebWorkerClient.open(workerUrl: 'gecko_db_worker.js', path: 'app.db')`)
+  with a documented JSON protocol (see
+  [ADR-0013](docs/adr/0013-web-runtime-frb-glue-and-opfs.md) and
+  [ADR-0014](docs/adr/0014-in-package-web-worker-and-client.md); live-validated
+  by the CDP-driven browser harness with the `GECKO-WORKER-OK` marker).
 - **Attachment metadata.** Phase 9 tracks binaries that live outside the
   database: parent references, content-hash dedupe with shared blobs, and
   transactionally-advanced upload/delete/retry states with pending/failed/
@@ -333,10 +338,47 @@ verified by `dart run tool/traceability_check.dart`:
 | 6 | Remote changes applied transactionally | `phase7_transactions_sync_test.dart` rollback/own-write tests |
 | 7 | Local/remote changes merge deterministically | `phase8_conflict_test.dart` strategy + manual-conflict tests |
 | 8 | Attachment metadata stays consistent with record changes | `phase9_attachments_test.dart` dedupe/free tests |
-| 9 | Large datasets stay responsive | `phase12_performance_test.dart`; `phase5_index_ws3_test.dart` |
+| 9 | Large datasets stay responsive | `phase14_large_data_ws8_test.dart` (100k+ rows + indexes); `phase12_performance_test.dart`; `benchmark/bench.dart` + `tool/perf_gate.dart` regression gate |
 | 10 | Tests use isolated in-memory databases | `in_memory_backend_test.dart`; `phase2_differential_test.dart` |
 | 11 | Initialization, recovery, migrations are reliable | `phase2_process_crash_test.dart`; `phase10_migrations_test.dart` |
 | 12 | App-specific store layer shrinks substantially | `phase13_examples_test.dart`; `tool/consumer_fixture_test.dart` |
+
+---
+
+## Performance, reliability & security qualification
+
+Workstream 8 + Phase 13 add a self-contained qualification suite (all run from
+the repo root; long modes via `GECKO_LONG_TEST=1`, nightly in CI):
+
+| Area | Command / file | What it proves |
+|---|---|---|
+| Randomized correctness | `test/phase14_randomized_ws8_test.dart` | Fixed-seed randomized put/delete/clear/queries against an expected model after every step |
+| Backend differential | `test/phase14_differential_ws8_test.dart` | Identical seeded op sequences on in-memory vs native produce identical results |
+| Crash safety | `test/phase14_crash_injection_ws8_test.dart` | Hard kill at **every** native commit boundary leaves a fully-present contiguous durable prefix — no partial batch, no lost commit |
+| Isolation | `test/phase14_parallel_ws8_test.dart` | N in-memory + native databases run concurrently with per-instance sentinels, no file-lock contention |
+| Large data | `test/phase14_large_data_ws8_test.dart` | 100k+ rows + indexes, 100KB+ values bit-exact, many indexes, 10k pending-sync log, 300 attachments, 13-step migration chain |
+| Soak | `test/phase14_soak_ws8_test.dart` | Sustained writes/watches/queries/migrations/compaction/reopen cycles under physical AES-256-GCM encryption; raw file leaks no plaintext |
+| Regression gate | `benchmark/bench.dart` + `tool/perf_gate.dart` | Pins `benchmark/baseline.json`; fails if any workload regresses beyond tolerance (`dart run tool/perf_gate.dart`; `--update` to refresh) |
+| Comparative (Phase 13) | `benchmark/comparative.dart` | Same workloads on gecko_db (redb), Hive CE (box), and Sembast (file) on one machine, `--json` output. Hive CE / Sembast are dev-only dependencies |
+| Offline lint | `tool/offline_lint.dart` | Forbids network + `DateTime.now()` in all test sources (determinism) |
+| Security review | `tool/security_review.dart` | Scans Dart + Rust for secret literals, key logging, raw values in errors, base64 credential blobs |
+
+These suites found and fixed three real consistency/performance bugs: `bulkWrite`
+did not maintain secondary indexes, `bulkWrite` did not write change-tracking
+(sync) records, and `markSynced`/`_rewriteLogRecord` were O(ids × change-log)
+quadratic. Each is covered by a regression test.
+
+```bash
+# quick qualification run (short modes)
+dart test packages/gecko_db/test/phase14_randomized_ws8_test.dart \
+  packages/gecko_db/test/phase14_differential_ws8_test.dart \
+  packages/gecko_db/test/phase14_crash_injection_ws8_test.dart \
+  packages/gecko_db/test/phase14_parallel_ws8_test.dart \
+  packages/gecko_db/test/phase14_large_data_ws8_test.dart \
+  packages/gecko_db/test/phase14_soak_ws8_test.dart --reporter=compact
+dart run tool/perf_gate.dart            # strict regression check (local machine)
+dart run benchmark/comparative.dart     # Hive CE + Sembast head-to-head
+```
 
 ---
 

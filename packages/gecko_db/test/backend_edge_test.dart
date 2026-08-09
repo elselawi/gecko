@@ -40,48 +40,52 @@ void main() {
   });
 
   group('DatabaseImpl: edge paths', () {
-    test('file-backed open without a path works via the bundled artifact',
-        () async {
-      final bundled = await bundledArtifactPath();
-      if (bundled == null) {
-        // Host has no bundled artifact (unsupported platform); the open must
-        // still fail with a typed error, never hang or crash.
-        await expectLater(
-          DatabaseImpl.open('file://x', useInMemory: false),
-          throwsA(isA<GeckoError>()),
-        );
-        return;
-      }
-      final dir = await Directory.systemTemp.createTemp('gecko-edge-');
-      try {
-        final path =
-            '${dir.path}${Platform.pathSeparator}db.redb';
-        // No `nativeLibraryPath`: the resolver's bundled-artifact fallback
-        // must load the worker (Workstream 7 no-build-steps path).
-        final db = await DatabaseImpl.open(path, useInMemory: false);
-        const codec = DefaultWireCodec();
-        await db.engine.rawPut(
-          'items',
-          ByteKey(codec.encode('k')),
-          codec.encode('v'),
-        );
-        expect(
-          codec.decode((await db.rawGet('items', ByteKey(codec.encode('k'))))!),
-          'v',
-        );
-        await db.close();
-        // A nonsense path still fails with a typed error.
-        await expectLater(
-          DatabaseImpl.open(
-            'file://${'x' * 8}/nonexistent-${DateTime.now().microsecondsSinceEpoch}',
-            useInMemory: false,
-          ),
-          throwsA(isA<GeckoError>()),
-        );
-      } finally {
-        await dir.delete(recursive: true);
-      }
-    });
+    test(
+      'file-backed open without a path works via the bundled artifact',
+      () async {
+        final bundled = await bundledArtifactPath();
+        if (bundled == null) {
+          // Host has no bundled artifact (unsupported platform); the open must
+          // still fail with a typed error, never hang or crash.
+          await expectLater(
+            DatabaseImpl.open('file://x', useInMemory: false),
+            throwsA(isA<GeckoError>()),
+          );
+          return;
+        }
+        final dir = await Directory.systemTemp.createTemp('gecko-edge-');
+        try {
+          final path = '${dir.path}${Platform.pathSeparator}db.redb';
+          // No `nativeLibraryPath`: the resolver's bundled-artifact fallback
+          // must load the worker (Workstream 7 no-build-steps path).
+          final db = await DatabaseImpl.open(path, useInMemory: false);
+          const codec = DefaultWireCodec();
+          await db.engine.rawPut(
+            'items',
+            ByteKey(codec.encode('k')),
+            codec.encode('v'),
+          );
+          expect(
+            codec.decode(
+              (await db.rawGet('items', ByteKey(codec.encode('k'))))!,
+            ),
+            'v',
+          );
+          await db.close();
+          // A nonsense path still fails with a typed error. Deterministic
+          // (never exists), so the test stays offline and clock-free.
+          await expectLater(
+            DatabaseImpl.open(
+              'file://xxxxxxxx/nonexistent-path-for-backend-edge-test',
+              useInMemory: false,
+            ),
+            throwsA(isA<GeckoError>()),
+          );
+        } finally {
+          await dir.delete(recursive: true);
+        }
+      },
+    );
 
     test('writeTxn rethrows a throwing body (no silent swallow)', () async {
       final db = await DatabaseImpl.open('mem://edge1', useInMemory: true);

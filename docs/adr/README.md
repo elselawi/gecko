@@ -49,3 +49,4 @@ What becomes easier, harder, or riskier because of this choice.
 | [0011](0011-public-entry-and-release-contracts.md) | Public entry point and release contracts | accepted |
 | [0012](0012-cross-platform-artifact-matrix.md) | Cross-platform artifact matrix and bundled distribution | accepted |
 | [0013](0013-web-runtime-frb-glue-and-opfs.md) | Web runtime: FRB wasm glue and OPFS persistence | accepted |
+| [0014](0014-in-package-web-worker-and-client.md) | In-package reusable web worker entry and `WebWorkerClient` | accepted |

@@ -156,7 +156,7 @@ jobs:
       - uses: actions/setup-chromium@v1
         id: setup-chromium
         with:
-          chromium-version: 'stable'
+          chromium-version: "stable"
       - run: dart pub get
       - name: Install wasm-bindgen CLI (pinned to rust/Cargo.toml)
         run: cargo install wasm-bindgen-cli --version 0.2.92 --locked

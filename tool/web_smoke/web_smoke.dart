@@ -26,17 +26,14 @@ Future<void> main() async {
   try {
     // `:memory:` selects the native redb in-memory backend on wasm (no OPFS
     // handle needed on the main thread).
-    final db = await Database.open(
-      ':memory:',
-      config: const DatabaseConfig(),
-    );
+    final db = await Database.open(':memory:', config: const DatabaseConfig());
 
     Collection<String> notes() => db.collection<String>(
-          'notes',
-          toRow: (value) => value,
-          fromRow: (row) => row as String,
-          id: (value) => value,
-        );
+      'notes',
+      toRow: (value) => value,
+      fromRow: (row) => row as String,
+      id: (value) => value,
+    );
 
     await notes().put('hello from wasm');
     await notes().put('second row');

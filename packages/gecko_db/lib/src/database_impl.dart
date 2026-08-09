@@ -435,22 +435,109 @@ class DatabaseImpl implements Database {
       return const BulkWriteResult(sequence: 0, mutationCount: 0);
     }
     final codec = const DefaultWireCodec();
+    // A bulk write is still a local mutation: it must be change-tracked
+    // (change log + sync state) and maintain secondary indexes, all inside
+    // the SAME atomic redb transaction as the primary rows, with the
+    // in-memory index applied only after the durable commit.
+    final pendingIndexMutations = <_TxnMutation>[];
     final lsn = await _engine.commitBatch(
-      (_, __) async {
+      (lsn, snapshot) async {
         final ops = <RawOp>[];
-        for (final mutation in mutations) {
+        for (var ordinal = 0; ordinal < mutations.length; ordinal++) {
+          final mutation = mutations[ordinal];
+          final keyBytes = codec.encode(mutation.key);
+          final index = _indexes[mutation.table];
+          // Read the prior row so change records + index maintenance can drop
+          // old state on updates (never left stale).
+          final previousRaw = await snapshot.read(
+            mutation.table,
+            ByteKey(keyBytes),
+          );
+          final previous = previousRaw == null ? null : codec.decode(previousRaw);
+          final txnMutation = _TxnMutation(
+            table: mutation.table,
+            key: ByteKey(keyBytes),
+            recordId: mutation.key,
+            kind: mutation.kind,
+            value: mutation.kind == ChangeKind.put ? mutation.value : null,
+            previousVersion: previous,
+            origin: ChangeOrigin.user,
+          );
+          if (index != null) {
+            ops.addAll(_durableIndexOps(txnMutation, index));
+            pendingIndexMutations.add(txnMutation);
+          }
           if (mutation.kind == ChangeKind.put) {
             ops.add(
-              RawPut(
-                mutation.table,
-                ByteKey(codec.encode(mutation.key)),
-                codec.encode(mutation.value),
-              ),
+              RawPut(mutation.table, ByteKey(keyBytes), codec.encode(mutation.value)),
             );
           } else {
-            ops.add(
-              RawDelete(mutation.table, ByteKey(codec.encode(mutation.key))),
-            );
+            ops.add(RawDelete(mutation.table, ByteKey(keyBytes)));
+          }
+          // Change tracking in the same batch (Phase 7 contract).
+          final record = ChangeRecord(
+            localMutationId: lsn,
+            recordId: mutation.key,
+            timestamp: _clock(),
+            collection: mutation.table,
+            kind: mutation.kind,
+            value: mutation.kind == ChangeKind.put ? mutation.value : null,
+            previousVersion: previous,
+            origin: ChangeOrigin.user,
+            dirty: true,
+            syncState: const SyncState(phase: SyncPhase.pending),
+          );
+          ops.add(
+            RawPut(
+              geckoChangeLogTable,
+              ByteKey(codec.encode([lsn, ordinal])),
+              codec.encode(_recordToMap(record)),
+            ),
+          );
+          ops.add(
+            RawPut(
+              geckoSyncStateTable,
+              _refKey(mutation.table, mutation.key),
+              codec.encode(_recordToMap(record)),
+            ),
+          );
+        }
+        if (_changeLogMaxEntries > 0) {
+          final logEntries = await snapshot.scanAll(geckoChangeLogTable);
+          final excess =
+              logEntries.length + mutations.length - _changeLogMaxEntries;
+          if (excess > 0) {
+            var removed = 0;
+            var highestPrunedLsn = 0;
+            for (final entry in logEntries) {
+              if (removed >= excess) break;
+              final prior = _recordFromMap(
+                codec.decode(entry.value ?? const []),
+              );
+              if (!prior.dirty) {
+                ops.add(RawDelete(geckoChangeLogTable, entry.key));
+                removed++;
+                if (prior.localMutationId > highestPrunedLsn) {
+                  highestPrunedLsn = prior.localMutationId;
+                }
+              }
+            }
+            if (highestPrunedLsn > 0) {
+              final oldWatermarkRaw = await snapshot.read(
+                geckoSyncMetaTable,
+                ByteKey(codec.encode(geckoWatermarkKey)),
+              );
+              final oldWatermark = oldWatermarkRaw == null
+                  ? 0
+                  : (codec.decode(oldWatermarkRaw) as int? ?? 0);
+              ops.add(
+                RawPut(
+                  geckoSyncMetaTable,
+                  ByteKey(codec.encode(geckoWatermarkKey)),
+                  codec.encode(math.max(oldWatermark, highestPrunedLsn)),
+                ),
+              );
+            }
           }
         }
         return ops;
@@ -460,6 +547,18 @@ class DatabaseImpl implements Database {
           Change(table: mutation.table, key: mutation.key, kind: mutation.kind),
       ],
     );
+    // Only after the durable commit do we reflect the batch in the in-memory
+    // secondary index, so a failed commit can never leave the index ahead of
+    // (or behind) its primary table.
+    for (final m in pendingIndexMutations) {
+      final index = _indexes[m.table];
+      if (index == null) continue;
+      if (m.kind == ChangeKind.delete) {
+        index.onDelete(m.recordId, m.previousVersion);
+      } else {
+        index.onPut(m.recordId, m.previousVersion, m.value);
+      }
+    }
     return BulkWriteResult(sequence: lsn, mutationCount: mutations.length);
   }
 
@@ -1469,6 +1568,21 @@ class _SyncHookImpl implements SyncHookApi {
           if (ids.any((id) => _matches(id, record))) selected.add(record);
         }
         if (selected.isEmpty) return;
+        // One pass over the change log, indexed by
+        // (collection, recordId, localMutationId), so a bulk transition
+        // (e.g. markSynced of thousands of ids) is O(log + ids), never
+        // O(ids × log).
+        final logByKey = <String, List<(ByteKey, ChangeRecord)>>{};
+        if (updateLog) {
+          for (final entry in await snapshot.scanAll(geckoChangeLogTable)) {
+            final record =
+                _recordFromMap(_codec.decode(entry.value ?? const []));
+            if (record.collection == null) continue;
+            final key =
+                '${record.collection}|${record.recordId}|${record.localMutationId}';
+            (logByKey[key] ??= []).add((entry.key, record));
+          }
+        }
         await _db.engine.commitBatch((lsn, _) async {
           final ops = <RawOp>[];
           for (final record in selected) {
@@ -1481,7 +1595,17 @@ class _SyncHookImpl implements SyncHookApi {
               ),
             );
             if (updateLog) {
-              ops.addAll(await _rewriteLogRecord(snapshot, record, next));
+              final key =
+                  '${record.collection}|${record.recordId}|${record.localMutationId}';
+              for (final (logKey, _) in logByKey[key] ?? const <(ByteKey, ChangeRecord)>[]) {
+                ops.add(
+                  RawPut(
+                    geckoChangeLogTable,
+                    logKey,
+                    _codec.encode(_recordToMap(next)),
+                  ),
+                );
+              }
             }
           }
           return ops;
@@ -1490,29 +1614,6 @@ class _SyncHookImpl implements SyncHookApi {
         await snapshot.dispose();
       }
     });
-  }
-
-  Future<List<RawOp>> _rewriteLogRecord(
-    RawSnapshot snapshot,
-    ChangeRecord old,
-    ChangeRecord next,
-  ) async {
-    final ops = <RawOp>[];
-    for (final entry in await snapshot.scanAll(geckoChangeLogTable)) {
-      final record = _recordFromMap(_codec.decode(entry.value ?? const []));
-      if (record.collection == old.collection &&
-          record.recordId == old.recordId &&
-          record.localMutationId == old.localMutationId) {
-        ops.add(
-          RawPut(
-            geckoChangeLogTable,
-            entry.key,
-            _codec.encode(_recordToMap(next)),
-          ),
-        );
-      }
-    }
-    return ops;
   }
 
   @override

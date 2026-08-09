@@ -3,6 +3,10 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Nightly WS8 long qualification run.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,6 +36,8 @@ jobs:
       - run: dart analyze
       - run: dart test packages/gecko_db/test --reporter=compact --coverage=packages/gecko_db/coverage
       - run: dart test tool --reporter=compact
+      - run: dart run tool/offline_lint.dart
+      - run: dart run tool/security_review.dart
       - run: dart run tool/traceability_check.dart
       - run: dart run tool/workstream0_contract_test.dart
       - run: >-
@@ -101,3 +107,65 @@ jobs:
       - run: dart run tool/api_contract_gate.dart --base="${{ github.event.repository.default_branch }}"
       - run: dart run tool/artifact_manifest.dart --artifact=rust/target/release/gecko_db_rust.dll --target=windows --arch=x64 --version=0.0.1 --output=artifact-manifest.json
       - run: dart test packages/gecko_db/test/compatibility_test.dart packages/gecko_db/test/native_bridge_contract_test.dart packages/gecko_db/test/native_error_test.dart --reporter=compact
+
+  ws8-long-suite:
+    name: WS8 long qualification (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: dart pub get
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - working-directory: rust
+        run: cargo build --release
+      - name: Long randomized + differential + parallel + crash injection
+        run: >-
+          GECKO_LONG_TEST=1 dart test
+          packages/gecko_db/test/phase14_randomized_ws8_test.dart
+          packages/gecko_db/test/phase14_differential_ws8_test.dart
+          packages/gecko_db/test/phase14_parallel_ws8_test.dart
+          packages/gecko_db/test/phase14_crash_injection_ws8_test.dart
+          --reporter=compact
+        timeout-minutes: 60
+      - name: Large-data (200k rows)
+        run: >-
+          GECKO_LONG_TEST=1 dart test
+          packages/gecko_db/test/phase14_large_data_ws8_test.dart
+          --reporter=compact
+        timeout-minutes: 60
+      - name: Soak (24 cycles)
+        run: >-
+          GECKO_LONG_TEST=1 dart test
+          packages/gecko_db/test/phase14_soak_ws8_test.dart
+          --reporter=compact
+        timeout-minutes: 60
+
+  perf-sanity:
+    name: Benchmark harness runs and gate sanity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: dart pub get
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - working-directory: rust
+        run: cargo build --release
+      # The checked-in baseline is captured on a developer machine; CI hardware
+      # differs, so CI gates with a very generous tolerance (only catastrophic
+      # regressions / harness failures break the build). Developers run the
+      # strict gate locally: dart run tool/perf_gate.dart
+      - run: dart run benchmark/bench.dart --native --json
+      - run: dart run tool/perf_gate.dart --native --tolerance=5.0
+      - run: dart run benchmark/bench.dart --mem --json
+      - run: dart run tool/perf_gate.dart --mem --tolerance=5.0

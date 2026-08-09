@@ -46,5 +46,6 @@ export: src/wire/format_header.dart show: FormatHeader, geckoFormatVersion, geck
 export: src/wire/op.dart show: Op, OpKind, OpDecodeException
 export: src/wire/sort_rules.dart show: sortBytesFor, SortRule, standardSortRules
 export: src/wire/wire_codec.dart show: RowValue, WireCodec, WireDecodeException, DefaultWireCodec
+export: src/worker/web_worker_client.dart show: WebWorkerClient
 
 entrypoint declarations:
