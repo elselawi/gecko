@@ -70,79 +70,99 @@ void main() {
       await db.close();
     });
 
-    test('bulkWrite maintains secondary indexes across insert/update/delete and reopen',
-        () async {
-      final dir = await Directory.systemTemp.createTemp('p12-bulk-index-');
-      final path = '${dir.path}${Platform.pathSeparator}db.redb';
-      try {
-        final db = await DatabaseImpl.open(
-          path,
-          useInMemory: false,
-          config: DatabaseConfig(nativeLibraryPath: _nativeLibraryPath()),
-        );
-        final item = db.collection<_Item>(
-          'items',
-          toRow: _toRow,
-          fromRow: _fromRow,
-          id: _id,
-          indexFields: const ['value'],
-        );
-
-        // Insert 100 rows via bulkWrite.
-        await db.bulkWrite([
-          for (var i = 0; i < 100; i++)
-            BulkMutation.put(
-              table: 'items',
-              key: 'k$i',
-              value: {'id': 'k$i', 'value': 'g${i % 10}'},
-            ),
-        ]);
-        expect((await item.where().filter('value', 'g3').findAll()).length, 10);
-
-        // Update 5 of the 10 g3 rows (k3, k23, ...) to g9 via bulkWrite.
-        await db.bulkWrite([
-          for (var i = 3; i < 100; i += 20)
-            BulkMutation.put(
-              table: 'items',
-              key: 'k$i',
-              value: {'id': 'k$i', 'value': 'g9'},
-            ),
-        ]);
-        expect((await item.where().filter('value', 'g3').findAll()).length, 5,
-            reason: 'updated rows must leave the old index value');
-        expect((await item.where().filter('value', 'g9').findAll()).length, 15);
-
-        // Delete one row via bulkWrite.
-        await db.bulkWrite([BulkMutation.delete(table: 'items', key: 'k9')]);
-        expect((await item.where().filter('value', 'g9').findAll()).length, 14,
-            reason: 'deleted row must leave the index');
-        expect((await item.get('k9')), isNull);
-
-        // Reopen: the durable index must rebuild from the primary table and
-        // agree with the same queries.
-        await db.close();
-        final db2 = await DatabaseImpl.open(
-          path,
-          useInMemory: false,
-          config: DatabaseConfig(nativeLibraryPath: _nativeLibraryPath()),
-        );
+    test(
+      'bulkWrite maintains secondary indexes across insert/update/delete and reopen',
+      () async {
+        final dir = await Directory.systemTemp.createTemp('p12-bulk-index-');
+        final path = '${dir.path}${Platform.pathSeparator}db.redb';
         try {
-          final item2 = db2.collection<_Item>(
+          final db = await DatabaseImpl.open(
+            path,
+            useInMemory: false,
+            config: DatabaseConfig(nativeLibraryPath: _nativeLibraryPath()),
+          );
+          final item = db.collection<_Item>(
             'items',
             toRow: _toRow,
             fromRow: _fromRow,
             id: _id,
             indexFields: const ['value'],
           );
-          expect((await item2.where().filter('value', 'g3').findAll()).length, 5);
-          expect((await item2.where().filter('value', 'g9').findAll()).length, 14);
+
+          // Insert 100 rows via bulkWrite.
+          await db.bulkWrite([
+            for (var i = 0; i < 100; i++)
+              BulkMutation.put(
+                table: 'items',
+                key: 'k$i',
+                value: {'id': 'k$i', 'value': 'g${i % 10}'},
+              ),
+          ]);
+          expect(
+            (await item.where().filter('value', 'g3').findAll()).length,
+            10,
+          );
+
+          // Update 5 of the 10 g3 rows (k3, k23, ...) to g9 via bulkWrite.
+          await db.bulkWrite([
+            for (var i = 3; i < 100; i += 20)
+              BulkMutation.put(
+                table: 'items',
+                key: 'k$i',
+                value: {'id': 'k$i', 'value': 'g9'},
+              ),
+          ]);
+          expect(
+            (await item.where().filter('value', 'g3').findAll()).length,
+            5,
+            reason: 'updated rows must leave the old index value',
+          );
+          expect(
+            (await item.where().filter('value', 'g9').findAll()).length,
+            15,
+          );
+
+          // Delete one row via bulkWrite.
+          await db.bulkWrite([BulkMutation.delete(table: 'items', key: 'k9')]);
+          expect(
+            (await item.where().filter('value', 'g9').findAll()).length,
+            14,
+            reason: 'deleted row must leave the index',
+          );
+          expect((await item.get('k9')), isNull);
+
+          // Reopen: the durable index must rebuild from the primary table and
+          // agree with the same queries.
+          await db.close();
+          final db2 = await DatabaseImpl.open(
+            path,
+            useInMemory: false,
+            config: DatabaseConfig(nativeLibraryPath: _nativeLibraryPath()),
+          );
+          try {
+            final item2 = db2.collection<_Item>(
+              'items',
+              toRow: _toRow,
+              fromRow: _fromRow,
+              id: _id,
+              indexFields: const ['value'],
+            );
+            expect(
+              (await item2.where().filter('value', 'g3').findAll()).length,
+              5,
+            );
+            expect(
+              (await item2.where().filter('value', 'g9').findAll()).length,
+              14,
+            );
+          } finally {
+            await db2.close();
+          }
         } finally {
-          await db2.close();
+          await dir.delete(recursive: true);
         }
-      } finally {
-        await dir.delete(recursive: true);
-      }
-    });
+      },
+    );
   });
 
   group('Phase 12 diagnostics', () {

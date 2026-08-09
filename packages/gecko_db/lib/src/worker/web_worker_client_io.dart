@@ -24,8 +24,10 @@ class WebWorkerClient {
   }
 
   Future<int> applyBatch(List<int> encodedOps) async => _unsupported();
-  Future<List<int>?> get({required String table, required List<int> key}) async =>
-      _unsupported();
+  Future<List<int>?> get({
+    required String table,
+    required List<int> key,
+  }) async => _unsupported();
   Future<List<(List<int>, List<int>)>> rangeScan({
     required String table,
     List<int>? start,

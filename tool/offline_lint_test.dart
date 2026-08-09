@@ -11,12 +11,15 @@ void main() {
   });
 
   test('repo test sources contain no network or real-clock usage', () async {
-    final proc = await Process.run(
-      Platform.resolvedExecutable,
-      ['run', 'tool/offline_lint.dart'],
+    final proc = await Process.run(Platform.resolvedExecutable, [
+      'run',
+      'tool/offline_lint.dart',
+    ]);
+    expect(
+      proc.exitCode,
+      0,
+      reason: 'offline lint must pass on the tree:\n${proc.stdout}',
     );
-    expect(proc.exitCode, 0,
-        reason: 'offline lint must pass on the tree:\n${proc.stdout}');
     expect((proc.stdout as String), contains('OFFLINE LINT PASSED'));
   });
 }

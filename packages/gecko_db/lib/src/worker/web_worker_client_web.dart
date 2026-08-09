@@ -89,7 +89,9 @@ class WebWorkerClient {
       'physicalKeyGeneration': physicalKeyGeneration,
     });
 
-    final response = await completer.future.timeout(const Duration(seconds: 30));
+    final response = await completer.future.timeout(
+      const Duration(seconds: 30),
+    );
     if (response['type'] == 'ready') {
       // Return the SAME client: the onmessage callback still feeds this
       // instance's message stream, so a second instance would never see

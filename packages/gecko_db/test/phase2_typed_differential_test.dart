@@ -40,19 +40,17 @@ Collection<Map<String, Object?>> _collection(
   DatabaseImpl db,
   String name, {
   RowSchema? schema,
-}) => db
-    .collection<Map<String, Object?>>(
-      name,
-      toRow: (m) => m,
-      fromRow: (m) => Map<String, Object?>.from(m as Map),
-      id: (m) => m['id'],
-      schema: schema,
-    );
+}) => db.collection<Map<String, Object?>>(
+  name,
+  toRow: (m) => m,
+  fromRow: (m) => Map<String, Object?>.from(m as Map),
+  id: (m) => m['id'],
+  schema: schema,
+);
 
-Future<Map<String, Map<String, Object?>>> _typedDump(
-  DatabaseImpl db,
-) async {
-  final tables = await db.engine.backend.tables()..sort();
+Future<Map<String, Map<String, Object?>>> _typedDump(DatabaseImpl db) async {
+  final tables = await db.engine.backend.tables()
+    ..sort();
   final out = <String, Map<String, Object?>>{};
   for (final table in tables) {
     final snap = await db.engine.backend.snapshot();
@@ -60,7 +58,9 @@ Future<Map<String, Map<String, Object?>>> _typedDump(
       final entries = await snap.scanAll(table);
       out[table] = {
         for (final entry in entries)
-          entry.key.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join():
+          entry.key.bytes
+                  .map((b) => b.toRadixString(16).padLeft(2, '0'))
+                  .join():
               entry.value,
       };
     } finally {
@@ -98,10 +98,7 @@ void main() {
     final db = await DatabaseImpl.open(
       '${dir.path}${Platform.pathSeparator}db.redb',
       useInMemory: false,
-      config: DatabaseConfig(
-        nativeLibraryPath: nativePath,
-        clock: _fixedClock,
-      ),
+      config: DatabaseConfig(nativeLibraryPath: nativePath, clock: _fixedClock),
     );
     return (db, dir);
   }
@@ -140,42 +137,48 @@ void main() {
     }
   }
 
-  test('typed CRUD, schema, defaults, generated ids, patch, unknown fields',
-      () async {
-    await expectTypedDifferential('crud-schema', (db) async {
-      final schema = RowSchema.of({
-        'id': const FieldSpec(name: 'id', required: true),
-        'qty': const FieldSpec(name: 'qty', hasDefault: true, defaultValue: 1),
-      });
-      final items = _collection(db, 'items', schema: schema);
-      final errors = <String>[];
-      try {
-        await items.put({'qty': 5}); // missing required 'id'
-      } on GeckoError catch (error) {
-        errors.add(error.type.name);
-      }
-      await items.put({'id': 'a', 'qty': 5});
-      await items.put({'id': 'b'}); // default qty=1
-      await items.put({'id': 'c', 'qty': 3, 'note': 'kept'}); // unknown field
-      await items.patch('a', {'qty': 9});
-      await items.delete('b');
+  test(
+    'typed CRUD, schema, defaults, generated ids, patch, unknown fields',
+    () async {
+      await expectTypedDifferential('crud-schema', (db) async {
+        final schema = RowSchema.of({
+          'id': const FieldSpec(name: 'id', required: true),
+          'qty': const FieldSpec(
+            name: 'qty',
+            hasDefault: true,
+            defaultValue: 1,
+          ),
+        });
+        final items = _collection(db, 'items', schema: schema);
+        final errors = <String>[];
+        try {
+          await items.put({'qty': 5}); // missing required 'id'
+        } on GeckoError catch (error) {
+          errors.add(error.type.name);
+        }
+        await items.put({'id': 'a', 'qty': 5});
+        await items.put({'id': 'b'}); // default qty=1
+        await items.put({'id': 'c', 'qty': 3, 'note': 'kept'}); // unknown field
+        await items.patch('a', {'qty': 9});
+        await items.delete('b');
 
-      // Generated ids live on a schema-less collection (a required-id schema
-      // rejects missing ids by design).
-      final gen = _collection(db, 'gen');
-      final generated = await gen.put({'v': 7});
-      return <String, Object?>{
-        'errors': errors,
-        'generatedId': generated,
-        'a': await items.get('a'),
-        'c': await items.get('c'),
-        'bAbsent': await items.get('b'),
-        'generated': await gen.get(generated),
-        'itemsAll': await items.getAll(),
-        'genAll': await gen.getAll(),
-      };
-    });
-  });
+        // Generated ids live on a schema-less collection (a required-id schema
+        // rejects missing ids by design).
+        final gen = _collection(db, 'gen');
+        final generated = await gen.put({'v': 7});
+        return <String, Object?>{
+          'errors': errors,
+          'generatedId': generated,
+          'a': await items.get('a'),
+          'c': await items.get('c'),
+          'bAbsent': await items.get('b'),
+          'generated': await gen.get(generated),
+          'itemsAll': await items.getAll(),
+          'genAll': await gen.getAll(),
+        };
+      });
+    },
+  );
 
   test('transactions: own-write visibility, commit, and rollback', () async {
     await expectTypedDifferential('transactions', (db) async {
@@ -242,18 +245,18 @@ void main() {
         await items.put({'id': 's2', 'v': 2});
         final changed = await db.sync.readLocallyChanged();
         final ids = changed.map((p) => p.recordId).toList()..sort();
-        final states = changed
-            .map((p) => p.change.syncState?.phase.name)
-            .toSet()
-            .toList()
-          ..sort();
+        final states =
+            changed.map((p) => p.change.syncState?.phase.name).toSet().toList()
+              ..sort();
 
         await db.sync.markSynced(ids);
         final afterSync = await db.sync.readLocallyChanged();
 
         await db.sync.storeRemoteVersion(42);
         final remoteVersion = await db.sync.readRemoteVersion();
-        final since = await db.sync.changesSince(const SyncSnapshot(lastSeq: 0));
+        final since = await db.sync.changesSince(
+          const SyncSnapshot(lastSeq: 0),
+        );
 
         // Remote dedupe: applying a remote record with an idempotency key
         // registers it; a second application is rejected as a duplicate.

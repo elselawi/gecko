@@ -60,11 +60,7 @@ void main() {
 
   Future<void> expectDifferential(List<DiffStep> steps) async {
     final outcome = await runDifferential(memoryEngine, nativeEngine, steps);
-    expect(
-      outcome.mismatches,
-      isEmpty,
-      reason: outcome.mismatches.join('\n'),
-    );
+    expect(outcome.mismatches, isEmpty, reason: outcome.mismatches.join('\n'));
   }
 
   group('raw differential', () {
@@ -161,7 +157,11 @@ void main() {
             RawPut('items', ByteKey(_bytes([0x03])), _bytes([0x63])),
           ],
           readTable: 'items',
-          readKeys: const [k1, k2, [0x03]],
+          readKeys: const [
+            k1,
+            k2,
+            [0x03],
+          ],
         ),
         // Old snapshot must remain stable across multiple writes.
         DiffMvccRead(
@@ -193,7 +193,11 @@ void main() {
         // Ordering edge keys: prefixes of each other, extremes.
         DiffPut('items', _bytes(const [0x01]), _bytes(const [0x61])),
         DiffPut('items', _bytes(const [0x01, 0x00]), _bytes(const [0x62])),
-        DiffPut('items', _bytes(const [0x01, 0x00, 0x00]), _bytes(const [0x63])),
+        DiffPut(
+          'items',
+          _bytes(const [0x01, 0x00, 0x00]),
+          _bytes(const [0x63]),
+        ),
         DiffPut('items', _bytes(const [0x01, 0x01]), _bytes(const [0x64])),
         DiffPut('items', _bytes(const [0xFF]), _bytes(const [0x65])),
         DiffPut('items', _bytes(const [0xFF, 0xFF]), _bytes(const [0x66])),

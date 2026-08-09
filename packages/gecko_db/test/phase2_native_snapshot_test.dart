@@ -46,35 +46,36 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  test('native snapshot supports non-inclusive scans and explicit dispose',
-      () async {
-    await backend.applyBatch([
-      for (var i = 1; i <= 5; i++)
-        RawPut('t', ByteKey([i]), [i]),
-    ]);
-    final snap = await backend.snapshot();
-    final exclusiveEnd = await snap.scan(
-      't',
-      start: ByteKey([2]),
-      end: ByteKey([4]),
-      endInclusive: false,
-    );
-    expect(exclusiveEnd.map((e) => e.key.bytes).toList(), [
-      [2],
-      [3],
-    ]);
-    final exclusiveStart = await snap.scan(
-      't',
-      start: ByteKey([2]),
-      end: ByteKey([4]),
-      startInclusive: false,
-    );
-    expect(exclusiveStart.map((e) => e.key.bytes).toList(), [
-      [3],
-      [4],
-    ]);
-    await snap.dispose();
-  });
+  test(
+    'native snapshot supports non-inclusive scans and explicit dispose',
+    () async {
+      await backend.applyBatch([
+        for (var i = 1; i <= 5; i++) RawPut('t', ByteKey([i]), [i]),
+      ]);
+      final snap = await backend.snapshot();
+      final exclusiveEnd = await snap.scan(
+        't',
+        start: ByteKey([2]),
+        end: ByteKey([4]),
+        endInclusive: false,
+      );
+      expect(exclusiveEnd.map((e) => e.key.bytes).toList(), [
+        [2],
+        [3],
+      ]);
+      final exclusiveStart = await snap.scan(
+        't',
+        start: ByteKey([2]),
+        end: ByteKey([4]),
+        startInclusive: false,
+      );
+      expect(exclusiveStart.map((e) => e.key.bytes).toList(), [
+        [3],
+        [4],
+      ]);
+      await snap.dispose();
+    },
+  );
 
   test('lastCommitSeq reports the persisted LSN after engine writes', () async {
     final engine = RawEngine(backend);
@@ -106,45 +107,31 @@ void main() {
   });
 
   test('all operations after worker teardown fail with typed errors', () async {
-    await backend.applyBatch([RawPut('t', ByteKey([1]), [1])]);
+    await backend.applyBatch([
+      RawPut('t', ByteKey([1]), [1]),
+    ]);
     final snap = await backend.snapshot();
     // Tear the worker down deterministically through the ADR-0005 seam.
     await backend.disposeForTest();
 
     // Every subsequent backend operation maps to a typed GeckoError rather
     // than hanging or escaping as an untyped exception.
+    await expectLater(backend.tables(), throwsA(isA<GeckoError>()));
     await expectLater(
-      backend.tables(),
+      backend.applyBatch([
+        RawPut('t', ByteKey([2]), [2]),
+      ]),
       throwsA(isA<GeckoError>()),
     );
-    await expectLater(
-      backend.applyBatch([RawPut('t', ByteKey([2]), [2])]),
-      throwsA(isA<GeckoError>()),
-    );
-    await expectLater(
-      backend.snapshot(),
-      throwsA(isA<GeckoError>()),
-    );
-    await expectLater(
-      backend.lastCommitSeq(),
-      throwsA(isA<GeckoError>()),
-    );
-    await expectLater(
-      snap.read('t', ByteKey([1])),
-      throwsA(isA<GeckoError>()),
-    );
-    await expectLater(
-      snap.scanAll('t'),
-      throwsA(isA<GeckoError>()),
-    );
+    await expectLater(backend.snapshot(), throwsA(isA<GeckoError>()));
+    await expectLater(backend.lastCommitSeq(), throwsA(isA<GeckoError>()));
+    await expectLater(snap.read('t', ByteKey([1])), throwsA(isA<GeckoError>()));
+    await expectLater(snap.scanAll('t'), throwsA(isA<GeckoError>()));
     await expectLater(
       snap.scan('t', start: ByteKey([0]), end: ByteKey([9])),
       throwsA(isA<GeckoError>()),
     );
-    await expectLater(
-      snap.dispose(),
-      throwsA(isA<GeckoError>()),
-    );
+    await expectLater(snap.dispose(), throwsA(isA<GeckoError>()));
     // Idempotent: a second dispose is a no-op (already released locally).
     await snap.dispose();
   });

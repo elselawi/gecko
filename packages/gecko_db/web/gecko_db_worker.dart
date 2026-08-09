@@ -58,22 +58,22 @@ Future<void> main() async {
 
   try {
     // 1–4. Load + initialize the glue and FRB in this worker context.
-    final prefix = (await bundledWebGluePrefix()) ??
+    final prefix =
+        (await bundledWebGluePrefix()) ??
         'packages/gecko_db/native/web/wasm32/';
-    global.callMethod(
-      'importScripts'.toJS,
-      '$prefix$bundledWebStem.js'.toJS,
-    );
+    global.callMethod('importScripts'.toJS, '$prefix$bundledWebStem.js'.toJS);
     jsEval('self.wasm_bindgen = wasm_bindgen');
     jsEval('self.window = self');
     final wasmBindgen = global.getProperty('wasm_bindgen'.toJS);
     if (wasmBindgen.isUndefinedOrNull) {
       throw StateError('wasm_bindgen not defined after importScripts');
     }
-    final initPromise = (wasmBindgen as JSFunction).callAsFunction(
-      null,
-      '$prefix${bundledWebStem}_bg.wasm'.toJS,
-    ) as JSPromise;
+    final initPromise =
+        (wasmBindgen as JSFunction).callAsFunction(
+              null,
+              '$prefix${bundledWebStem}_bg.wasm'.toJS,
+            )
+            as JSPromise;
     await initPromise.toDart;
     await RustLib.init(
       externalLibrary: ExternalLibrary(
@@ -105,10 +105,12 @@ Future<void> main() async {
           _currentWorker = null;
           dispatchNativeWorker(worker, 'close', const [])
               .then((_) => post(<String, Object?>{'type': 'closed'}))
-              .catchError((Object error) => post(<String, Object?>{
-                'type': 'closed',
-                'error': '$error',
-              }));
+              .catchError(
+                (Object error) => post(<String, Object?>{
+                  'type': 'closed',
+                  'error': '$error',
+                }),
+              );
           return;
         }
 
@@ -116,21 +118,23 @@ Future<void> main() async {
           final op = message['op'] as String;
           final rawArgs = message['args'] as List? ?? const <Object?>[];
           final args = <Object?>[for (final arg in rawArgs) decodeValue(arg)];
-          dispatchNativeWorker(worker, op, args).then((result) {
-            post(<String, Object?>{
-              'type': 'response',
-              'id': id,
-              'ok': true,
-              'value': encodeValue(result),
-            });
-          }).catchError((Object error) {
-            post(<String, Object?>{
-              'type': 'response',
-              'id': id,
-              'ok': false,
-              'error': '$error',
-            });
-          });
+          dispatchNativeWorker(worker, op, args)
+              .then((result) {
+                post(<String, Object?>{
+                  'type': 'response',
+                  'id': id,
+                  'ok': true,
+                  'value': encodeValue(result),
+                });
+              })
+              .catchError((Object error) {
+                post(<String, Object?>{
+                  'type': 'response',
+                  'id': id,
+                  'ok': false,
+                  'error': '$error',
+                });
+              });
           return;
         }
 
@@ -168,8 +172,10 @@ Future<void> _handleOpen(
 
   try {
     if (physicalKey != null) {
-      fail('physical encryption is not supported on the web; '
-          'use OPFS (no key) or :memory:');
+      fail(
+        'physical encryption is not supported on the web; '
+        'use OPFS (no key) or :memory:',
+      );
       return;
     }
     if (path != ':memory:') {
@@ -182,11 +188,7 @@ Future<void> _handleOpen(
     final worker = await NativeWorker.open(path: path, readOnly: readOnly);
     final handshake = await worker.compatibilityHandshake();
     _currentWorker = worker;
-    post(<String, Object?>{
-      'type': 'ready',
-      'id': id,
-      'handshake': handshake,
-    });
+    post(<String, Object?>{'type': 'ready', 'id': id, 'handshake': handshake});
   } catch (error) {
     fail('$error');
   }

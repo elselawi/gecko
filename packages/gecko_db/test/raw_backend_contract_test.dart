@@ -101,9 +101,9 @@ void main() {
           RawDeleteRange('t', ByteKey([2]), ByteKey([3])),
         ]);
         final snapshot = await backend.snapshot();
-        final remaining = (await snapshot.scanAll('t'))
-            .map((entry) => entry.key.bytes)
-            .toList();
+        final remaining = (await snapshot.scanAll(
+          't',
+        )).map((entry) => entry.key.bytes).toList();
         expect(remaining, [
           [1],
           [4],
@@ -123,7 +123,9 @@ void main() {
 
       test('tableExists and tables reflect committed tables', () async {
         expect(await backend.tableExists('t'), isFalse);
-        await backend.applyBatch([RawPut('t', ByteKey([1]), [1])]);
+        await backend.applyBatch([
+          RawPut('t', ByteKey([1]), [1]),
+        ]);
         expect(await backend.tableExists('t'), isTrue);
         expect(await backend.tables(), contains('t'));
       });
@@ -135,9 +137,13 @@ void main() {
       });
 
       test('snapshots are immutable point-in-time views', () async {
-        await backend.applyBatch([RawPut('t', ByteKey([1]), [1])]);
+        await backend.applyBatch([
+          RawPut('t', ByteKey([1]), [1]),
+        ]);
         final old = await backend.snapshot();
-        await backend.applyBatch([RawPut('t', ByteKey([1]), [2])]);
+        await backend.applyBatch([
+          RawPut('t', ByteKey([1]), [2]),
+        ]);
         // The old snapshot still sees the pre-write value.
         expect(await old.read('t', ByteKey([1])), [1]);
         final fresh = await backend.snapshot();
@@ -146,11 +152,7 @@ void main() {
     });
   }
 
-  runContractSuite(
-    'in-memory',
-    () async => InMemoryBackend(),
-    null,
-  );
+  runContractSuite('in-memory', () async => InMemoryBackend(), null);
 
   Directory? nativeDir;
   runContractSuite(

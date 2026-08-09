@@ -453,7 +453,9 @@ class DatabaseImpl implements Database {
             mutation.table,
             ByteKey(keyBytes),
           );
-          final previous = previousRaw == null ? null : codec.decode(previousRaw);
+          final previous = previousRaw == null
+              ? null
+              : codec.decode(previousRaw);
           final txnMutation = _TxnMutation(
             table: mutation.table,
             key: ByteKey(keyBytes),
@@ -469,7 +471,11 @@ class DatabaseImpl implements Database {
           }
           if (mutation.kind == ChangeKind.put) {
             ops.add(
-              RawPut(mutation.table, ByteKey(keyBytes), codec.encode(mutation.value)),
+              RawPut(
+                mutation.table,
+                ByteKey(keyBytes),
+                codec.encode(mutation.value),
+              ),
             );
           } else {
             ops.add(RawDelete(mutation.table, ByteKey(keyBytes)));
@@ -1575,8 +1581,9 @@ class _SyncHookImpl implements SyncHookApi {
         final logByKey = <String, List<(ByteKey, ChangeRecord)>>{};
         if (updateLog) {
           for (final entry in await snapshot.scanAll(geckoChangeLogTable)) {
-            final record =
-                _recordFromMap(_codec.decode(entry.value ?? const []));
+            final record = _recordFromMap(
+              _codec.decode(entry.value ?? const []),
+            );
             if (record.collection == null) continue;
             final key =
                 '${record.collection}|${record.recordId}|${record.localMutationId}';
@@ -1597,7 +1604,8 @@ class _SyncHookImpl implements SyncHookApi {
             if (updateLog) {
               final key =
                   '${record.collection}|${record.recordId}|${record.localMutationId}';
-              for (final (logKey, _) in logByKey[key] ?? const <(ByteKey, ChangeRecord)>[]) {
+              for (final (logKey, _)
+                  in logByKey[key] ?? const <(ByteKey, ChangeRecord)>[]) {
                 ops.add(
                   RawPut(
                     geckoChangeLogTable,

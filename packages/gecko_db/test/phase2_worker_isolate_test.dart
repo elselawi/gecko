@@ -98,25 +98,28 @@ void main() {
     );
   });
 
-  test('Finalizer teardown path shuts the worker down deterministically', () async {
-    final db = await open();
-    final backend = db.engine.backend as NativeRawBackend;
-    expect(backend.workerAlive, isTrue);
+  test(
+    'Finalizer teardown path shuts the worker down deterministically',
+    () async {
+      final db = await open();
+      final backend = db.engine.backend as NativeRawBackend;
+      expect(backend.workerAlive, isTrue);
 
-    // Exercise the exact Finalizer callback path without waiting for GC.
-    await backend.disposeForTest();
+      // Exercise the exact Finalizer callback path without waiting for GC.
+      await backend.disposeForTest();
 
-    expect(
-      backend.workerAlive,
-      isFalse,
-      reason: 'the finalizer path must terminate the worker isolate',
-    );
-    // The worker is gone: requests fail fast with a typed error.
-    await expectLater(
-      () => db.rawGet('items', ByteKey(const [1, 2, 3])),
-      throwsA(isA<GeckoError>()),
-    );
-    // Close remains idempotent after the finalizer already tore things down.
-    await db.close();
-  });
+      expect(
+        backend.workerAlive,
+        isFalse,
+        reason: 'the finalizer path must terminate the worker isolate',
+      );
+      // The worker is gone: requests fail fast with a typed error.
+      await expectLater(
+        () => db.rawGet('items', ByteKey(const [1, 2, 3])),
+        throwsA(isA<GeckoError>()),
+      );
+      // Close remains idempotent after the finalizer already tore things down.
+      await db.close();
+    },
+  );
 }

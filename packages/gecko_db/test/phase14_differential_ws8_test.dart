@@ -68,7 +68,10 @@ void main() {
       final nativeDbPath = '${tempDir.path}${Platform.pathSeparator}db.redb';
       final memoryEngine = RawEngine(InMemoryBackend());
       final nativeEngine = RawEngine(
-        await NativeRawBackend.open(nativeDbPath, nativeLibraryPath: nativePath),
+        await NativeRawBackend.open(
+          nativeDbPath,
+          nativeLibraryPath: nativePath,
+        ),
       );
       try {
         final steps = _generate(SeededRandom(seed * 0x85EBCA6B), _steps);
@@ -97,9 +100,7 @@ const List<String> _tables = ['t0', 't1', 't2', 't3'];
 /// modes), deletes, clears, gets, range scans, full scans, direct backend
 /// batches, and MVCC snapshot reads.
 List<DiffStep> _generate(SeededRandom random, int steps) {
-  final existing = <String, List<int>>{
-    for (final t in _tables) t: <int>[],
-  };
+  final existing = <String, List<int>>{for (final t in _tables) t: <int>[]};
   final stepsOut = <DiffStep>[];
   for (var i = 0; i < steps; i++) {
     final table = _tables[random.nextInt(_tables.length)];
@@ -107,7 +108,10 @@ List<DiffStep> _generate(SeededRandom random, int steps) {
     if (roll < 5 || existing[table]!.isEmpty) {
       // Puts (mostly upsert; occasionally insertOnly/updateOnly).
       final key = random.nextInt(120);
-      final value = List<int>.generate(1 + random.nextInt(16), (j) => random.nextInt(256));
+      final value = List<int>.generate(
+        1 + random.nextInt(16),
+        (j) => random.nextInt(256),
+      );
       final modeRoll = random.nextInt(10);
       final mode = modeRoll < 8
           ? RawWriteMode.upsert
@@ -139,9 +143,7 @@ List<DiffStep> _generate(SeededRandom random, int steps) {
         final t = _tables[random.nextInt(_tables.length)];
         final key = random.nextInt(120);
         if (random.nextBoolean()) {
-          ops.add(
-            RawPut(t, ByteKey([key]), <int>[key, j]),
-          );
+          ops.add(RawPut(t, ByteKey([key]), <int>[key, j]));
         } else {
           ops.add(RawDelete(t, ByteKey([key])));
         }

@@ -71,10 +71,7 @@ Future<List<int>> _waitForCommit(
     await Future.any<int>([
       reached.future.then((_) => 0),
       exited,
-    ]).timeout(
-      Duration(seconds: timeoutSeconds),
-      onTimeout: () => -2,
-    );
+    ]).timeout(Duration(seconds: timeoutSeconds), onTimeout: () => -2);
   } finally {
     await sub.cancel();
   }
@@ -123,7 +120,8 @@ void main() {
       final batchCounts = <int, int>{};
       for (final entry in items) {
         final value = codec.decode(entry.value!) as Map;
-        batchCounts[value['batch'] as int] = (batchCounts[value['batch'] as int] ?? 0) + 1;
+        batchCounts[value['batch'] as int] =
+            (batchCounts[value['batch'] as int] ?? 0) + 1;
       }
       for (var b = 0; b <= maxBatch; b++) {
         expect(
@@ -138,33 +136,39 @@ void main() {
     }
   }
 
-  test('hard kill at EVERY commit boundary leaves exactly the durable prefix',
-      () async {
-    for (var boundary = 1; boundary <= _batches; boundary++) {
-      final (path, dir) = await freshDb();
-      final process = await _spawnHelper(
-        ['write', path, nativePath, '$_batches', '$_batchSize', '50'],
-        root,
-      );
-      final committed = await _waitForCommit(process, boundary);
-      await _kill(process);
+  test(
+    'hard kill at EVERY commit boundary leaves exactly the durable prefix',
+    () async {
+      for (var boundary = 1; boundary <= _batches; boundary++) {
+        final (path, dir) = await freshDb();
+        final process = await _spawnHelper([
+          'write',
+          path,
+          nativePath,
+          '$_batches',
+          '$_batchSize',
+          '50',
+        ], root);
+        final committed = await _waitForCommit(process, boundary);
+        await _kill(process);
 
-      final durable = await durableBatches(path);
-      // Every observed commit marker was printed AFTER its redb commit
-      // returned, so all `committed.length` batches must be durable. The
-      // helper may additionally commit the next batch before the kill lands,
-      // so durable may exceed the observed count — but never exceed total
-      // batches, and never be a partial/holey prefix (that invariant is
-      // enforced inside durableBatches).
-      expect(
-        durable,
-        greaterThanOrEqualTo(committed.length),
-        reason: 'boundary=$boundary: no observed committed batch may be lost',
-      );
-      expect(durable, lessThanOrEqualTo(_batches));
-      await dir.delete(recursive: true);
-    }
-  });
+        final durable = await durableBatches(path);
+        // Every observed commit marker was printed AFTER its redb commit
+        // returned, so all `committed.length` batches must be durable. The
+        // helper may additionally commit the next batch before the kill lands,
+        // so durable may exceed the observed count — but never exceed total
+        // batches, and never be a partial/holey prefix (that invariant is
+        // enforced inside durableBatches).
+        expect(
+          durable,
+          greaterThanOrEqualTo(committed.length),
+          reason: 'boundary=$boundary: no observed committed batch may be lost',
+        );
+        expect(durable, lessThanOrEqualTo(_batches));
+        await dir.delete(recursive: true);
+      }
+    },
+  );
 
   test('randomized kill boundaries preserve durability', () async {
     var seed = 0x1234ABCD;
@@ -172,17 +176,22 @@ void main() {
       seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
       final boundary = 1 + (seed % _batches);
       final (path, dir) = await freshDb();
-      final process = await _spawnHelper(
-        ['write', path, nativePath, '$_batches', '$_batchSize', '20'],
-        root,
-      );
+      final process = await _spawnHelper([
+        'write',
+        path,
+        nativePath,
+        '$_batches',
+        '$_batchSize',
+        '20',
+      ], root);
       final committed = await _waitForCommit(process, boundary);
       await _kill(process);
       final durable = await durableBatches(path);
       expect(
         durable,
         greaterThanOrEqualTo(committed.length),
-        reason: 'random round $round boundary=$boundary: no observed committed '
+        reason:
+            'random round $round boundary=$boundary: no observed committed '
             'batch may be lost',
       );
       expect(durable, lessThanOrEqualTo(_batches));

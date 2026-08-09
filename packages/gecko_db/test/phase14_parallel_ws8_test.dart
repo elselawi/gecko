@@ -111,7 +111,10 @@ void main() {
     try {
       final dbs = await Future.wait([
         for (final p in paths)
-          Database.open(p, config: DatabaseConfig(nativeLibraryPath: nativePath)),
+          Database.open(
+            p,
+            config: DatabaseConfig(nativeLibraryPath: nativePath),
+          ),
       ]);
       await Future.wait([
         for (var i = 0; i < n; i++) _writeSentinel(dbs[i], 'native-$i'),
@@ -124,11 +127,15 @@ void main() {
       // Reopen every file; each must contain exactly its own rows.
       final reopened = await Future.wait([
         for (final p in paths)
-          Database.open(p, config: DatabaseConfig(nativeLibraryPath: nativePath)),
+          Database.open(
+            p,
+            config: DatabaseConfig(nativeLibraryPath: nativePath),
+          ),
       ]);
       try {
         await Future.wait([
-          for (var i = 0; i < n; i++) _verifyIsolation(reopened[i], 'native-$i'),
+          for (var i = 0; i < n; i++)
+            _verifyIsolation(reopened[i], 'native-$i'),
         ]);
       } finally {
         await Future.wait([for (final db in reopened) db.close()]);
@@ -138,36 +145,45 @@ void main() {
     }
   });
 
-  test('mixed in-memory + native databases stay isolated under contention',
-      () async {
-    final dir = await Directory.systemTemp.createTemp('gecko-parallel-mixed-');
-    final nativeDbPath =
-        '${dir.path}${Platform.pathSeparator}mixed.redb';
-    try {
-      final dbs = await Future.wait([
-        Database.open('mem://ws8-mixed-a', config: const DatabaseConfig(inMemory: true)),
-        Database.open('mem://ws8-mixed-b', config: const DatabaseConfig(inMemory: true)),
-        Database.open(
-          nativeDbPath,
-          config: DatabaseConfig(nativeLibraryPath: nativePath),
-        ),
-      ]);
+  test(
+    'mixed in-memory + native databases stay isolated under contention',
+    () async {
+      final dir = await Directory.systemTemp.createTemp(
+        'gecko-parallel-mixed-',
+      );
+      final nativeDbPath = '${dir.path}${Platform.pathSeparator}mixed.redb';
       try {
-        await Future.wait([
-          _writeSentinel(dbs[0], 'mixed-mem-a'),
-          _writeSentinel(dbs[1], 'mixed-mem-b'),
-          _writeSentinel(dbs[2], 'mixed-native'),
+        final dbs = await Future.wait([
+          Database.open(
+            'mem://ws8-mixed-a',
+            config: const DatabaseConfig(inMemory: true),
+          ),
+          Database.open(
+            'mem://ws8-mixed-b',
+            config: const DatabaseConfig(inMemory: true),
+          ),
+          Database.open(
+            nativeDbPath,
+            config: DatabaseConfig(nativeLibraryPath: nativePath),
+          ),
         ]);
-        await Future.wait([
-          _verifyIsolation(dbs[0], 'mixed-mem-a'),
-          _verifyIsolation(dbs[1], 'mixed-mem-b'),
-          _verifyIsolation(dbs[2], 'mixed-native'),
-        ]);
+        try {
+          await Future.wait([
+            _writeSentinel(dbs[0], 'mixed-mem-a'),
+            _writeSentinel(dbs[1], 'mixed-mem-b'),
+            _writeSentinel(dbs[2], 'mixed-native'),
+          ]);
+          await Future.wait([
+            _verifyIsolation(dbs[0], 'mixed-mem-a'),
+            _verifyIsolation(dbs[1], 'mixed-mem-b'),
+            _verifyIsolation(dbs[2], 'mixed-native'),
+          ]);
+        } finally {
+          await Future.wait([for (final db in dbs) db.close()]);
+        }
       } finally {
-        await Future.wait([for (final db in dbs) db.close()]);
+        await dir.delete(recursive: true);
       }
-    } finally {
-      await dir.delete(recursive: true);
-    }
-  });
+    },
+  );
 }

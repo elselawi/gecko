@@ -15,3 +15,10 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Advisory-only docs (superseded by plan.md appendix)
+improvements.md
+perf.md
+
+# Local benchmark/gate run logs
+*.log

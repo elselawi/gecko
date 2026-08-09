@@ -41,7 +41,8 @@ const int _queryOps = 50;
 // alone would take many minutes. The benchmark documents this cost honestly;
 // gecko_db's redb and Hive CE handle the same per-write model without it.
 
-const int _geckoChangeLogMaxEntries = 0; // same as the local bench: storage path
+const int _geckoChangeLogMaxEntries =
+    0; // same as the local bench: storage path
 
 String _repoRoot() {
   if (Directory.current.path.endsWith('benchmark')) {
@@ -60,13 +61,17 @@ String _nativeLibraryPath(String root) {
       'target${Platform.pathSeparator}release${Platform.pathSeparator}$name';
 }
 
-Map<String, Object?> _row(int id, int num, String group) =>
-    {'id': id, 'num': num, 'group': group};
+Map<String, Object?> _row(int id, int num, String group) => {
+  'id': id,
+  'num': num,
+  'group': group,
+};
 
 /// Common backend surface so every workload runs identically per store.
 abstract class _Backend {
   String get name;
   Future<void> open(String dirPath);
+
   /// Seeds the table with [rows] using each store's natural batch mechanism
   /// (unmeasured — a real app seeds in bulk, not one transaction per row).
   Future<void> seed(List<Map<String, Object?>> rows);
@@ -122,11 +127,7 @@ class _GeckoBackend implements _Backend {
       final end = (start + chunk) > rows.length ? rows.length : start + chunk;
       await _db.bulkWrite([
         for (final row in rows.sublist(start, end))
-          BulkMutation.put(
-            table: 'items',
-            key: row['id'],
-            value: row,
-          ),
+          BulkMutation.put(table: 'items', key: row['id'], value: row),
       ]);
     }
   }
@@ -201,11 +202,11 @@ class _HiveBackend implements _Backend {
       _box.values.map((v) => Map<String, Object?>.from(v as Map)).toList();
 
   @override
-  Future<List<Map<String, Object?>>> queryGroup(String group) async =>
-      _box.values
-          .map((v) => Map<String, Object?>.from(v as Map))
-          .where((r) => r['group'] == group)
-          .toList();
+  Future<List<Map<String, Object?>>> queryGroup(String group) async => _box
+      .values
+      .map((v) => Map<String, Object?>.from(v as Map))
+      .where((r) => r['group'] == group)
+      .toList();
 
   @override
   Future<void> close() async {
@@ -338,7 +339,11 @@ Future<void> main(List<String> args) async {
             'stores reflects those guarantees.',
         'results': [
           for (final r in rows)
-            {'backend': r.backend, 'workload': r.workload, 'msPerOp': r.msPerOp},
+            {
+              'backend': r.backend,
+              'workload': r.workload,
+              'msPerOp': r.msPerOp,
+            },
         ],
       }),
     );
@@ -397,11 +402,13 @@ Future<List<_Row>> _runBackend(
     await backend.put(_seedRows + i, _row(_seedRows + i, i, 'g0'));
   }
   insertWatch.stop();
-  results.add(_Row(
-    backend.name,
-    'insert',
-    insertWatch.elapsedMicroseconds / _insertOps / 1000,
-  ));
+  results.add(
+    _Row(
+      backend.name,
+      'insert',
+      insertWatch.elapsedMicroseconds / _insertOps / 1000,
+    ),
+  );
   final afterInsert = await backend.scanAll();
   if (afterInsert.length != _seedRows + _insertOps) {
     throw StateError(
@@ -418,11 +425,13 @@ Future<List<_Row>> _runBackend(
   final bulkWatch = Stopwatch()..start();
   await backend.bulkPut(bulkRows);
   bulkWatch.stop();
-  results.add(_Row(
-    backend.name,
-    'bulkInsert',
-    bulkWatch.elapsedMicroseconds / _bulkRows / 1000,
-  ));
+  results.add(
+    _Row(
+      backend.name,
+      'bulkInsert',
+      bulkWatch.elapsedMicroseconds / _bulkRows / 1000,
+    ),
+  );
 
   // 3. Hot read.
   final hotWatch = Stopwatch()..start();
@@ -430,7 +439,13 @@ Future<List<_Row>> _runBackend(
     await backend.get(0);
   }
   hotWatch.stop();
-  results.add(_Row(backend.name, 'hotRead', hotWatch.elapsedMicroseconds / _readOps / 1000));
+  results.add(
+    _Row(
+      backend.name,
+      'hotRead',
+      hotWatch.elapsedMicroseconds / _readOps / 1000,
+    ),
+  );
 
   // 4. Cold read.
   final coldWatch = Stopwatch()..start();
@@ -438,7 +453,13 @@ Future<List<_Row>> _runBackend(
     await backend.get(i % _seedRows);
   }
   coldWatch.stop();
-  results.add(_Row(backend.name, 'coldRead', coldWatch.elapsedMicroseconds / _readOps / 1000));
+  results.add(
+    _Row(
+      backend.name,
+      'coldRead',
+      coldWatch.elapsedMicroseconds / _readOps / 1000,
+    ),
+  );
 
   // 5. Update.
   final updateWatch = Stopwatch()..start();
@@ -446,7 +467,13 @@ Future<List<_Row>> _runBackend(
     await backend.update(i % _seedRows, _row(i % _seedRows, i, 'g2'));
   }
   updateWatch.stop();
-  results.add(_Row(backend.name, 'update', updateWatch.elapsedMicroseconds / _updateOps / 1000));
+  results.add(
+    _Row(
+      backend.name,
+      'update',
+      updateWatch.elapsedMicroseconds / _updateOps / 1000,
+    ),
+  );
 
   // 6. Delete (removes the first _deleteOps seed rows so the final count is
   // deterministic and the workload is meaningful).
@@ -455,7 +482,13 @@ Future<List<_Row>> _runBackend(
     await backend.delete(i);
   }
   deleteWatch.stop();
-  results.add(_Row(backend.name, 'delete', deleteWatch.elapsedMicroseconds / _deleteOps / 1000));
+  results.add(
+    _Row(
+      backend.name,
+      'delete',
+      deleteWatch.elapsedMicroseconds / _deleteOps / 1000,
+    ),
+  );
 
   // 7. Full scan.
   final scanWatch = Stopwatch()..start();
@@ -463,7 +496,13 @@ Future<List<_Row>> _runBackend(
     await backend.scanAll();
   }
   scanWatch.stop();
-  results.add(_Row(backend.name, 'scanAll', scanWatch.elapsedMicroseconds / _scanOps / 1000));
+  results.add(
+    _Row(
+      backend.name,
+      'scanAll',
+      scanWatch.elapsedMicroseconds / _scanOps / 1000,
+    ),
+  );
 
   // 8. Filtered query (equality on group).
   final queryWatch = Stopwatch()..start();
@@ -471,7 +510,13 @@ Future<List<_Row>> _runBackend(
     await backend.queryGroup('g${i % 100}');
   }
   queryWatch.stop();
-  results.add(_Row(backend.name, 'queryGroup', queryWatch.elapsedMicroseconds / _queryOps / 1000));
+  results.add(
+    _Row(
+      backend.name,
+      'queryGroup',
+      queryWatch.elapsedMicroseconds / _queryOps / 1000,
+    ),
+  );
 
   // Final integrity: seed + inserts + bulk must all be present, minus deletes.
   final expectedFinal = _seedRows + _insertOps + _bulkRows - _deleteOps;

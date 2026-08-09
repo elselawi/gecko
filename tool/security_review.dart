@@ -1,4 +1,5 @@
 #!/usr/bin/env dart
+
 // Workstream 8 — static security review gate.
 //
 // Scans the gecko_db Dart + Rust sources for the classes of mistakes that
@@ -134,38 +135,46 @@ Future<void> _scanFile(File file, List<_Finding> findings) async {
       continue;
     }
     if (_secretLiteral.hasMatch(line)) {
-      findings.add(_Finding(
-        file.path,
-        i + 1,
-        'secret-literal',
-        'possible secret literal in source',
-      ));
+      findings.add(
+        _Finding(
+          file.path,
+          i + 1,
+          'secret-literal',
+          'possible secret literal in source',
+        ),
+      );
     }
     if (_keyInLog.hasMatch(line) &&
         !line.contains('_key') && // variable names like _key are fine
         !line.contains('key=')) {
-      findings.add(_Finding(
-        file.path,
-        i + 1,
-        'key-in-log',
-        'key material appears near a print/log call',
-      ));
+      findings.add(
+        _Finding(
+          file.path,
+          i + 1,
+          'key-in-log',
+          'key material appears near a print/log call',
+        ),
+      );
     }
     if (_valueInError.hasMatch(line)) {
-      findings.add(_Finding(
-        file.path,
-        i + 1,
-        'value-in-error',
-        'raw value interpolated into an error/log string',
-      ));
+      findings.add(
+        _Finding(
+          file.path,
+          i + 1,
+          'value-in-error',
+          'raw value interpolated into an error/log string',
+        ),
+      );
     }
     if (_base64Blob.hasMatch(line) && !line.contains('base64Encode')) {
-      findings.add(_Finding(
-        file.path,
-        i + 1,
-        'base64-literal',
-        'long base64 literal — verify it is not a credential',
-      ));
+      findings.add(
+        _Finding(
+          file.path,
+          i + 1,
+          'base64-literal',
+          'long base64 literal — verify it is not a credential',
+        ),
+      );
     }
   }
 }

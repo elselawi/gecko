@@ -68,11 +68,7 @@ class _Row {
 
   static _Row fromMap(Object? row) {
     final map = row as Map;
-    return _Row(
-      map['id'] as int,
-      map['num'] as int,
-      map['group'] as String,
-    );
+    return _Row(map['id'] as int, map['num'] as int, map['group'] as String);
   }
 }
 
@@ -120,7 +116,9 @@ void main() {
                 indexFields: c == 'beta' ? const ['num'] : null,
               )
               .watchAll();
-          subscriptions.add(stream.listen((_) => watchCounts[c] = watchCounts[c]! + 1));
+          subscriptions.add(
+            stream.listen((_) => watchCounts[c] = watchCounts[c]! + 1),
+          );
         }
 
         for (final op in ops) {
@@ -194,7 +192,10 @@ void main() {
 }
 
 /// Verifies the engine matches [model] exactly for every collection.
-Future<void> _verify(Database db, Map<String, SplayTreeMap<int, _Row>> model) async {
+Future<void> _verify(
+  Database db,
+  Map<String, SplayTreeMap<int, _Row>> model,
+) async {
   for (final c in kCollections) {
     final collection = db.collection<_Row>(
       c,
@@ -211,13 +212,13 @@ Future<void> _verify(Database db, Map<String, SplayTreeMap<int, _Row>> model) as
     );
     for (final entry in model[c]!.entries) {
       final found = byId[entry.key];
-      expect(
-        found,
-        isNotNull,
-        reason: 'collection $c missing id ${entry.key}',
-      );
+      expect(found, isNotNull, reason: 'collection $c missing id ${entry.key}');
       expect(found!.num, entry.value.num, reason: 'collection $c num drift');
-      expect(found.group, entry.value.group, reason: 'collection $c group drift');
+      expect(
+        found.group,
+        entry.value.group,
+        reason: 'collection $c group drift',
+      );
     }
   }
 }
@@ -239,8 +240,8 @@ List<ScenarioOp> _generate(SeededRandom random, int steps) {
       ops.add(PutOp(collection, id, num, group));
       existing[collection]!.add(id);
     } else if (roll < 8) {
-      final id = existing[collection]![
-          random.nextInt(existing[collection]!.length)];
+      final id =
+          existing[collection]![random.nextInt(existing[collection]!.length)];
       ops.add(DeleteOp(collection, id));
       existing[collection]!.remove(id);
     } else {

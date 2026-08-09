@@ -99,17 +99,15 @@ void main() {
     return (path, dir);
   }
 
-  Future<DatabaseImpl> reopen(
-    String path, {
-    bool readOnly = false,
-  }) => DatabaseImpl.open(
-    path,
-    useInMemory: false,
-    config: DatabaseConfig(
-      nativeLibraryPath: nativePath,
-      readOnly: readOnly,
-    ),
-  );
+  Future<DatabaseImpl> reopen(String path, {bool readOnly = false}) =>
+      DatabaseImpl.open(
+        path,
+        useInMemory: false,
+        config: DatabaseConfig(
+          nativeLibraryPath: nativePath,
+          readOnly: readOnly,
+        ),
+      );
 
   group('process-level crash recovery', () {
     test(
@@ -118,10 +116,14 @@ void main() {
         final (path, dir) = await freshDb();
         final committed = <int>[];
         final reached = Completer<void>();
-        final process = await _spawnHelper(
-          ['write', path, nativePath, '6', '2000', '500'],
-          root,
-        );
+        final process = await _spawnHelper([
+          'write',
+          path,
+          nativePath,
+          '6',
+          '2000',
+          '500',
+        ], root);
         final sub = _trackCommitted(process, 3, reached, committed);
         try {
           await reached.future.timeout(const Duration(seconds: 90));
@@ -174,10 +176,14 @@ void main() {
         final committed = <int>[];
         final reached = Completer<void>();
         // Large batch: the kill is delivered while batch 4 is mid-commit.
-        final process = await _spawnHelper(
-          ['write', path, nativePath, '6', '50000', '0'],
-          root,
-        );
+        final process = await _spawnHelper([
+          'write',
+          path,
+          nativePath,
+          '6',
+          '50000',
+          '0',
+        ], root);
         final sub = _trackCommitted(process, 3, reached, committed);
         try {
           await reached.future.timeout(const Duration(seconds: 90));
@@ -242,10 +248,14 @@ void main() {
         final (path, dir) = await freshDb();
         final committed = <int>[];
         final reached = Completer<void>();
-        final process = await _spawnHelper(
-          ['typed', path, nativePath, '6', '200', '500'],
-          root,
-        );
+        final process = await _spawnHelper([
+          'typed',
+          path,
+          nativePath,
+          '6',
+          '200',
+          '500',
+        ], root);
         final sub = _trackCommitted(process, 3, reached, committed);
         try {
           await reached.future.timeout(const Duration(seconds: 90));
@@ -279,8 +289,9 @@ void main() {
             // Change log mirrors the committed rows exactly: one entry per
             // committed row, never an entry for a row the kill rolled back.
             final changeLogIds = <String>{};
-            for (final entry
-                in await db.engine.rawScanAll(geckoChangeLogTable)) {
+            for (final entry in await db.engine.rawScanAll(
+              geckoChangeLogTable,
+            )) {
               final record = (codec.decode(entry.value!) as Map)
                   .cast<String, Object?>();
               changeLogIds.add(record['recordId']! as String);
@@ -295,8 +306,9 @@ void main() {
 
             // Sync-state table mirrors the committed rows exactly as well.
             final syncStateIds = <String>{};
-            for (final entry
-                in await db.engine.rawScanAll(geckoSyncStateTable)) {
+            for (final entry in await db.engine.rawScanAll(
+              geckoSyncStateTable,
+            )) {
               final record = (codec.decode(entry.value!) as Map)
                   .cast<String, Object?>();
               syncStateIds.add(record['recordId']! as String);

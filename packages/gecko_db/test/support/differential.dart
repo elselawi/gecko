@@ -43,8 +43,7 @@ class DiffPut extends DiffStep {
   final RawWriteMode mode;
 
   @override
-  String get label =>
-      'put(${mode.name}) $table ${_hex(key)} = ${_hex(value)}';
+  String get label => 'put(${mode.name}) $table ${_hex(key)} = ${_hex(value)}';
 
   @override
   Future<Object?> run(RawEngine engine) =>
@@ -109,7 +108,9 @@ class DiffRangeScan extends DiffStep {
       start: start == null ? null : ByteKey(start!),
       end: end == null ? null : ByteKey(end!),
     );
-    return [for (final e in entries) <Object?>[_hex(e.key.bytes), e.value]];
+    return [
+      for (final e in entries) <Object?>[_hex(e.key.bytes), e.value],
+    ];
   }
 }
 
@@ -124,7 +125,9 @@ class DiffScanAll extends DiffStep {
   @override
   Future<Object?> run(RawEngine engine) async {
     final entries = await engine.rawScanAll(table);
-    return [for (final e in entries) <Object?>[_hex(e.key.bytes), e.value]];
+    return [
+      for (final e in entries) <Object?>[_hex(e.key.bytes), e.value],
+    ];
   }
 }
 
@@ -235,7 +238,9 @@ Future<DifferentialOutcome> runDifferential(
   }
 
   if (canonical(feedA.batches) != canonical(feedB.batches)) {
-    mismatches.add('change feeds differ:\nA: ${feedA.batches}\nB: ${feedB.batches}');
+    mismatches.add(
+      'change feeds differ:\nA: ${feedA.batches}\nB: ${feedB.batches}',
+    );
   }
   return DifferentialOutcome(mismatches);
 }
@@ -264,7 +269,8 @@ String _describe(_Attempt attempt) => attempt.error != null
 
 /// Dumps every table (user + reserved) as table → sorted {keyHex → value}.
 Future<Map<String, Map<String, Object?>>> _dump(RawEngine engine) async {
-  final tables = await engine.backend.tables()..sort();
+  final tables = await engine.backend.tables()
+    ..sort();
   final result = <String, Map<String, Object?>>{};
   for (final table in tables) {
     final snapshot = await engine.backend.snapshot();
@@ -292,10 +298,11 @@ String canonical(Object? value) {
     return 'list[${value.map(canonical).join(',')}]';
   }
   if (value is Map) {
-    final pairs = value.entries
-        .map((e) => '${canonical(e.key)}=${canonical(e.value)}')
-        .toList()
-      ..sort();
+    final pairs =
+        value.entries
+            .map((e) => '${canonical(e.key)}=${canonical(e.value)}')
+            .toList()
+          ..sort();
     return 'map{${pairs.join(',')}}';
   }
   return 'other:$value';

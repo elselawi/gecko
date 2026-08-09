@@ -112,8 +112,10 @@ Future<void> main(List<String> args) async {
     baselineFile.writeAsStringSync(
       '${const JsonEncoder.withIndent('  ').convert(out)}\n',
     );
-    stdout.writeln('PERF GATE: baseline updated at $baselinePath '
-        '(${merged.length} workloads).');
+    stdout.writeln(
+      'PERF GATE: baseline updated at $baselinePath '
+      '(${merged.length} workloads).',
+    );
     return;
   }
 
@@ -130,7 +132,8 @@ Future<void> main(List<String> args) async {
       jsonDecode(baselineFile.readAsStringSync()) as Map<String, Object?>;
   final baseRows = <String, double>{
     for (final r in (baseline['results'] as List))
-      '${(r as Map)['backend']}|${r['workload']}': (r['msPerOp'] as num).toDouble(),
+      '${(r as Map)['backend']}|${r['workload']}': (r['msPerOp'] as num)
+          .toDouble(),
   };
 
   final (failed, report) = compare(results, baseRows, tolerance);
@@ -174,8 +177,10 @@ List<PerfRow> parseResults(String jsonText) {
 ) {
   var failed = false;
   final report = StringBuffer();
-  report.writeln('PERF GATE — comparing (tolerance '
-      '${(tolerance * 100).toStringAsFixed(0)}%):');
+  report.writeln(
+    'PERF GATE — comparing (tolerance '
+    '${(tolerance * 100).toStringAsFixed(0)}%):',
+  );
   report.writeln(
     '${'workload'.padRight(28)} ${'baseline ms'.padLeft(12)} '
     '${'now ms'.padLeft(12)} ${'delta'.padLeft(10)}  verdict',

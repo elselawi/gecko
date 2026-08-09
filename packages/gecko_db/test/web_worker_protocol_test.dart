@@ -28,7 +28,9 @@ void main() {
         null,
         42,
         true,
-        <Object?>[<int>[4, 5]],
+        <Object?>[
+          <int>[4, 5],
+        ],
       ];
       final roundTrip = decodeValue(encodeValue(original));
       expect(roundTrip, isA<List<Object?>>());
@@ -65,7 +67,9 @@ void main() {
         'cmd': 'request',
         'id': 7,
         'op': 'applyBatch',
-        'args': <Object?>[encodeValue(<int>[9, 8, 7])],
+        'args': <Object?>[
+          encodeValue(<int>[9, 8, 7]),
+        ],
       };
       final jsonString = encodeRequest(request);
       final decoded = decodeMessage(jsonString);

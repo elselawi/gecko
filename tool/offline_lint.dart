@@ -1,4 +1,5 @@
 #!/usr/bin/env dart
+
 // Phase 13 — offline / determinism lint gate.
 //
 // Scans every test source in the repo and forbids two classes of flake:
@@ -39,11 +40,7 @@ Future<void> main(List<String> args) async {
 
   // Test sources: packages/*/test, tool/**/*_test.dart, examples (they run in
   // CI as doc-tests), and benchmark/** (runs in CI as a sanity gate).
-  final dirs = <String>[
-    'packages/gecko_db/test',
-    'tool',
-    'examples',
-  ];
+  final dirs = <String>['packages/gecko_db/test', 'tool', 'examples'];
   for (final dir in dirs) {
     final abs = p.join(root, dir);
     if (!Directory(abs).existsSync()) continue;
@@ -53,8 +50,10 @@ Future<void> main(List<String> args) async {
   }
 
   if (findings.isEmpty) {
-    stdout.writeln('OFFLINE LINT PASSED: no network or real-clock usage in '
-        'test sources.');
+    stdout.writeln(
+      'OFFLINE LINT PASSED: no network or real-clock usage in '
+      'test sources.',
+    );
     return;
   }
   stdout.writeln('OFFLINE LINT FAILED — ${findings.length} finding(s):');
@@ -86,26 +85,27 @@ Future<void> _scanFile(File file, List<_Finding> findings) async {
   final lines = await file.readAsLines();
   for (var i = 0; i < lines.length; i++) {
     final line = lines[i].trim();
-    if (line.startsWith('//') || line.startsWith('///') || line.startsWith('*')) {
+    if (line.startsWith('//') ||
+        line.startsWith('///') ||
+        line.startsWith('*')) {
       continue;
     }
     if (_networkPattern.hasMatch(line)) {
       // Skip the tool's own source when it's scanned under tool/.
       if (file.path.endsWith('offline_lint.dart')) continue;
-      findings.add(_Finding(
-        file.path,
-        i + 1,
-        'network',
-        'test reaches for the network',
-      ));
+      findings.add(
+        _Finding(file.path, i + 1, 'network', 'test reaches for the network'),
+      );
     }
     if (_clockPattern.hasMatch(line)) {
-      findings.add(_Finding(
-        file.path,
-        i + 1,
-        'real-clock',
-        'test uses the real wall clock',
-      ));
+      findings.add(
+        _Finding(
+          file.path,
+          i + 1,
+          'real-clock',
+          'test uses the real wall clock',
+        ),
+      );
     }
   }
 }

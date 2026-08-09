@@ -559,7 +559,11 @@ Future<void> _nativeWorkerMain(List<Object?> args) async {
         final operation = raw[2] as String;
         final arguments = List<Object?>.from(raw[3] as List);
         try {
-          final result = await dispatchNativeWorker(worker, operation, arguments);
+          final result = await dispatchNativeWorker(
+            worker,
+            operation,
+            arguments,
+          );
           parent.send(<Object?>['response', id, true, result]);
           if (operation == 'close') {
             commands.close();

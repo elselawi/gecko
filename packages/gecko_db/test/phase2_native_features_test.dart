@@ -59,110 +59,118 @@ void main() {
     await tempDir.delete(recursive: true);
   });
 
-  test('transaction scans, staged overlay, and in-txn index definitions',
-      () async {
-    await db.writeTxn((txn) async {
-      final c = txn.collection<Map<String, Object?>>(
-        'txn',
-        toRow: (m) => m,
-        fromRow: (m) => Map<String, Object?>.from(m as Map),
-        id: (m) => m['id'],
-        indexFields: ['group'],
-      );
-      await c.put({'id': 'a', 'group': 'g1'});
-      await c.put({'id': 'b', 'group': 'g2'});
-      // getAll inside the transaction goes through the staged-overlay scan.
-      final all = await c.getAll();
-      expect(all.map((r) => r['id']).toList()..sort(), ['a', 'b']);
-      // Overlay delete hides a staged row from the scan.
-      await c.delete('a');
-      final after = await c.getAll();
-      expect(after.map((r) => r['id']).toList(), ['b']);
-    });
-    // Committed state reflects the overlay's final view.
-    final committed = await _collection(db, 'txn').getAll();
-    expect(committed.map((r) => r['id']).toList(), ['b']);
-  });
+  test(
+    'transaction scans, staged overlay, and in-txn index definitions',
+    () async {
+      await db.writeTxn((txn) async {
+        final c = txn.collection<Map<String, Object?>>(
+          'txn',
+          toRow: (m) => m,
+          fromRow: (m) => Map<String, Object?>.from(m as Map),
+          id: (m) => m['id'],
+          indexFields: ['group'],
+        );
+        await c.put({'id': 'a', 'group': 'g1'});
+        await c.put({'id': 'b', 'group': 'g2'});
+        // getAll inside the transaction goes through the staged-overlay scan.
+        final all = await c.getAll();
+        expect(all.map((r) => r['id']).toList()..sort(), ['a', 'b']);
+        // Overlay delete hides a staged row from the scan.
+        await c.delete('a');
+        final after = await c.getAll();
+        expect(after.map((r) => r['id']).toList(), ['b']);
+      });
+      // Committed state reflects the overlay's final view.
+      final committed = await _collection(db, 'txn').getAll();
+      expect(committed.map((r) => r['id']).toList(), ['b']);
+    },
+  );
 
-  test('remote application, remote deletion, and dedupe on the native file',
-      () async {
-    final items = _collection(db, 'sync');
-    await items.put({'id': 's1', 'v': 1});
-    await db.sync.markSynced(['s1']);
+  test(
+    'remote application, remote deletion, and dedupe on the native file',
+    () async {
+      final items = _collection(db, 'sync');
+      await items.put({'id': 's1', 'v': 1});
+      await db.sync.markSynced(['s1']);
 
-    // Applying a remote record with an idempotency key registers the dedupe.
-    final applied = await db.sync.applyRemoteTransactional([
-      ChangeRecord(
-        localMutationId: 42,
-        recordId: 'remote',
-        timestamp: DateTime.fromMillisecondsSinceEpoch(1700000000000),
-        collection: 'sync',
-        kind: ChangeKind.put,
-        value: {'id': 'remote', 'v': 9},
-        origin: ChangeOrigin.remoteSync,
-        idempotencyKey: 'k-remote',
-      ),
-    ]);
-    expect(applied, ['remote']);
-    expect(await db.sync.isDuplicate('k-remote'), isTrue);
-    expect((await items.get('remote'))!['v'], 9);
-
-    // Remote deletion removes the record and its sync state.
-    await db.sync.applyRemoteDeletion(const [RecordRef('sync', 'remote')]);
-    expect(await items.get('remote'), isNull);
-    // Deleting by raw id resolves the collection from sync state.
-    await db.sync.applyRemoteDeletion(['s1']);
-    expect(await items.get('s1'), isNull);
-  });
-
-  test('conflict resolution kinds and deferred review on the native file',
-      () async {
-    final items = _collection(db, 'conflict');
-    await items.put({'id': 'one', 'value': 'local'});
-
-    // Default strategy (last-write-wins) resolves with useRemote.
-    final resolved = await db.conflicts.resolve(
-      ConflictRequest(
-        record: const RecordRef('conflict', 'one'),
-        remote: const ConflictVersion(value: {'id': 'one', 'value': 'remote'}),
-      ),
-    );
-    expect(resolved.resolution.kind, ResolutionKind.useRemote);
-    expect((await items.get('one'))!['value'], 'remote');
-
-    // Deferred manual review preserves both versions.
-    await items.put({'id': 'two', 'value': 'local'});
-    final deferred = await db.conflicts.resolve(
-      ConflictRequest(
-        record: const RecordRef('conflict', 'two'),
-        remote: const ConflictVersion(
-          value: {'id': 'two', 'value': 'remote'},
-          sequence: 7,
+      // Applying a remote record with an idempotency key registers the dedupe.
+      final applied = await db.sync.applyRemoteTransactional([
+        ChangeRecord(
+          localMutationId: 42,
+          recordId: 'remote',
+          timestamp: DateTime.fromMillisecondsSinceEpoch(1700000000000),
+          collection: 'sync',
+          kind: ChangeKind.put,
+          value: {'id': 'remote', 'v': 9},
+          origin: ChangeOrigin.remoteSync,
+          idempotencyKey: 'k-remote',
         ),
-      ),
-      strategy: ConflictStrategy.manualReview,
-    );
-    final pending = deferred.preservedConflict!;
-    final preserved = await db.conflicts.read(pending.conflictId);
-    expect(preserved!.remote.value, {'id': 'two', 'value': 'remote'});
+      ]);
+      expect(applied, ['remote']);
+      expect(await db.sync.isDuplicate('k-remote'), isTrue);
+      expect((await items.get('remote'))!['v'], 9);
 
-    // Resolve the preserved conflict with a merged value.
-    await db.conflicts.resolvePreserved(
-      pending.conflictId,
-      Resolution.mergedValue({'id': 'two', 'value': 'merged'}),
-    );
-    expect((await items.get('two'))!['value'], 'merged');
-    expect(await db.conflicts.read(pending.conflictId), isNull);
+      // Remote deletion removes the record and its sync state.
+      await db.sync.applyRemoteDeletion(const [RecordRef('sync', 'remote')]);
+      expect(await items.get('remote'), isNull);
+      // Deleting by raw id resolves the collection from sync state.
+      await db.sync.applyRemoteDeletion(['s1']);
+      expect(await items.get('s1'), isNull);
+    },
+  );
 
-    // Resolving an already-resolved conflict is a typed error.
-    await expectLater(
-      db.conflicts.resolvePreserved(
+  test(
+    'conflict resolution kinds and deferred review on the native file',
+    () async {
+      final items = _collection(db, 'conflict');
+      await items.put({'id': 'one', 'value': 'local'});
+
+      // Default strategy (last-write-wins) resolves with useRemote.
+      final resolved = await db.conflicts.resolve(
+        ConflictRequest(
+          record: const RecordRef('conflict', 'one'),
+          remote: const ConflictVersion(
+            value: {'id': 'one', 'value': 'remote'},
+          ),
+        ),
+      );
+      expect(resolved.resolution.kind, ResolutionKind.useRemote);
+      expect((await items.get('one'))!['value'], 'remote');
+
+      // Deferred manual review preserves both versions.
+      await items.put({'id': 'two', 'value': 'local'});
+      final deferred = await db.conflicts.resolve(
+        ConflictRequest(
+          record: const RecordRef('conflict', 'two'),
+          remote: const ConflictVersion(
+            value: {'id': 'two', 'value': 'remote'},
+            sequence: 7,
+          ),
+        ),
+        strategy: ConflictStrategy.manualReview,
+      );
+      final pending = deferred.preservedConflict!;
+      final preserved = await db.conflicts.read(pending.conflictId);
+      expect(preserved!.remote.value, {'id': 'two', 'value': 'remote'});
+
+      // Resolve the preserved conflict with a merged value.
+      await db.conflicts.resolvePreserved(
         pending.conflictId,
-        const Resolution.delete(),
-      ),
-      throwsA(isA<GeckoError>()),
-    );
-  });
+        Resolution.mergedValue({'id': 'two', 'value': 'merged'}),
+      );
+      expect((await items.get('two'))!['value'], 'merged');
+      expect(await db.conflicts.read(pending.conflictId), isNull);
+
+      // Resolving an already-resolved conflict is a typed error.
+      await expectLater(
+        db.conflicts.resolvePreserved(
+          pending.conflictId,
+          const Resolution.delete(),
+        ),
+        throwsA(isA<GeckoError>()),
+      );
+    },
+  );
 
   test('attachments: lifecycle, filters, and typed failure paths', () async {
     final parents = _collection(db, 'parents');
@@ -178,14 +186,20 @@ void main() {
     expect(await db.attachments.get(meta.id), isNotNull);
 
     // Upload state transitions.
-    await db.attachments.setUploadState(meta.id, AttachmentUploadState.uploading);
+    await db.attachments.setUploadState(
+      meta.id,
+      AttachmentUploadState.uploading,
+    );
     await db.attachments.setUploadState(
       meta.id,
       AttachmentUploadState.failed,
       failedOperationDetail: 'network',
     );
     expect((await db.attachments.get(meta.id))!.retryCount, 1);
-    await db.attachments.setUploadState(meta.id, AttachmentUploadState.completed);
+    await db.attachments.setUploadState(
+      meta.id,
+      AttachmentUploadState.completed,
+    );
 
     // Query filters: parent + upload state.
     final filtered = await db.attachments.query(
@@ -225,21 +239,23 @@ void main() {
     );
   });
 
-  test('schema stamping and diagnostics lifecycle on the native file',
-      () async {
-    expect(await db.schema.readVersion(), 0);
-    await db.schema.stamp(2);
-    expect(await db.schema.readVersion(), 2);
+  test(
+    'schema stamping and diagnostics lifecycle on the native file',
+    () async {
+      expect(await db.schema.readVersion(), 0);
+      await db.schema.stamp(2);
+      expect(await db.schema.readVersion(), 2);
 
-    db.diagnostics.enable();
-    await _collection(db, 'diag').put({'id': 'x'});
-    final snapshot = db.diagnostics.snapshot();
-    expect(snapshot.totalWrites, greaterThan(0));
-    db.diagnostics.reset();
-    expect(db.diagnostics.snapshot().totalWrites, 0);
-    db.diagnostics.disable();
-    expect(db.diagnostics.enabled, isFalse);
-  });
+      db.diagnostics.enable();
+      await _collection(db, 'diag').put({'id': 'x'});
+      final snapshot = db.diagnostics.snapshot();
+      expect(snapshot.totalWrites, greaterThan(0));
+      db.diagnostics.reset();
+      expect(db.diagnostics.snapshot().totalWrites, 0);
+      db.diagnostics.disable();
+      expect(db.diagnostics.enabled, isFalse);
+    },
+  );
 
   test('raw engine diagnostics count writes and write failures', () async {
     final engine = RawEngine(_ThrowingBatchBackend());
@@ -252,10 +268,7 @@ void main() {
       engine.rawDelete('t', ByteKey([1])),
       throwsA(isA<GeckoError>()),
     );
-    await expectLater(
-      engine.rawClear('t'),
-      throwsA(isA<GeckoError>()),
-    );
+    await expectLater(engine.rawClear('t'), throwsA(isA<GeckoError>()));
     expect(engine.totalWrites, greaterThanOrEqualTo(3));
     expect(engine.failedWrites, 3);
     engine.resetDiagnosticsCounters();
