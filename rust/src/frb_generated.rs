@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1296383100;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1037544603;
 
 // Section: executor
 
@@ -574,6 +574,68 @@ fn wire__crate__api__NativeWorker_open_encrypted_impl(
         },
     )
 }
+fn wire__crate__api__NativeWorker_query_filtered_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "NativeWorker_query_filtered",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>,
+            >>::sse_decode(&mut deserializer);
+            let api_table = <String>::sse_decode(&mut deserializer);
+            let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::NativeWorker::query_filtered(
+                            &*api_that_guard,
+                            api_table,
+                            api_predicate_bytes,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__NativeWorker_query_indexed_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -803,6 +865,70 @@ fn wire__crate__api__NativeWorker_snapshot_get_impl(
                             api_snapshot,
                             api_table,
                             api_key,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "NativeWorker_snapshot_query_filtered",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>,
+            >>::sse_decode(&mut deserializer);
+            let api_snapshot = <u64>::sse_decode(&mut deserializer);
+            let api_table = <String>::sse_decode(&mut deserializer);
+            let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::NativeWorker::snapshot_query_filtered(
+                            &*api_that_guard,
+                            api_snapshot,
+                            api_table,
+                            api_predicate_bytes,
                         )
                         .await?;
                         Ok(output_ok)
@@ -1233,29 +1359,36 @@ fn pde_ffi_dispatcher_primary_impl(
         8 => wire__crate__api__NativeWorker_get_impl(port, ptr, rust_vec_len, data_len),
         9 => wire__crate__api__NativeWorker_open_impl(port, ptr, rust_vec_len, data_len),
         10 => wire__crate__api__NativeWorker_open_encrypted_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__NativeWorker_query_indexed_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__NativeWorker_range_scan_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__NativeWorker_rekey_encrypted_file_impl(
+        11 => wire__crate__api__NativeWorker_query_filtered_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__NativeWorker_query_indexed_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__NativeWorker_range_scan_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__NativeWorker_rekey_encrypted_file_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        14 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
+        15 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        16 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
+        17 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        17 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        19 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

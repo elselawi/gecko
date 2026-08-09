@@ -363,6 +363,44 @@ class NativeWorkerClient {
     ];
   }
 
+  /// Phase 2 step 2: full-scan with a pushed predicate (no snapshot). Scans
+  /// every row in [table], evaluates [predicateBytes] against each row's
+  /// encoded bytes IN RUST (decoding only the referenced fields), and returns
+  /// only the matching `(recordId, row)` pairs in one boundary crossing.
+  /// Non-matching rows are never decoded in Dart. [predicateBytes] is the
+  /// serialized `Predicate` payload (see `predicate_codec.dart`).
+  Future<List<(List<int>, List<int>)>> queryFiltered({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('queryFiltered', <Object?>[
+      table,
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  /// Snapshot-bound variant of [queryFiltered]: the scan + predicate
+  /// evaluation observe one consistent committed state.
+  Future<List<(List<int>, List<int>)>> snapshotQueryFiltered({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('snapshotQueryFiltered', <Object?>[
+      snapshot,
+      table,
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   /// Releases [snapshot] in the worker (idempotent).
   Future<void> dropSnapshot(int snapshot) async {
     await _request('dropSnapshot', <Object?>[snapshot]);

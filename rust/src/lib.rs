@@ -13,5 +13,7 @@ pub mod format_header;
 mod frb_generated;
 #[cfg(target_arch = "wasm32")]
 pub mod opfs;
+pub mod predicate;
+pub mod value_codec;
 pub mod wire;
 pub mod worker;

@@ -7,6 +7,26 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Phase 2 step 2 — Native predicate push for unindexed full scans**
+  (ADR-0017): unindexed queries on the native backend now push the predicate
+  to Rust, evaluating it against each row's bytes IN Rust (decoding only the
+  referenced fields) and returning only matches in one FRB hop. Non-matching
+  rows are never decoded in Dart. Full scan 100k rows dropped 482 ms → 39 ms
+  (**12.4×**, meeting the `≥ 10×` target); `backendRead` dropped 336 ms →
+  38 ms.
+  - Rust: `value_codec.rs` (a byte-for-byte port of `DefaultWireCodec`:
+    `RowValue` enum + `decode_value` + `find_field` field-skip + `compare`);
+    `predicate.rs` (wire format + `Predicate` evaluator over `RowValue`);
+    `RedbWorker::query_filtered` / `snapshot_query_filtered`.
+  - Dart: `encodePredicate` (`predicate_codec.dart`) serializes a `FilterGroup`;
+    `NativeRawBackend.queryFiltered` / `NativeRawSnapshot.queryFiltered`;
+    `QueryImpl._scanWith` routes any unindexed query on a `NativeRawSnapshot`
+    through the native path.
+  - `IndexPlan.nativeFilteredScan` attributes the new plan (distinct from
+    `fullScan` / `secondaryIndex`).
+  - 4 new parity/perf tests in `phase5_index_ws3_test.dart` + 7 unit tests for
+    `encodePredicate` / `value_codec` / `predicate` (lexicographic inclusion,
+    range bounds, prefix, AND composition, multi-byte varint, find_field skip).
 - **Phase 2 step 1 — Native query fast path over the durable index**
   (ADR-0016): indexed equality queries on the native backend now traverse the
   durable `__gecko_index` table and join back to the rows in ONE FRB hop,

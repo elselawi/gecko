@@ -2071,9 +2071,17 @@ the durable index instead of a Dart copy.
    `snapshot_query_indexed`; `NativeWorker.queryIndexed`; Dart dispatch +
    `NativeRawBackend.queryIndexed` / `NativeRawSnapshot.queryIndexed`). Range
    and prefix variants are follow-on (see step 5).
-2. ⏳ For filters with no usable index, push the predicate to Rust and return
-   only matching rows (no Dart decode of non-matches). Requires a Rust port
-   of the `DefaultWireCodec` value codec + predicate evaluator.
+2. ✅ For filters with no usable index, push the predicate to Rust and return
+   only matching rows (no Dart decode of non-matches). A Rust port of the
+   `DefaultWireCodec` value codec (`rust/src/value_codec.rs`) + a predicate
+   wire format + evaluator (`rust/src/predicate.rs`) let `RedbWorker::
+   query_filtered` / `snapshot_query_filtered` scan every row, evaluate the
+   AND-composed predicate against each row's bytes IN RUST (decoding only the
+   referenced fields via `find_field`), and return only matches in one FRB
+   hop. Dart serializes the `FilterGroup` via `encodePredicate`
+   (`predicate_codec.dart`); `QueryImpl._scanWith` routes any unindexed query
+   on a `NativeRawSnapshot` through the native path
+   (`IndexPlan.nativeFilteredScan`).
 3. ✅ The in-memory Dart index is still rebuilt/validated at open; the Rust
    traversal is the default for index-served equality queries on the native
    backend (the in-memory backend keeps the Dart per-id path). Multi-eq,
@@ -2081,16 +2089,25 @@ the durable index instead of a Dart copy.
    bound helpers land — results agree across both paths.
 4. Targets: indexed query on 1,000 rows < 1 ms; highly selective indexed
    query on 100k rows < 5 ms; full-scan per-row cost reduced ≥ 10×.
-   **Status (Windows dev machine, ADR-0016):** indexed eq on 100k rows dropped
-   from **38 ms → 12 ms (3.2×)** with `backendRead` dropping 33.5 ms → 4.6 ms
-   (7.4× — the N+1 is gone). Indexed eq on 1k rows ~1.7 ms (close to the
-   1 ms target; floor is the FRB boundary crossing). Full-scan per-row cost is
-   unchanged (step 2 not yet done).
+   **Status (Windows dev machine, ADR-0016 + ADR-0017):**
+   - Indexed eq on 100k rows: **38 ms → 12 ms (3.2×)** (step 1).
+   - **Full scan 100k rows: 482 ms → 39 ms (12.4×) ✅** — the `≥ 10×`
+     per-row target is MET (step 2). `backendRead` dropped 336 ms → 38 ms.
+   - Full scan 1k rows: 20 ms → 7.8 ms (2.6×).
+   - Indexed eq on 1k rows ~1.7 ms (close to the 1 ms target; floor is the
+     FRB boundary crossing).
+   - Highly-selective indexed eq on 100k rows: met for ~1 match; ~12 ms at
+     1% selectivity (1000 matched).
 
 **Done when:** targets are met on the reference machine, indexed and full-scan
 plans still agree on all query tests, and the regression gate is green.
-*Step 1 (indexed eq fast path) is DONE and verified (ADR-0016): parity tests
-pass, 3.2× speedup, coverage 95% line / 100% branch. Steps 2–5 remain.*
+*Step 1 (indexed eq fast path, ADR-0016) and step 2 (predicate push, ADR-0017)
+are DONE and verified: parity tests pass across native + in-memory backends,
+full-scan per-row cost reduced 12.4×, coverage 95% line / 100% branch. The
+`≥ 10×` full-scan target is MET. Steps 5–6 (range/prefix/multi-eq indexed
+fast path) remain as a smaller optimization on top of the already-pushed
+predicate (range/prefix already go through `query_filtered`; the indexed
+traversal would skip the full scan for covered range/prefix filters).*
 
 ### 3.1 Phase 2 follow-ons (after step 1)
 

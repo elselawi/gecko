@@ -61,6 +61,16 @@ abstract class NativeWorker implements RustOpaqueInterface {
     keyGen: keyGen,
   );
 
+  /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
+  /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
+  /// (decoding only the referenced fields), and returns only the matching
+  /// `(recordId, row)` pairs in one hop. Non-matching rows are never decoded
+  /// in Dart. [predicate_bytes] is the Dart-serialized `Predicate` payload.
+  Future<List<(Uint8List, Uint8List)>> queryFiltered({
+    required String table,
+    required List<int> predicateBytes,
+  });
+
   /// Phase 2 native query fast path: range-scans the durable index table
   /// [index_table] for keys in `[start..=end]`, joins each entry's value
   /// (the user-table row key) back to its row in [table], and returns the
@@ -100,6 +110,14 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt snapshot,
     required String table,
     required List<int> key,
+  });
+
+  /// Snapshot-bound variant of [Self::query_filtered]: the scan + predicate
+  /// evaluation observe one consistent committed state.
+  Future<List<(Uint8List, Uint8List)>> snapshotQueryFiltered({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
   });
 
   /// Snapshot-bound variant of [Self::query_indexed]: reads through an

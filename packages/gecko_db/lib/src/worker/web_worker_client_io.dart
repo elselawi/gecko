@@ -63,6 +63,15 @@ class WebWorkerClient {
     required List<int> start,
     required List<int> end,
   }) async => _unsupported();
+  Future<List<(List<int>, List<int>)>> queryFiltered({
+    required String table,
+    required List<int> predicateBytes,
+  }) async => _unsupported();
+  Future<List<(List<int>, List<int>)>> snapshotQueryFiltered({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  }) async => _unsupported();
   Future<void> dropSnapshot(int snapshot) async => _unsupported();
   Future<int> commitSequence() async => _unsupported();
   Future<bool> compact() async => _unsupported();

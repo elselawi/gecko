@@ -576,20 +576,27 @@ void main() {
           });
         }
 
-        // Full scan: no usable index, decode every row, predicate in Dart.
+        // Full scan with a non-indexed filter: on the native backend the
+        // predicate is pushed to Rust (Phase 2 step 2), so only matching rows
+        // cross back to Dart — rowsScanned == rowsMatched == 1. On the
+        // in-memory backend every row is decoded (rowsScanned == 60). This
+        // test runs native, so assert the predicate-push contract.
         await col.where({'n': 7}).findAll();
         final scanRec = db.engine.recentSlowQueries.last;
         final scanT = scanRec.timings!;
         expect(scanRec.indexed, isFalse);
-        expect(scanT.rowsScanned, 60, reason: 'every row is decoded & tested');
+        expect(scanRec.table, 'items');
+        // Predicate push: only the 1 match is scanned/decoded in Dart.
+        expect(
+          scanT.rowsScanned,
+          1,
+          reason: 'native predicate push returns only matches',
+        );
         expect(scanT.rowsMatched, 1);
-        // The 'group' index exists but does not cover 'n', so the engine
-        // still consults the index object (returns no candidates) before
-        // falling back to a full scan. indexLookup may be > 0; what makes
-        // this a full scan is rowsScanned == total, not indexLookup == 0.
         expect(scanT.decode, greaterThan(0));
         expect(scanT.mapCopy, greaterThan(0));
-        expect(scanT.predicate, greaterThan(0));
+        // predicate was evaluated in Rust; the Dart-side predicate timer is
+        // near-zero (no re-test). model still runs for the matched row.
         expect(scanT.model, greaterThan(0));
         expect(scanT.sort, 0, reason: 'unsorted query');
         expect(

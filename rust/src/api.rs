@@ -182,6 +182,34 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
+    /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
+    /// (decoding only the referenced fields), and returns only the matching
+    /// `(recordId, row)` pairs in one hop. Non-matching rows are never decoded
+    /// in Dart. [predicate_bytes] is the Dart-serialized `Predicate` payload.
+    pub async fn query_filtered(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_filtered(&table, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered]: the scan + predicate
+    /// evaluation observe one consistent committed state.
+    pub async fn snapshot_query_filtered(
+        &self,
+        snapshot: u64,
+        table: String,
+        predicate_bytes: Vec<u8>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_filtered(snapshot, &table, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
     pub async fn drop_snapshot(&mut self, snapshot: u64) {
         self.worker.drop_snapshot(snapshot);
     }

@@ -7,7 +7,15 @@ import 'dart:async';
 enum SortOrder { ascending, descending }
 
 /// Which plan a query execution used (index diagnostics).
-enum IndexPlan { fullScan, secondaryIndex }
+///
+/// - [fullScan]: every row decoded in Dart and predicated in Dart.
+/// - [secondaryIndex]: the durable in-memory index supplied candidate ids,
+///   then each was point-read (or, on the native backend, joined in one FRB
+///   hop via `queryIndexed` — Phase 2 step 1).
+/// - [nativeFilteredScan]: the predicate was pushed to Rust and evaluated
+///   against each row's bytes there; only matches crossed back to Dart
+///   (Phase 2 step 2, native backend only).
+enum IndexPlan { fullScan, secondaryIndex, nativeFilteredScan }
 
 /// A single sort specification (field + direction).
 class SortSpec {

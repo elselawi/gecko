@@ -19,6 +19,7 @@ import '../raw/raw_engine.dart';
 import '../wire/wire_codec.dart';
 import 'durable_index_bounds.dart';
 import 'filter.dart';
+import 'predicate_codec.dart';
 import 'secondary_index.dart';
 import 'sorting.dart';
 
@@ -336,6 +337,54 @@ class QueryImpl<T> implements Query<T> {
       if (t != null) t.stopAccum(_QueryStage.predicate);
       return;
     }
+    lastPlan = IndexPlan.nativeFilteredScan;
+    // Phase 2 step 2: when the snapshot is a NativeRawSnapshot (redb file
+    // backend), push the predicate to Rust. The scan evaluates the predicate
+    // against each row's bytes IN RUST (decoding only the referenced fields)
+    // and returns only matches in one boundary crossing — non-matching rows
+    // are never decoded in Dart (the Phase 1 profile showed `scanAll`
+    // transferring the whole table dominated 70% of a 100k-row full scan).
+    // An empty predicate matches everything (matches Dart's FilterGroup).
+    if (snap is NativeRawSnapshot) {
+      final predicateBytes = encodePredicate(_filters, codec: _codec);
+      if (t != null) t.start(_QueryStage.backendRead);
+      final entries = await snap.queryFiltered(
+        table: _table,
+        predicateBytes: predicateBytes,
+      );
+      if (t != null) t.stop(_QueryStage.backendRead);
+      final decoded = <_Decoded>[];
+      for (final entry in entries) {
+        if (t != null) {
+          t.scanned++;
+          t.start(_QueryStage.decode);
+        }
+        final decodedValue = _codec.decode(entry.value ?? const []);
+        if (t != null) {
+          t.stop(_QueryStage.decode);
+          t.start(_QueryStage.mapCopy);
+        }
+        final row = _mapOf(decodedValue);
+        if (t != null) t.stop(_QueryStage.mapCopy);
+        decoded.add(_Decoded(entry.key, row));
+      }
+      if (_sort.isNotEmpty) {
+        if (t != null) t.start(_QueryStage.sort);
+        decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+        if (t != null) t.stop(_QueryStage.sort);
+      }
+      // The predicate was already evaluated in Rust; re-test in Dart only when
+      // timing is armed (to populate the `predicate` stage for the breakdown).
+      if (t != null) t.start(_QueryStage.predicate);
+      for (final item in decoded) {
+        if (t != null) t.matched++;
+        // Rust already filtered; no Dart re-test needed for correctness.
+        yield item;
+      }
+      if (t != null) t.stopAccum(_QueryStage.predicate);
+      return;
+    }
+    // In-memory backend (or non-native snapshot): the original Dart full scan.
     lastPlan = IndexPlan.fullScan;
     if (t != null) t.start(_QueryStage.backendRead);
     final entries = await snap.scanAll(_table);

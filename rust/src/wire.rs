@@ -63,7 +63,7 @@ impl std::error::Error for WireError {}
 
 type Result<T> = std::result::Result<T, WireError>;
 
-fn push_varint(out: &mut Vec<u8>, mut value: u64) {
+pub fn push_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let mut byte = (value & 0x7f) as u8;
         value >>= 7;

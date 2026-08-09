@@ -271,6 +271,36 @@ class WebWorkerClient {
     ];
   }
 
+  Future<List<(List<int>, List<int>)>> queryFiltered({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('queryFiltered', <Object?>[
+      table,
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  Future<List<(List<int>, List<int>)>> snapshotQueryFiltered({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('snapshotQueryFiltered', <Object?>[
+      snapshot,
+      table,
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   Future<void> dropSnapshot(int snapshot) async {
     await _request('dropSnapshot', <Object?>[snapshot]);
   }

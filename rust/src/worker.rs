@@ -531,6 +531,66 @@ impl RedbWorker {
         Ok(result)
     }
 
+    /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
+    /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
+    /// (decoding only the referenced fields via `find_field`), and returns
+    /// only the matching `(recordId, row)` pairs in ONE hop. Non-matching
+    /// rows are never decoded in Dart — the dominant saving for unindexed
+    /// queries (the Phase 1 profile showed `scanAll` transferring the whole
+    /// table dominated 70% of a 100k-row full scan).
+    ///
+    /// [predicate_bytes] is the Dart-serialized `Predicate` wire payload
+    /// (version-prefixed AND-composed filter list, see `predicate.rs`).
+    pub fn query_filtered(
+        &self,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_filtered_with(&transaction, table, predicate_bytes)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered]: the scan + predicate
+    /// evaluation observe one consistent committed state.
+    pub fn snapshot_query_filtered(
+        &self,
+        snapshot: u64,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_filtered_with(transaction, table, predicate_bytes)
+    }
+
+    fn query_filtered_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let definition = table_definition(table);
+        let table = match transaction.open_table(definition) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut result = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row_bytes = value.value();
+            // Empty predicate matches everything (matches Dart's `FilterGroup`).
+            if predicate.test_bytes(row_bytes) {
+                result.push((key.value().to_vec(), row_bytes.to_vec()));
+            }
+        }
+        Ok(result)
+    }
+
     pub fn commit_sequence(&self) -> u64 {
         self.commit_sequence
     }
@@ -925,5 +985,99 @@ mod tests {
         ));
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(ro_path);
+    }
+
+    #[test]
+    fn query_filtered_returns_only_matching_rows() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::{RowValue, TAG_BOOL, TAG_INT64, TAG_MAP, TAG_STRING};
+
+        // Minimal row map encoder: 0x07 | u32(count) | (key string | value)…
+        fn row(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+            let mut out = vec![TAG_MAP];
+            out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+            for (k, v) in entries {
+                out.push(TAG_STRING);
+                let kb = k.as_bytes();
+                out.extend_from_slice(&(kb.len() as u32).to_be_bytes());
+                out.extend_from_slice(kb);
+                out.extend_from_slice(v);
+            }
+            out
+        }
+        fn int64(n: i64) -> Vec<u8> {
+            let mut out = vec![TAG_INT64];
+            out.extend_from_slice(&n.to_be_bytes());
+            out
+        }
+        fn string(s: &str) -> Vec<u8> {
+            let mut out = vec![TAG_STRING];
+            let b = s.as_bytes();
+            out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+            out.extend_from_slice(b);
+            out
+        }
+
+        let path = temp_path("qf");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // Seed 4 rows: g0/g0/g1/g1, ages 10/20/30/40.
+        let rows = [
+            (
+                b"k0".to_vec(),
+                row(&[("g", string("g0")), ("age", int64(10))]),
+            ),
+            (
+                b"k1".to_vec(),
+                row(&[("g", string("g0")), ("age", int64(20))]),
+            ),
+            (
+                b"k2".to_vec(),
+                row(&[("g", string("g1")), ("age", int64(30))]),
+            ),
+            (
+                b"k3".to_vec(),
+                row(&[("g", string("g1")), ("age", int64(40))]),
+            ),
+        ];
+        let ops: Vec<Op> = rows
+            .iter()
+            .map(|(k, v)| Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(k.clone()),
+                value: Some(v.clone()),
+                start: None,
+                end: None,
+            })
+            .collect();
+        worker.apply_batch(&ops).unwrap();
+
+        // Predicate: g == "g0" AND age >= 15 → only k1 (g0, age 20).
+        let pred_bytes = predicate::encode_predicate(&[
+            Filter::Equals {
+                field: "g".into(),
+                value: RowValue::String("g0".into()),
+            },
+            Filter::Range {
+                field: "age".into(),
+                min: Some(RowValue::Int64(15)),
+                max: None,
+            },
+        ]);
+        let matched = worker.query_filtered("items", &pred_bytes).unwrap();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].0, b"k1");
+
+        // Empty predicate matches all 4.
+        let all = worker
+            .query_filtered("items", &predicate::encode_predicate(&[]))
+            .unwrap();
+        assert_eq!(all.len(), 4);
+
+        // A missing table is an empty result, never an error.
+        let missing = worker.query_filtered("nope", &pred_bytes).unwrap();
+        assert!(missing.is_empty());
+        let _ = (TAG_BOOL,); // suppress unused import noise
+        let _ = std::fs::remove_file(path);
     }
 }

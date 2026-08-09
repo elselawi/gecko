@@ -201,6 +201,26 @@ class NativeRawBackend implements RawBackend {
     }
   }
 
+  /// Phase 2 step 2: full-scan with a pushed predicate (no snapshot). Scans
+  /// every row in [table], evaluates [predicateBytes] against each row's
+  /// encoded bytes IN RUST (decoding only the referenced fields), and returns
+  /// only the matching `(recordId → row)` pairs in one boundary crossing.
+  /// Non-matching rows are never decoded in Dart.
+  Future<List<RawEntry>> queryFiltered({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    try {
+      final pairs = await _worker.queryFiltered(
+        table: table,
+        predicateBytes: predicateBytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
   @override
   Future<bool> tableExists(String table) async =>
       (await tables()).contains(table);
@@ -377,6 +397,25 @@ class NativeRawSnapshot implements RawSnapshot {
         indexTable: indexTable,
         start: start.bytes,
         end: end.bytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// Phase 2 step 2, snapshot-bound: the full scan + predicate evaluation
+  /// observe the snapshot's consistent committed state. See
+  /// [NativeRawBackend.queryFiltered] for the semantics.
+  Future<List<RawEntry>> queryFiltered({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQueryFiltered(
+        snapshot: _snapshotId,
+        table: table,
+        predicateBytes: predicateBytes,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
