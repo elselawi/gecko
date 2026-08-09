@@ -233,6 +233,44 @@ class WebWorkerClient {
     ];
   }
 
+  Future<List<(List<int>, List<int>)>> queryIndexed({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  }) async {
+    final result = await _request('queryIndexed', <Object?>[
+      table,
+      indexTable,
+      start,
+      end,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  Future<List<(List<int>, List<int>)>> snapshotQueryIndexed({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  }) async {
+    final result = await _request('snapshotQueryIndexed', <Object?>[
+      snapshot,
+      table,
+      indexTable,
+      start,
+      end,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   Future<void> dropSnapshot(int snapshot) async {
     await _request('dropSnapshot', <Object?>[snapshot]);
   }

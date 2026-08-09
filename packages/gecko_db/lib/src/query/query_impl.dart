@@ -12,10 +12,12 @@ import '../api/change.dart';
 import '../api/maintenance.dart';
 import '../api/query.dart';
 import '../backend/byte_key.dart';
+import '../backend/native_raw_backend.dart' show NativeRawSnapshot;
 import '../backend/raw_backend.dart';
 import '../errors/errors.dart';
 import '../raw/raw_engine.dart';
 import '../wire/wire_codec.dart';
+import 'durable_index_bounds.dart';
 import 'filter.dart';
 import 'secondary_index.dart';
 import 'sorting.dart';
@@ -185,6 +187,28 @@ class QueryImpl<T> implements Query<T> {
     }
   }
 
+  /// When [idx] is non-null and the query has exactly one equality filter
+  /// covered by the index, returns `(field, value)` for a durable-index
+  /// range scan. Returns null for multi-eq, range, prefix, or uncovered
+  /// queries (those stay on the Dart per-id path until the corresponding
+  /// bound helpers land).
+  (String, Object?)? _nativeEqProbe(SecondaryIndex? idx) {
+    if (idx == null) return null;
+    final eqs = <String, Object?>{
+      for (final f in _filters)
+        if (f.isIndexUsable) f.field: f.value,
+    };
+    if (eqs.length != 1 || !idx.coversEq(eqs)) return null;
+    // Range/prefix filters mixed with the eq would also need primitive
+    // intersection in Rust; defer those to the Dart path.
+    final hasRangeOrPrefix = _filters.any(
+      (f) => f.isRangeFilter || f.isPrefixFilter,
+    );
+    if (hasRangeOrPrefix) return null;
+    final entry = eqs.entries.single;
+    return (entry.key, entry.value);
+  }
+
   /// Computes the candidate-id set from any index-usable filters (equality,
   /// range, prefix), intersecting all of them. Returns null when no filter is
   /// index-served (full scan required).
@@ -231,6 +255,53 @@ class QueryImpl<T> implements Query<T> {
     }
     if (candidateIds != null) {
       lastPlan = IndexPlan.secondaryIndex;
+      // Phase 2 native fast path: when the snapshot is a NativeRawSnapshot
+      // (redb file backend) and the query is a single equality filter
+      // covered by the index, traverse the durable `__gecko_index` table in
+      // one FRB hop and join back to the rows — eliminating the Dart-side
+      // N+1 point reads (88% of indexed eq per the Phase 1 profile).
+      // Multi-eq/range/prefix stay on the Dart per-id path for now.
+      final nativeEq = _nativeEqProbe(idx);
+      if (nativeEq != null && snap is NativeRawSnapshot) {
+        final (field, value) = nativeEq;
+        final (start, end) = eqBounds(_table, field, value, codec: _codec);
+        if (t != null) t.start(_QueryStage.backendRead);
+        final entries = await snap.queryIndexed(
+          table: _table,
+          start: ByteKey(start),
+          end: ByteKey(end),
+        );
+        if (t != null) t.stop(_QueryStage.backendRead);
+        final decoded = <_Decoded>[];
+        for (final entry in entries) {
+          if (t != null) {
+            t.scanned++;
+            t.start(_QueryStage.decode);
+          }
+          final decodedValue = _codec.decode(entry.value ?? const []);
+          if (t != null) {
+            t.stop(_QueryStage.decode);
+            t.start(_QueryStage.mapCopy);
+          }
+          final row = _mapOf(decodedValue);
+          if (t != null) t.stop(_QueryStage.mapCopy);
+          decoded.add(_Decoded(entry.key, row));
+        }
+        if (_sort.isNotEmpty) {
+          if (t != null) t.start(_QueryStage.sort);
+          decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+          if (t != null) t.stop(_QueryStage.sort);
+        }
+        if (t != null) t.start(_QueryStage.predicate);
+        for (final item in decoded) {
+          if (_group.test(item.row)) {
+            if (t != null) t.matched++;
+            yield item;
+          }
+        }
+        if (t != null) t.stopAccum(_QueryStage.predicate);
+        return;
+      }
       final decoded = <_Decoded>[];
       for (final id in candidateIds) {
         if (t != null) t.start(_QueryStage.backendRead);
@@ -626,15 +697,15 @@ class _QueryTimings {
   void stopAccum(_QueryStage stage) => stop(stage);
 
   QueryStageTimings toRecord() => QueryStageTimings(
-        plan: _micros[_QueryStage.plan]!,
-        indexLookup: _micros[_QueryStage.indexLookup]!,
-        backendRead: _micros[_QueryStage.backendRead]!,
-        decode: _micros[_QueryStage.decode]!,
-        mapCopy: _micros[_QueryStage.mapCopy]!,
-        predicate: _micros[_QueryStage.predicate]!,
-        model: _micros[_QueryStage.model]!,
-        sort: _micros[_QueryStage.sort]!,
-        rowsScanned: scanned,
-        rowsMatched: matched,
-      );
+    plan: _micros[_QueryStage.plan]!,
+    indexLookup: _micros[_QueryStage.indexLookup]!,
+    backendRead: _micros[_QueryStage.backendRead]!,
+    decode: _micros[_QueryStage.decode]!,
+    mapCopy: _micros[_QueryStage.mapCopy]!,
+    predicate: _micros[_QueryStage.predicate]!,
+    model: _micros[_QueryStage.model]!,
+    sort: _micros[_QueryStage.sort]!,
+    rowsScanned: scanned,
+    rowsMatched: matched,
+  );
 }

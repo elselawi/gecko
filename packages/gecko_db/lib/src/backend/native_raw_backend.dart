@@ -166,11 +166,39 @@ class NativeRawBackend implements RawBackend {
   Future<RawSnapshot> snapshot() async {
     final id = await _worker.createSnapshot();
     _openSnapshots.add(id);
-    return _NativeSnapshot(
+    return NativeRawSnapshot(
       _worker,
       id,
       onDispose: () => _openSnapshots.remove(id),
     );
+  }
+
+  /// Phase 2 native query fast path: range-scans the durable `__gecko_index`
+  /// table for keys in `[start..=end]`, joins each entry's value (the
+  /// user-table row key) back to its row in [table], and returns the
+  /// `(recordId → row)` pairs in ONE boundary crossing. [start]/[end] are the
+  /// already codec-encoded `[table, field, value, ...]` key bounds.
+  ///
+  /// This opens its own short-lived read transaction (not consistent with a
+  /// caller snapshot). For a consistent view, snapshot first and use
+  /// [_NativeSnapshot.queryIndexed].
+  Future<List<RawEntry>> queryIndexed({
+    required String table,
+    required ByteKey start,
+    required ByteKey end,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.queryIndexed(
+        table: table,
+        indexTable: indexTable,
+        start: start.bytes,
+        end: end.bytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
   }
 
   @override
@@ -237,8 +265,8 @@ class NativeRawBackend implements RawBackend {
   };
 }
 
-class _NativeSnapshot implements RawSnapshot {
-  _NativeSnapshot(this._worker, this._snapshotId, {required this.onDispose})
+class NativeRawSnapshot implements RawSnapshot {
+  NativeRawSnapshot(this._worker, this._snapshotId, {required this.onDispose})
     : _token = _SnapshotToken(_worker, _snapshotId) {
     _finalizer.attach(this, _token, detach: this);
   }
@@ -326,6 +354,29 @@ class _NativeSnapshot implements RawSnapshot {
       final pairs = await _worker.snapshotRangeScan(
         snapshot: _snapshotId,
         table: table,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// Phase 2 native query fast path, snapshot-bound: the index→row join
+  /// observes the same consistent committed state as the snapshot's other
+  /// reads. See [NativeRawBackend.queryIndexed] for the semantics.
+  Future<List<RawEntry>> queryIndexed({
+    required String table,
+    required ByteKey start,
+    required ByteKey end,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQueryIndexed(
+        snapshot: _snapshotId,
+        table: table,
+        indexTable: indexTable,
+        start: start.bytes,
+        end: end.bytes,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {

@@ -61,6 +61,19 @@ abstract class NativeWorker implements RustOpaqueInterface {
     keyGen: keyGen,
   );
 
+  /// Phase 2 native query fast path: range-scans the durable index table
+  /// [index_table] for keys in `[start..=end]`, joins each entry's value
+  /// (the user-table row key) back to its row in [table], and returns the
+  /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
+  /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
+  /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
+  Future<List<(Uint8List, Uint8List)>> queryIndexed({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  });
+
   Future<List<(Uint8List, Uint8List)>> rangeScan({
     required String table,
     Uint8List? start,
@@ -87,6 +100,17 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt snapshot,
     required String table,
     required List<int> key,
+  });
+
+  /// Snapshot-bound variant of [Self::query_indexed]: reads through an
+  /// existing MVCC snapshot so the index→row join observes one consistent
+  /// committed state.
+  Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexed({
+    required BigInt snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
   });
 
   Future<List<(Uint8List, Uint8List)>> snapshotRangeScan({

@@ -54,13 +54,13 @@ const int _warmup = 200;
 const int _ops = 2000;
 const String _table = 'items';
 const String _presentKey = 'present';
-final List<int> _presentKeyBytes = const DefaultWireCodec().encode(
-  _presentKey,
-);
+final List<int> _presentKeyBytes = const DefaultWireCodec().encode(_presentKey);
 final List<int> _absentKeyBytes = const DefaultWireCodec().encode('absent');
-final List<int> _valueBytes = const DefaultWireCodec().encode(
-  {'id': _presentKey, 'num': 1, 'group': 'g0'},
-);
+final List<int> _valueBytes = const DefaultWireCodec().encode({
+  'id': _presentKey,
+  'num': 1,
+  'group': 'g0',
+});
 
 String _repoRoot() {
   if (Directory.current.path.endsWith('benchmark')) {
@@ -190,32 +190,44 @@ Future<List<_Boundary>> _run(
 
   // 1. Plain Dart async call (the floor).
   Future<int> dartCall() async => 42;
-  results.add(await _measure('dartCall', (_) async {
-    await dartCall();
-  }));
+  results.add(
+    await _measure('dartCall', (_) async {
+      await dartCall();
+    }),
+  );
 
   // 2. Isolate round trip (caller → worker isolate → caller), minimal Rust.
-  results.add(await _measure('isolateRoundTrip', (_) async {
-    await nativeBackend.commitSequenceProbe();
-  }));
+  results.add(
+    await _measure('isolateRoundTrip', (_) async {
+      await nativeBackend.commitSequenceProbe();
+    }),
+  );
 
   // 3. FRB call (direct, no isolate): handshake builds a Rust String.
   if (directWorker != null) {
-    results.add(await _measure('frbCall', (_) async {
-      await directWorker!.compatibilityHandshake();
-    }));
+    results.add(
+      await _measure('frbCall', (_) async {
+        await directWorker!.compatibilityHandshake();
+      }),
+    );
     // 4. Rust no-op (direct): reads an atomic counter, returns BigInt.
-    results.add(await _measure('rustNoop', (_) async {
-      await directWorker!.commitSequence();
-    }));
+    results.add(
+      await _measure('rustNoop', (_) async {
+        await directWorker!.commitSequence();
+      }),
+    );
     // 5. redb point get on an absent key.
-    results.add(await _measure('redbGetMiss', (_) async {
-      await directWorker!.get_(table: _table, key: _absentKeyBytes);
-    }));
+    results.add(
+      await _measure('redbGetMiss', (_) async {
+        await directWorker!.get_(table: _table, key: _absentKeyBytes);
+      }),
+    );
     // 6. redb point get on a present key.
-    results.add(await _measure('redbGetHit', (_) async {
-      await directWorker!.get_(table: _table, key: _presentKeyBytes);
-    }));
+    results.add(
+      await _measure('redbGetHit', (_) async {
+        await directWorker!.get_(table: _table, key: _presentKeyBytes);
+      }),
+    );
   }
 
   // 7. Full RawEngine.rawGet, cold (LRU flushed) — end-to-end Tier-3 read.
@@ -225,16 +237,18 @@ Future<List<_Boundary>> _run(
   // For cold: cycle through N absent keys (each misses the LRU once the LRU
   // is smaller than N; we use far more distinct keys than the default LRU
   // capacity of 1024).
-  results.add(await _measure('rawGetCold', (i) async {
-    final k = ByteKey(
-      const DefaultWireCodec().encode('cold$i'),
-    );
-    await engine.rawGet(_table, k);
-  }));
+  results.add(
+    await _measure('rawGetCold', (i) async {
+      final k = ByteKey(const DefaultWireCodec().encode('cold$i'));
+      await engine.rawGet(_table, k);
+    }),
+  );
   // 8. Full RawEngine.rawGet, hot (same LRU-resident key).
-  results.add(await _measure('rawGetHot', (_) async {
-    await engine.rawGet(_table, ByteKey(_presentKeyBytes));
-  }));
+  results.add(
+    await _measure('rawGetHot', (_) async {
+      await engine.rawGet(_table, ByteKey(_presentKeyBytes));
+    }),
+  );
 
   await db.close();
   try {

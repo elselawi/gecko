@@ -148,6 +148,40 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// Phase 2 native query fast path: range-scans the durable index table
+    /// [index_table] for keys in `[start..=end]`, joins each entry's value
+    /// (the user-table row key) back to its row in [table], and returns the
+    /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
+    /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
+    /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
+    pub async fn query_indexed(
+        &self,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_indexed(&table, &index_table, &start, &end)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed]: reads through an
+    /// existing MVCC snapshot so the index→row join observes one consistent
+    /// committed state.
+    pub async fn snapshot_query_indexed(
+        &self,
+        snapshot: u64,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_indexed(snapshot, &table, &index_table, &start, &end)
+            .map_err(encode_worker_error)
+    }
+
     pub async fn drop_snapshot(&mut self, snapshot: u64) {
         self.worker.drop_snapshot(snapshot);
     }

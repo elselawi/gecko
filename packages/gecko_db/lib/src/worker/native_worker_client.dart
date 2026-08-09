@@ -317,6 +317,52 @@ class NativeWorkerClient {
     ];
   }
 
+  /// Phase 2 native query fast path (no snapshot): range-scans the durable
+  /// index table [indexTable] for keys in `[start..=end]`, joins each entry's
+  /// value (the user-table row key) back to its row in [table], and returns
+  /// the `(recordId, row)` pairs in one boundary crossing. Eliminates the
+  /// Dart-side N+1 point reads. [start]/[end] are the already codec-encoded
+  /// `[table, field, value, ...]` key bounds.
+  Future<List<(List<int>, List<int>)>> queryIndexed({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  }) async {
+    final result = await _request('queryIndexed', <Object?>[
+      table,
+      indexTable,
+      start,
+      end,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  /// Snapshot-bound variant of [queryIndexed]: the index→row join observes
+  /// one consistent committed state.
+  Future<List<(List<int>, List<int>)>> snapshotQueryIndexed({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  }) async {
+    final result = await _request('snapshotQueryIndexed', <Object?>[
+      snapshot,
+      table,
+      indexTable,
+      start,
+      end,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   /// Releases [snapshot] in the worker (idempotent).
   Future<void> dropSnapshot(int snapshot) async {
     await _request('dropSnapshot', <Object?>[snapshot]);

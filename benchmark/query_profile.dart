@@ -169,6 +169,7 @@ void _printStages(SlowQueryRecord rec, QueryStageTimings t, int size) {
     }
     return '$v µs'.padLeft(10);
   }
+
   stdout.writeln('    stage                stage-µs    total%   per-row-µs');
   stdout.writeln('    ${'-' * 56}');
   void line(String label, int v) {
@@ -179,22 +180,22 @@ void _printStages(SlowQueryRecord rec, QueryStageTimings t, int size) {
     );
   }
 
-    line('plan', t.plan);
-    line('indexLookup', t.indexLookup);
-    line('backendRead', t.backendRead);
-    line('decode', t.decode);
-    line('mapCopy', t.mapCopy);
-    line('predicate', t.predicate);
-    line('sort', t.sort);
-    line('model', t.model);
-    stdout.writeln('    ${'-' * 56}');
-    line('Σ stages', t.total);
-    stdout.writeln(
-      '    ${'query total'.padRight(16)} ${us(rec.durationMicros)} '
-      '${pct(rec.durationMicros)}',
-    );
-    stdout.writeln(
-      '    rows scanned=${t.rowsScanned} matched=${t.rowsMatched} '
-      'selectivity=${((t.rowsMatched / (t.rowsScanned == 0 ? 1 : t.rowsScanned)) * 100).toStringAsFixed(2)}%',
-    );
+  line('plan', t.plan);
+  line('indexLookup', t.indexLookup);
+  line('backendRead', t.backendRead);
+  line('decode', t.decode);
+  line('mapCopy', t.mapCopy);
+  line('predicate', t.predicate);
+  line('sort', t.sort);
+  line('model', t.model);
+  stdout.writeln('    ${'-' * 56}');
+  line('Σ stages', t.total);
+  stdout.writeln(
+    '    ${'query total'.padRight(16)} ${us(rec.durationMicros)} '
+    '${pct(rec.durationMicros)}',
+  );
+  stdout.writeln(
+    '    rows scanned=${t.rowsScanned} matched=${t.rowsMatched} '
+    'selectivity=${((t.rowsMatched / (t.rowsScanned == 0 ? 1 : t.rowsScanned)) * 100).toStringAsFixed(2)}%',
+  );
 }

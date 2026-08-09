@@ -38,7 +38,7 @@ package required.
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
-| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015) |
+| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015); native index-served eq fast path — one FRB hop, no N+1 (ADR-0016) |
 | 6 | Relationships & referential integrity (Tier 3): FK helpers, delete behaviors, eager load, cycle detection | ✅ many-to-many joins, delete hooks, restrict-naming; typed-collection wiring open |
 | 7 | Transactions, durable change tracking, sync hooks, LSN ordering, origin tagging, idempotency, and GC watermark | ✅ |
 | 8 | Pluggable conflict resolution, three-way merge, preserved manual conflicts, and atomic resolution | ✅ |

@@ -20,7 +20,7 @@ export: src/api/transaction.dart show: Transaction
 export: src/backend/byte_key.dart show: ByteKey
 export: src/backend/encrypted_raw_backend.dart show: EncryptedRawBackend
 export: src/backend/in_memory_backend.dart show: InMemoryBackend
-export: src/backend/native_raw_backend.dart show: NativeRawBackend
+export: src/backend/native_raw_backend.dart show: NativeRawBackend, NativeRawSnapshot
 export: src/backend/raw_backend.dart show: RawBackend, RawSnapshot, RawOp, RawPut, RawDelete, RawDeleteRange, RawClear, RawEntry, RawBatch, keyNotFoundError
 export: src/cache/lru_cache.dart show: LruCache
 export: src/crypto/physical_encryption.dart show: KeyProvider, FixedKeyProvider, EnvironmentKeyProvider, FileKeyProvider, KeyEncoding, rotatePhysicalKey, validatePhysicalKey, decodeKey, initialPhysicalKeyGeneration

@@ -2065,18 +2065,40 @@ not Dart decode/predicate. Phase 2 attacks both.)
 **Goal:** stop decoding rows that cannot match; make indexed queries traverse
 the durable index instead of a Dart copy.
 
-1. Add a Rust-side query operation: for equality/range/prefix filters on an
-   indexed field, traverse the durable `__gecko_index` table and return only
-   matching `(id → encoded row)` pairs in one FRB hop.
-2. For filters with no usable index, push the predicate to Rust and return
-   only matching rows (no Dart decode of non-matches).
-3. Keep the in-memory Dart index as an optional cache; make the Rust traversal
-   the default for live queries.
-4. Targets: indexed query on 1,000 rows < 1 ms; highly selective indexed query
-   on 100k rows < 5 ms; full-scan per-row cost reduced ≥ 10×.
+1. ✅ Add a Rust-side query operation: for equality filters on an indexed
+   field, traverse the durable `__gecko_index` table and return only matching
+   `(id → encoded row)` pairs in one FRB hop (`RedbWorker.query_indexed` /
+   `snapshot_query_indexed`; `NativeWorker.queryIndexed`; Dart dispatch +
+   `NativeRawBackend.queryIndexed` / `NativeRawSnapshot.queryIndexed`). Range
+   and prefix variants are follow-on (see step 5).
+2. ⏳ For filters with no usable index, push the predicate to Rust and return
+   only matching rows (no Dart decode of non-matches). Requires a Rust port
+   of the `DefaultWireCodec` value codec + predicate evaluator.
+3. ✅ The in-memory Dart index is still rebuilt/validated at open; the Rust
+   traversal is the default for index-served equality queries on the native
+   backend (the in-memory backend keeps the Dart per-id path). Multi-eq,
+   range, and prefix filters fall back to the Dart per-id path until their
+   bound helpers land — results agree across both paths.
+4. Targets: indexed query on 1,000 rows < 1 ms; highly selective indexed
+   query on 100k rows < 5 ms; full-scan per-row cost reduced ≥ 10×.
+   **Status (Windows dev machine, ADR-0016):** indexed eq on 100k rows dropped
+   from **38 ms → 12 ms (3.2×)** with `backendRead` dropping 33.5 ms → 4.6 ms
+   (7.4× — the N+1 is gone). Indexed eq on 1k rows ~1.7 ms (close to the
+   1 ms target; floor is the FRB boundary crossing). Full-scan per-row cost is
+   unchanged (step 2 not yet done).
 
 **Done when:** targets are met on the reference machine, indexed and full-scan
 plans still agree on all query tests, and the regression gate is green.
+*Step 1 (indexed eq fast path) is DONE and verified (ADR-0016): parity tests
+pass, 3.2× speedup, coverage 95% line / 100% branch. Steps 2–5 remain.*
+
+### 3.1 Phase 2 follow-ons (after step 1)
+
+5. Extend the Rust fast path to range and prefix filters on indexed fields
+   (port the `eqBounds` helper to `rangeBounds`/`prefixBounds`; the codec key
+   layout makes these contiguous byte ranges too).
+6. Multi-eq intersection in Rust (intersect several index range scans in one
+   hop) instead of falling back to the Dart per-id path.
 
 ### 4. Phase 3 — Projection and batch reads
 

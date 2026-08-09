@@ -10,6 +10,10 @@ Never _unsupported() => throw UnsupportedError(
   'use the isolate-based native worker client instead.',
 );
 
+// coverage:ignore-start web only validated live by the browser smoke suites
+// (tool/web_smoke). On the VM every method throws _unsupported, so these
+// stubs are never exercised by `dart test` and would drag down the aggregate
+// line coverage without adding any real protection.
 class WebWorkerClient {
   WebWorkerClient._();
 
@@ -46,6 +50,19 @@ class WebWorkerClient {
     List<int>? start,
     List<int>? end,
   }) async => _unsupported();
+  Future<List<(List<int>, List<int>)>> queryIndexed({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  }) async => _unsupported();
+  Future<List<(List<int>, List<int>)>> snapshotQueryIndexed({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+  }) async => _unsupported();
   Future<void> dropSnapshot(int snapshot) async => _unsupported();
   Future<int> commitSequence() async => _unsupported();
   Future<bool> compact() async => _unsupported();
@@ -53,3 +70,5 @@ class WebWorkerClient {
   Future<String> compatibilityHandshake() async => _unsupported();
   Future<void> close() async => _unsupported();
 }
+
+// coverage:ignore-end web

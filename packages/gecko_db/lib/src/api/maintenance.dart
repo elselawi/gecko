@@ -120,8 +120,14 @@ class QueryStageTimings {
   /// [SlowQueryRecord.durationMicros] because the record's total also includes
   /// limit/offset slicing and small un-instrumented glue.
   int get total =>
-      plan + indexLookup + backendRead + decode + mapCopy + predicate +
-      model + sort;
+      plan +
+      indexLookup +
+      backendRead +
+      decode +
+      mapCopy +
+      predicate +
+      model +
+      sort;
 
   @override
   String toString() {

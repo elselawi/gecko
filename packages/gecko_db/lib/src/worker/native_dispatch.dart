@@ -68,6 +68,27 @@ Future<Object?> dispatchNativeWorker(
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
       ];
+    case 'queryIndexed':
+      final pairs = await worker.queryIndexed(
+        table: arguments[0] as String,
+        indexTable: arguments[1] as String,
+        start: Uint8List.fromList(List<int>.from(arguments[2] as List)),
+        end: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
+    case 'snapshotQueryIndexed':
+      final pairs = await worker.snapshotQueryIndexed(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        indexTable: arguments[2] as String,
+        start: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+        end: Uint8List.fromList(List<int>.from(arguments[4] as List)),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
     case 'dropSnapshot':
       await worker.dropSnapshot(snapshot: _asBigInt(arguments[0]));
       return null;

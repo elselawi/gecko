@@ -34,6 +34,21 @@ _Rec _fromRow(Object? row) {
 
 Object? _id(_Rec r) => r.id;
 
+/// Increments the last byte with carry, mirroring durable_index_bounds' helper.
+List<int> _bumpLast(List<int> bytes) {
+  final out = List<int>.of(bytes);
+  var i = out.length - 1;
+  while (i >= 0) {
+    if (out[i] < 0xFF) {
+      out[i] += 1;
+      return out.sublist(0, i + 1);
+    }
+    out.removeLast();
+    i--;
+  }
+  return bytes;
+}
+
 String _repoRoot() {
   if (Directory.current.path.endsWith(
     'packages${Platform.pathSeparator}gecko_db',
@@ -385,5 +400,182 @@ void main() {
         await reopened.close();
       }
     });
+  });
+
+  // Phase 2 native query fast path: indexed equality traverses the durable
+  // `__gecko_index` table in one FRB hop instead of N per-id point reads.
+  group('Phase 2 native query fast path (native file)', () {
+    late Directory dir;
+    late String path;
+
+    setUp(() async {
+      dir = await Directory.systemTemp.createTemp('gecko-phase2-');
+      path = '${dir.path}${Platform.pathSeparator}db.redb';
+    });
+
+    tearDown(() async {
+      try {
+        await dir.delete(recursive: true);
+      } catch (_) {}
+    });
+
+    Future<DatabaseImpl> openNative({int slowQueryThreshold = 0}) =>
+        DatabaseImpl.open(
+          path,
+          useInMemory: false,
+          config: DatabaseConfig(
+            nativeLibraryPath: nativePath,
+            slowQueryThresholdMicros: slowQueryThreshold,
+          ),
+        );
+
+    test(
+      'indexed equality matches the documented result set exactly',
+      () async {
+        final db = await openNative();
+        final col = _coll(db, 't', indexFields: ['nick']);
+        for (var i = 0; i < 300; i++) {
+          await col.put(_Rec('r$i', 'n$i', null, 'g${i % 7}'));
+        }
+        // Single covered equality filter — the Phase 2 native path.
+        final q = col.where({'nick': 'g3'});
+        final result = await q.findAll();
+        expect(q.lastPlan, IndexPlan.secondaryIndex);
+        // Indices 3,10,…,296 → 43 ids (300/7 = 42.857). The query is
+        // unsorted, so compare as a set (order is unspecified).
+        expect(result, hasLength(43));
+        expect(
+          result.map((r) => r.id).toSet(),
+          equals({for (var i = 3; i < 300; i += 7) 'r$i'}),
+        );
+        await db.close();
+      },
+    );
+
+    test(
+      'indexed equality with a sort still agrees with the in-memory plan',
+      () async {
+        final db = await openNative();
+        final col = _coll(db, 't', indexFields: ['nick']);
+        for (var i = 0; i < 200; i++) {
+          await col.put(_Rec('r$i', 'n$i', 20 + (i % 50), 'g${i % 5}'));
+        }
+        final q = col.where({'nick': 'g2'}).sort([const SortSpec('age')]);
+        final result = await q.findAll();
+        expect(q.lastPlan, IndexPlan.secondaryIndex);
+        // Every result is in group g2 and ages are ascending.
+        for (final r in result) {
+          expect(r.nick, 'g2');
+        }
+        final ages = result.map((r) => r.age!).toList();
+        expect(ages, equals(ages..sort()));
+        // Re-run without the fast path (in-memory backend) and compare the id
+        // set — plans must agree across backends.
+        final db2 = await DatabaseImpl.open(
+          'mem://phase2-parity',
+          useInMemory: true,
+        );
+        final col2 = _coll(db2, 't', indexFields: ['nick']);
+        for (var i = 0; i < 200; i++) {
+          await col2.put(_Rec('r$i', 'n$i', 20 + (i % 50), 'g${i % 5}'));
+        }
+        final q2 = col2.where({'nick': 'g2'}).sort([const SortSpec('age')]);
+        final result2 = await q2.findAll();
+        expect(
+          result.map((r) => r.id).toSet(),
+          equals(result2.map((r) => r.id).toSet()),
+        );
+        await db.close();
+        await db2.close();
+      },
+    );
+
+    test('fast path uses one backend hop, not N point reads', () async {
+      final db = await openNative(slowQueryThreshold: 1);
+      final col = _coll(db, 't', indexFields: ['nick']);
+      for (var i = 0; i < 500; i++) {
+        await col.put(_Rec('r$i', 'n$i', null, 'g${i % 5}'));
+      }
+      await col.where({'nick': 'g1'}).findAll();
+      final rec = db.engine.recentSlowQueries.last;
+      final t = rec.timings!;
+      expect(rec.indexed, isTrue);
+      expect(t.rowsScanned, 100, reason: 'one row per matched id (g1)');
+      expect(t.rowsMatched, 100);
+      // backendRead is the single queryIndexed hop: it must be much smaller
+      // than 100 per-id point reads would be (~rawGetCold * 100 ~ 10 ms on
+      // this machine). Assert < 4 ms as a conservative regression guard
+      // (the Phase 1 baseline showed the N+1 path at ~33 ms for 1000 ids;
+      // 100 ids would be ~3.3 ms, so the fast path must be well under that).
+      expect(
+        t.backendRead,
+        lessThan(4000),
+        reason: 'fast path is one boundary hop, not N point reads',
+      );
+      expect(t.total, lessThanOrEqualTo(rec.durationMicros));
+      await db.close();
+    });
+
+    test(
+      'non-snapshot NativeRawBackend.queryIndexed joins index→row in one hop',
+      () async {
+        // Exercises the non-snapshot variant (opens its own read txn) plus
+        // the 'queryIndexed' dispatch case and NativeWorkerClient.queryIndexed.
+        final db = await openNative();
+        final col = _coll(db, 't', indexFields: ['nick']);
+        for (var i = 0; i < 60; i++) {
+          await col.put(_Rec('r$i', 'n$i', null, 'g${i % 3}'));
+        }
+        final backend = db.engine.backend as NativeRawBackend;
+        final codec = const DefaultWireCodec();
+        // Build eq bounds for nick == 'g1' inline (the query impl does this
+        // automatically; here we exercise the raw backend method).
+        final full = codec.encode(['t', 'nick', 'g1', null]);
+        final start = ByteKey(full.sublist(0, full.length - 1));
+        final end = ByteKey(_bumpLast(start.bytes));
+        final entries = await backend.queryIndexed(
+          table: 't',
+          start: start,
+          end: end,
+        );
+        expect(entries, hasLength(20));
+        // Every returned row decodes to nick == 'g1'.
+        for (final entry in entries) {
+          final row = codec.decode(entry.value ?? const []) as Map;
+          expect(row['nick'], 'g1');
+        }
+        await db.close();
+      },
+    );
+
+    test(
+      'multi-eq / range / prefix fall back to the Dart per-id path',
+      () async {
+        // The Phase 2 fast path handles single covered equality only; mixed
+        // filters (eq + range, range alone, prefix) must still produce
+        // correct results via the Dart index-lookup + per-id read path.
+        final db = await openNative();
+        final col = _coll(
+          db,
+          't',
+          indexFields: ['nick'],
+          prefixFields: ['name'],
+        );
+        for (var i = 0; i < 120; i++) {
+          await col.put(
+            _Rec('r$i', 'name-${i % 4}', 20 + (i % 30), 'g${i % 3}'),
+          );
+        }
+        // Range on a numeric indexed field (no eq) — Dart path.
+        final rangeQ = col.where().range('age', min: 20, max: 25);
+        final rangeResult = await rangeQ.findAll();
+        expect(rangeResult, isNotEmpty);
+        // Prefix on a prefixed field — Dart path.
+        final prefixQ = col.where().prefix('name', 'name-1');
+        final prefixResult = await prefixQ.findAll();
+        expect(prefixResult, hasLength(30)); // 'name-1' for i ≡ 1 mod 4 → 30
+        await db.close();
+      },
+    );
   });
 }

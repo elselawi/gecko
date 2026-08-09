@@ -442,6 +442,95 @@ impl RedbWorker {
         self.snapshots.remove(&id);
     }
 
+    /// Phase 2 native query fast path: range-scans the durable `__gecko_index`
+    /// table for keys in `[start..=end]`, then joins each index entry's value
+    /// (which is the user-table row key) back to the matching row in [table],
+    /// returning `(recordId, row)` pairs in ONE hop. This eliminates the
+    /// Dart-side N+1: instead of one boundary crossing per candidate id,
+    /// there is one boundary crossing for the whole result set.
+    ///
+    /// [index_table] is the durable index table name (typically
+    /// `__gecko_index`); [start]/[end] are the already codec-encoded
+    /// `[table, field, value, ...]` key bounds. Caller-bound semantics match
+    /// [Self::range_scan]: a missing table is an empty result, never an error.
+    pub fn query_indexed(
+        &self,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_indexed_with(&transaction, table, index_table, start, end)
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed]: reads through a
+    /// previously created MVCC snapshot so the index→row join observes one
+    /// consistent committed state.
+    pub fn snapshot_query_indexed(
+        &self,
+        snapshot: u64,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_indexed_with(transaction, table, index_table, start, end)
+    }
+
+    /// Shared index→row join: scans [index_table] in `[start..=end]`, collects
+    /// the values (user-table row keys), and reads each row from [table].
+    /// Preserves index-key order (ascending) so callers that sort by the
+    /// indexed field can skip a Dart-side sort.
+    fn query_indexed_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let index_def = table_definition(index_table);
+        let index_table = match transaction.open_table(index_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        // Collect the index entries' VALUES (the user-table row keys) in
+        // ascending index-key order.
+        let row_keys: Vec<Vec<u8>> = index_table
+            .range(start..=end)
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+            .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
+            .collect();
+        if row_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Join back to the user table in the same read transaction.
+        let user_def = table_definition(table);
+        let user_table = match transaction.open_table(user_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut result = Vec::with_capacity(row_keys.len());
+        for row_key in row_keys {
+            let value = user_table
+                .get(row_key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .map(|value| value.value().to_vec());
+            if let Some(row_bytes) = value {
+                result.push((row_key, row_bytes));
+            }
+            // A missing user-table row (e.g. an index entry whose row was
+            // deleted out of band) is silently skipped: the durable index is
+            // maintained atomically with the data, so this should not happen
+            // in normal operation, and skipping is the safe fallback.
+        }
+        Ok(result)
+    }
+
     pub fn commit_sequence(&self) -> u64 {
         self.commit_sequence
     }

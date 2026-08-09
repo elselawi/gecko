@@ -7,6 +7,26 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Phase 2 step 1 — Native query fast path over the durable index**
+  (ADR-0016): indexed equality queries on the native backend now traverse the
+  durable `__gecko_index` table and join back to the rows in ONE FRB hop,
+  eliminating the Dart-side N+1 point reads (88% of indexed eq per the Phase 1
+  profile). Indexed eq on 100k rows dropped from 38 ms → 12 ms (3.2×);
+  `backendRead` dropped 33.5 ms → 4.6 ms (7.4×).
+  - Rust: `RedbWorker::query_indexed` / `snapshot_query_indexed` + FRB
+    `NativeWorker.queryIndexed` / `snapshotQueryIndexed`.
+  - Dart: `NativeRawBackend.queryIndexed` / `NativeRawSnapshot.queryIndexed`
+    (non-snapshot + snapshot-bound); `QueryImpl._scanWith` routes single
+    covered equality filters through the native path when the snapshot is a
+    `NativeRawSnapshot`. Multi-eq / range / prefix fall back to the Dart
+    per-id path (results agree).
+  - `eqBounds(table, field, value)` helper (`durable_index_bounds.dart`)
+    computes the lexicographic `[start, end]` byte bounds for an eq prefix
+    scan over the 4-element composite durable-index key.
+  - `NativeRawSnapshot` (was `_NativeSnapshot`) is now public so the query
+    engine can detect the native-snapshot capability.
+  - 5 new parity/perf regression tests in `phase5_index_ws3_test.dart` + 4
+    unit tests for `eqBounds` (lexicographic inclusion/exclusion + 0xFF carry).
 - **Phase 1 — Read/query path instrumentation** (ADR-0015):
   - `benchmark/boundary.dart`: per-layer latency micro-benchmark
     (dartCall → isolateRoundTrip → frbCall → rustNoop → redbGet →
