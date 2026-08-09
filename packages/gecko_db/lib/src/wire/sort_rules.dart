@@ -82,9 +82,15 @@ List<int> _doubleBytes(double value) {
 }
 
 int _doubleToBits(double value) {
-  // Reinterpret double bits via a byte buffer (endianness-correct).
-  final b = ByteData(8)..setFloat64(0, value);
-  return b.getInt64(0);
+  // Reinterpret double bits via a byte buffer. Uses explicit big-endian so the
+  // result is identical on every host, and assembles bytes manually because
+  // ByteData.getInt64 is unsupported on dart2js.
+  final b = ByteData(8)..setFloat64(0, value, Endian.big);
+  var bits = 0;
+  for (var i = 0; i < 8; i++) {
+    bits = bits * 256 + b.getUint8(i);
+  }
+  return bits;
 }
 
 List<int> _stringBytes(String value) {

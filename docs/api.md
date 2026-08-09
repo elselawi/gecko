@@ -12,6 +12,11 @@ maintainer/consumer orientation guide.
 - **`Database.open(path, {DatabaseConfig config})`** — the supported public
   entry point. File-backed by default; `DatabaseConfig(inMemory: true)` for
   ephemeral databases (tests/examples).
+- **Web.** The native redb engine runs on wasm: `Database.open(':memory:')`
+  works on the main thread, and file-backed paths persist through OPFS inside
+  a Web Worker (see [ADR-0013](adr/0013-web-runtime-frb-glue-and-opfs.md) and
+  `tool/web_smoke/` for the worker bootstrap pattern). On the web
+  `DatabaseConfig.nativeLibraryPath` is interpreted as the glue URL prefix.
 - **`DatabaseConfig`** — read-only, in-memory, logical/physical encryption
   keys, key providers, native library path, LRU bounds, backpressure,
   change-log retention, schema gate, slow-query threshold, compaction

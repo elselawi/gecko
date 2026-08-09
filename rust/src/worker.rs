@@ -64,6 +64,9 @@ impl From<WireError> for WorkerError {
 
 enum WorkerDatabase {
     ReadWrite(Database),
+    // On wasm32 the OPFS backend always opens read-write (the read-only flag
+    // is enforced at the API layer), so this variant is unused there.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     ReadOnly(ReadOnlyDatabase),
 }
 
@@ -84,22 +87,71 @@ pub struct RedbWorker {
 impl RedbWorker {
     /// Creates or opens a database. redb performs file locking and crash
     /// recovery during this call.
+    ///
+    /// On `wasm32` this uses an OPFS-backed storage backend instead of a local
+    /// file: the Dart side must have already registered a
+    /// `FileSystemSyncAccessHandle` for [path] (see `crate::opfs`), otherwise
+    /// a typed [`WorkerError::InvalidOperation`] is returned. Read-only mode
+    /// is honored at the API layer; OPFS handles always permit writes.
     pub fn open(path: impl AsRef<Path>, read_only: bool) -> Result<Self, WorkerError> {
-        let path_display = path.as_ref().display().to_string();
-        let path_buf = path.as_ref().to_path_buf();
-        let database = if read_only {
-            WorkerDatabase::ReadOnly(
-                ReadOnlyDatabase::open(&path)
-                    .map_err(|error| map_open_error(error, &path_display))?,
-            )
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self::open_wasm_opfs(path.as_ref(), read_only);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path_display = path.as_ref().display().to_string();
+            let path_buf = path.as_ref().to_path_buf();
+            let database = if read_only {
+                WorkerDatabase::ReadOnly(
+                    ReadOnlyDatabase::open(&path)
+                        .map_err(|error| map_open_error(error, &path_display))?,
+                )
+            } else {
+                WorkerDatabase::ReadWrite(
+                    Database::create(&path)
+                        .map_err(|error| map_open_error(error, &path_display))?,
+                )
+            };
+            Ok(Self {
+                database,
+                path: path_buf,
+                commit_sequence: 0,
+                read_only,
+                snapshots: HashMap::new(),
+                next_snapshot_id: 0,
+            })
+        }
+    }
+
+    /// Opens a database over an OPFS sync-access handle (wasm32 only). See the
+    /// module-level docs on `crate::opfs` for the acquisition protocol.
+    ///
+    /// The special path `:memory:` opens a native redb database backed by an
+    /// in-memory backend (no OPFS handle required) — useful on the web before
+    /// a Worker-provided OPFS handle is available.
+    #[cfg(target_arch = "wasm32")]
+    fn open_wasm_opfs(path: &Path, read_only: bool) -> Result<Self, WorkerError> {
+        let path_display = path.display().to_string();
+        let database = if path_display == ":memory:" {
+            Database::builder()
+                .create_with_backend(redb::backends::InMemoryBackend::new())
+                .map_err(|error| map_open_error(error, &path_display))?
         } else {
-            WorkerDatabase::ReadWrite(
-                Database::create(&path).map_err(|error| map_open_error(error, &path_display))?,
-            )
+            let handle = crate::opfs::take_handle_for_path(&path_display).ok_or_else(|| {
+                WorkerError::InvalidOperation(format!(
+                    "no OPFS sync-access handle registered for {path_display}; \
+                     the web worker must acquire and register it before opening"
+                ))
+            })?;
+            let backend = crate::opfs::WasmOpfsBackend::new(handle, path_display.clone());
+            Database::builder()
+                .create_with_backend(backend)
+                .map_err(|error| map_open_error(error, &path_display))?
         };
         Ok(Self {
-            database,
-            path: path_buf,
+            database: WorkerDatabase::ReadWrite(database),
+            path: path.to_path_buf(),
             commit_sequence: 0,
             read_only,
             snapshots: HashMap::new(),

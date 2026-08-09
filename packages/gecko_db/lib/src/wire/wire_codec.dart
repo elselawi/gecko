@@ -198,9 +198,12 @@ class DefaultWireCodec implements WireCodec {
 
   @override
   List<int> encodeInt64(int value) {
-    // Big-endian, two's complement 8 bytes — no JS number precision loss.
+    // Big-endian, two's complement 8 bytes — no JS number precision loss for
+    // values dart2js can represent (its `& 0xFF`/`>>` are 32-bit ops). Each
+    // byte only needs the low 8 bits, so no 64-bit mask literal is required
+    // (0xFFFFFFFFFFFFFFFF is not exactly representable on the web).
     final bytes = List<int>.filled(8, 0);
-    var v = value & 0xFFFFFFFFFFFFFFFF;
+    var v = value;
     for (var i = 7; i >= 0; i--) {
       bytes[i] = v & 0xFF;
       v >>= 8;
@@ -213,7 +216,16 @@ class DefaultWireCodec implements WireCodec {
     if (bytes.length != 8) {
       throw const WireDecodeException('int64 requires 8 bytes');
     }
-    return ByteData.sublistView(Uint8List.fromList(bytes)).getInt64(0);
+    // Manual big-endian two's-complement decode: ByteData.getInt64 is
+    // unsupported on dart2js. On the VM the arithmetic naturally wraps to a
+    // signed 64-bit int; on dart2js values are restricted to the JS safe-
+    // integer range (gecko's int64s — LSNs, snapshot ids, timestamps — are
+    // always well within it).
+    var value = 0;
+    for (var i = 0; i < 8; i++) {
+      value = value * 256 + bytes[i];
+    }
+    return value;
   }
 }
 

@@ -11,5 +11,7 @@ pub mod crypto_storage;
 pub mod error;
 pub mod format_header;
 mod frb_generated;
+#[cfg(target_arch = "wasm32")]
+pub mod opfs;
 pub mod wire;
 pub mod worker;

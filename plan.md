@@ -1815,9 +1815,13 @@ Required targets:
 - [ ] iOS device/simulator architectures supported by the release policy.
   *(**explicitly marked CI-pending** in `docs/compatibility.md`; requires the
   FRB iOS plugin scaffold (Xcode), not silently skipped.)*
-- [ ] Web/headless Chrome with OPFS worker support and documented fallback behavior.
-  *(**wasm artifact built + bundled**; FRB web glue (wasm-bindgen) + OPFS
-  worker explicitly marked CI-pending with a documented in-memory fallback.)*
+- [x] Web/headless Chrome with OPFS worker support and documented fallback behavior.
+  *(FRB web glue + OPFS implemented and live-validated — ADR-0013: wasm-bindgen
+  glue bundled in `lib/native/web/wasm32/`; `Database.open(':memory:')` runs the
+  redb engine on wasm on the main thread (WEB-SMOKE-OK); file-backed databases
+  persist via OPFS inside a Web Worker (OPFS-SMOKE-OK, reopen verified). The
+  `release-matrix` web job builds the glue + runs both suites in headless
+  Chromium via `tool/web_smoke/cdp_drive.mjs`.)*
 - [x] Pure Dart CLI/server on supported desktop targets.
   *(No artifact required; the package runs on the Dart VM directly.)*
 
@@ -1886,7 +1890,7 @@ dart test packages/gecko_db/test --reporter=compact
 dart test packages/gecko_db/test --coverage=packages/gecko_db/coverage
 
 dart run coverage:format_coverage \
-  --lcov \
+  --lcov --check-ignore \
   --in=packages/gecko_db/coverage \
   -o packages/gecko_db/coverage/lcov.info \
   --report-on=packages/gecko_db/lib \

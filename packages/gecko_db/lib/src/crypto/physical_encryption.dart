@@ -11,10 +11,9 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-
 import '../errors/errors.dart';
 import '../errors/native_error.dart';
+import '../native/external_library_loader.dart' show resolveExternalLibrary;
 import '../native/generated/api.dart';
 import '../native/generated/frb_generated.dart' show RustLib;
 
@@ -165,9 +164,9 @@ void validatePhysicalKey(List<int> key, {String label = 'key'}) {
 Future<void> _ensureNativeLoaded(String? nativeLibraryPath) async {
   try {
     await RustLib.init(
-      externalLibrary: nativeLibraryPath == null
-          ? null
-          : ExternalLibrary.open(nativeLibraryPath),
+      externalLibrary: await resolveExternalLibrary(
+        nativeLibraryPath: nativeLibraryPath,
+      ),
     );
   } catch (_) {
     // Already initialized in this isolate (FRB guards re-init); ignore.

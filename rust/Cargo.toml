@@ -12,13 +12,54 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 redb = "4.1.0"
-flutter_rust_bridge = "=2.12.0"
+# Vendored flutter_rust_bridge (see [patch.crates-io] below): the only change
+# from crates.io 2.12.0 is that the wasm WorkerPool's `Default` tolerates
+# environments where Web Workers cannot be created (see
+# vendor/flutter_rust_bridge/src/third_party/wasm_bindgen/worker_pool.rs).
+# The `thread-pool` feature must stay enabled: FRB's generated web glue calls
+# `wrap_normal`, which only exists with it.
+flutter_rust_bridge = { version = "=2.12.0", default-features = false, features = [
+  "anyhow",
+  "dart-opaque",
+  "log",
+  "portable-atomic",
+  "rust-async",
+  "thread-pool",
+  "user-utils",
+  "wasm-start",
+] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 aes-gcm = "0.10"
 getrandom = { version = "0.2", features = ["js"] }
 
+# Web (wasm32) support: flutter_rust_bridge's generated wasm glue needs
+# wasm-bindgen + js-sys, and the OPFS StorageBackend uses web-sys handles.
+# wasm-bindgen is pinned to =0.2.92 to match FRB 2.12.0 and wasm-bindgen-cli.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.92"
+js-sys = "0.3.69"
+web-sys = { version = "0.3.58", features = [
+  "DedicatedWorkerGlobalScope",
+  "WorkerGlobalScope",
+  "WorkerNavigator",
+  "StorageManager",
+  "FileSystemDirectoryHandle",
+  "FileSystemFileHandle",
+  "FileSystemSyncAccessHandle",
+  "FileSystemReadWriteOptions",
+  "FileSystemGetFileOptions",
+  "FileSystemHandle",
+] }
+
 [dev-dependencies]
+
+# Local patch of flutter_rust_bridge 2.12.0 (identical to crates.io except for
+# the WorkerPool `Default` fallback described above). Kept in-tree so CI and
+# local builds are deterministic and never depend on the patch being applied
+# to the shared registry copy.
+[patch.crates-io]
+flutter_rust_bridge = { path = "vendor/flutter_rust_bridge" }
 
 # Coverage gate (Rust side): `cargo llvm-cov` is configured in CI. This keeps
 # the crate buildable without extra toolchain for local `cargo test`.

@@ -37,6 +37,8 @@ abstract class NativeWorker implements RustOpaqueInterface {
 
   Future<Uint8List?> get_({required String table, required List<int> key});
 
+  /// Opens a database. Async so the web (wasm) build dispatches through the
+  /// async runtime instead of FRB's sync WorkerPool (see ADR-0013).
   static Future<NativeWorker> open({
     required String path,
     required bool readOnly,

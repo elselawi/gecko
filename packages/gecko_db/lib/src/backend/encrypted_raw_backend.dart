@@ -183,7 +183,9 @@ List<int> _encodeEnvelope(int pageId, List<int> nonce, CryptoPage page) => [
 ];
 
 List<int> _u64(int value) {
-  var v = value & 0xffffffffffffffff;
+  // No 64-bit mask literal (not exactly representable on the web); each byte
+  // only needs the low 8 bits of the arithmetic-shifted value.
+  var v = value;
   final out = List<int>.filled(8, 0);
   for (var i = 7; i >= 0; i--) {
     out[i] = v & 0xff;

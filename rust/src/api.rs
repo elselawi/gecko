@@ -33,7 +33,9 @@ pub struct NativeWorker {
 }
 
 impl NativeWorker {
-    pub fn open(path: String, read_only: bool) -> Result<Self, String> {
+    /// Opens a database. Async so the web (wasm) build dispatches through the
+    /// async runtime instead of FRB's sync WorkerPool (see ADR-0013).
+    pub async fn open(path: String, read_only: bool) -> Result<Self, String> {
         RedbWorker::open(path, read_only)
             .map(|worker| Self { worker })
             .map_err(encode_worker_error)
@@ -43,7 +45,7 @@ impl NativeWorker {
     /// exactly 32 bytes. Any interrupted key rotation is resolved first, so
     /// the file is consistent under the provided key generation before any
     /// data is returned.
-    pub fn open_encrypted(path: String, key: Vec<u8>, key_gen: u8) -> Result<Self, String> {
+    pub async fn open_encrypted(path: String, key: Vec<u8>, key_gen: u8) -> Result<Self, String> {
         RedbWorker::open_encrypted(path, &key, key_gen)
             .map(|worker| Self { worker })
             .map_err(encode_worker_error)
@@ -53,7 +55,7 @@ impl NativeWorker {
     /// [old_key] to [new_key]. The database must not be open anywhere; a
     /// rotation marker lets an interrupted rotation be recovered to either the
     /// old or the new key on the next open.
-    pub fn rekey_encrypted_file(
+    pub async fn rekey_encrypted_file(
         path: String,
         old_key: Vec<u8>,
         new_key: Vec<u8>,
@@ -82,13 +84,13 @@ impl NativeWorker {
     }
 
     /// Returns the compatibility handshake before callers use the worker.
-    pub fn compatibility_handshake(&self) -> String {
+    pub async fn compatibility_handshake(&self) -> String {
         CompatibilityHandshake::current(NATIVE_BUILD_ID)
             .encode()
             .expect("compatibility handshake constants must encode")
     }
 
-    pub fn apply_batch(&mut self, encoded_ops: Vec<u8>) -> Result<u64, String> {
+    pub async fn apply_batch(&mut self, encoded_ops: Vec<u8>) -> Result<u64, String> {
         let operations = crate::wire::Op::decode_batch(&encoded_ops).map_err(|error| {
             crate::error::GeckoErrorEnvelope::new(
                 crate::error::GeckoErrorType::InvalidOperation,
@@ -101,11 +103,11 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    pub fn get(&self, table: String, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+    pub async fn get(&self, table: String, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
         self.worker.get(&table, &key).map_err(encode_worker_error)
     }
 
-    pub fn range_scan(
+    pub async fn range_scan(
         &self,
         table: String,
         start: Option<Vec<u8>>,
@@ -119,11 +121,11 @@ impl NativeWorker {
     /// Creates a point-in-time MVCC snapshot handle (a held redb read
     /// transaction). Reads through the returned id observe the committed state
     /// at creation time, not later writes.
-    pub fn create_snapshot(&mut self) -> Result<u64, String> {
+    pub async fn create_snapshot(&mut self) -> Result<u64, String> {
         self.worker.create_snapshot().map_err(encode_worker_error)
     }
 
-    pub fn snapshot_get(
+    pub async fn snapshot_get(
         &self,
         snapshot: u64,
         table: String,
@@ -134,7 +136,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    pub fn snapshot_range_scan(
+    pub async fn snapshot_range_scan(
         &self,
         snapshot: u64,
         table: String,
@@ -146,11 +148,11 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    pub fn drop_snapshot(&mut self, snapshot: u64) {
+    pub async fn drop_snapshot(&mut self, snapshot: u64) {
         self.worker.drop_snapshot(snapshot);
     }
 
-    pub fn commit_sequence(&self) -> u64 {
+    pub async fn commit_sequence(&self) -> u64 {
         self.worker.commit_sequence()
     }
 
@@ -158,22 +160,22 @@ impl NativeWorker {
     /// Returns true when compaction reclaimed space, false when the file was
     /// already fully compacted. Fails with a typed error if any MVCC snapshot
     /// is still open or the database is read-only.
-    pub fn compact(&mut self) -> Result<bool, String> {
+    pub async fn compact(&mut self) -> Result<bool, String> {
         self.worker.compact().map_err(encode_worker_error)
     }
 
     /// Reports physical/logical size and health counters (Workstream 5).
-    pub fn storage_stats(&self) -> Result<StorageStats, String> {
+    pub async fn storage_stats(&self) -> Result<StorageStats, String> {
         self.worker.storage_stats().map_err(encode_worker_error)
     }
 
-    pub fn tables(&self) -> Result<Vec<String>, String> {
+    pub async fn tables(&self) -> Result<Vec<String>, String> {
         self.worker.tables().map_err(encode_worker_error)
     }
 
     /// Explicitly releases the redb file handle before the Dart object is
     /// dropped. This is required for deterministic reopen on Windows.
-    pub fn close(self) {}
+    pub async fn close(self) {}
 }
 
 // Keep WorkerError visible to generated documentation and future typed mapping.

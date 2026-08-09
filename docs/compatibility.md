@@ -29,12 +29,13 @@ side enforces these through the compatibility handshake
 | macOS | x64 / arm64 | `libgecko_db_rust.dylib` | ⬜ CI jobs written (`release-matrix` macos); need macOS runners to execute |
 | Android | arm64-v8a, armeabi-v7a, x86, x86_64 | `gecko_db_rust.so` | ✅ all 4 ABIs built + verified locally and bundled (`lib/native/android/*/`); CI job `release-matrix` android |
 | iOS | device + simulator | FRB iOS plugin artifact | ⬜ **explicitly CI-pending** — requires the FRB iOS plugin scaffold (Xcode); marked unsupported until it lands |
-| Web | wasm32 | `gecko_db_rust.wasm` | ⚠️ wasm artifact built + bundled (`lib/native/web/wasm32/`); **FRB web glue (wasm-bindgen) + OPFS worker explicitly CI-pending** (documented fallback: in-memory) |
+| Web | wasm32 | `gecko_db_rust.js` + `gecko_db_rust_bg.wasm` | ✅ **FRB web glue + OPFS persistence implemented and live-validated** (ADR-0013): `Database.open(':memory:')` runs the redb engine on wasm on the main thread; file-backed databases persist via OPFS inside a Web Worker. Glue bundled in `lib/native/web/wasm32/`; reference worker pattern in `tool/web_smoke/opfs_worker.dart`. CI job: chromium + CDP smoke driver (see `tool/web_smoke/README.md`) |
 | Pure Dart CLI/server | desktop | — | ✅ no artifact needed |
 
 > **Release gate:** a release is blocked if any target is skipped without being
-> explicitly marked above. iOS and the FRB web glue + OPFS are explicitly
-> marked CI-pending (not silently skipped).
+> explicitly marked above. iOS is explicitly marked CI-pending (not silently
+> skipped). Web is implemented and validated; the CI job runs on GitHub
+> runners once the release matrix executes.
 
 ## Compatibility rules
 

@@ -34,7 +34,7 @@ package required.
 | Phase | What | State |
 |-------|------|-------|
 | 0 | Foundations & contracts (API, error taxonomy, wire format, ADRs, coverage gate) | ✅ |
-| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; iOS + FRB web glue/OPFS explicitly CI-pending |
+| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; **web engine live-validated** (`:memory:` on main thread + OPFS persistence in a Worker, ADR-0013); iOS explicitly CI-pending |
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
@@ -242,6 +242,13 @@ The design is documented in [`plan.md`](plan.md) and in the
   nativeLibraryPath, no Rust, no FFI, no build steps** on Windows and Android
   today (see [ADR-0012](docs/adr/0012-cross-platform-artifact-matrix.md) and
   [docs/compatibility.md](docs/compatibility.md)).
+- **Runs in the browser (Workstream 7 web half).** The FRB web glue
+  (`gecko_db_rust.js` + `_bg.wasm`, bundled under
+  `packages/gecko_db/lib/native/web/wasm32/`) lets the same redb engine run on
+  wasm: `Database.open(':memory:')` works on the main thread, and file-backed
+  databases persist durably through OPFS inside a Web Worker (reference worker:
+  `tool/web_smoke/opfs_worker.dart`; see
+  [ADR-0013](docs/adr/0013-web-runtime-frb-glue-and-opfs.md)).
 - **Attachment metadata.** Phase 9 tracks binaries that live outside the
   database: parent references, content-hash dedupe with shared blobs, and
   transactionally-advanced upload/delete/retry states with pending/failed/
@@ -305,7 +312,7 @@ plan.md                   The full, versioned roadmap
 | Package / wire / file format | `0.0.1` / `1` / `1` (redb 4.1.0) |
 | Native build id | `0.0.1+rust` |
 | Dart SDK | `^3.10.8` |
-| Platforms | Windows ✅ · macOS/Linux/Android/iOS/Web ⬜ matrix pending |
+| Platforms | Windows ✅ · Android ✅ (4 ABIs) · Web ✅ (wasm engine + OPFS, live-validated) · Linux/macOS ⬜ CI jobs written · iOS ⬜ explicitly CI-pending |
 
 See [docs/compatibility.md](docs/compatibility.md) for the full table and
 rules. Forward reads are supported; a newer incompatible file fails with a

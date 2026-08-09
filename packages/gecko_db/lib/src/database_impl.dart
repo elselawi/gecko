@@ -21,6 +21,7 @@ import 'model/row_patch.dart';
 import 'model/row_schema.dart';
 import 'namespaces.dart';
 import 'backend/native_raw_backend.dart';
+import 'native/native_resolver.dart' show isWeb;
 import 'query/query_impl.dart';
 import 'raw/raw_engine.dart';
 import 'relation/relationship_manager.dart';
@@ -45,6 +46,9 @@ import 'api/transaction.dart';
 /// Opens a [`Database`] metadata record key used to detect double-open.
 String _registryKey(String path) {
   if (path.startsWith('mem://')) return path;
+  // On the web there is no filesystem: paths are logical OPFS names (or
+  // `:memory:`), and dart:io File/Platform are unavailable.
+  if (isWeb) return path;
   final normalized = path_util.normalize(File(path).absolute.path);
   return Platform.isWindows ? normalized.toLowerCase() : normalized;
 }

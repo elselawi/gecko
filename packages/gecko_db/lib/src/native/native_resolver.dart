@@ -7,13 +7,19 @@
 library;
 
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 
 import '../errors/errors.dart';
+import 'host_arch.dart' show hostArchitecture;
+
+/// True when compiled for the web (`dart compile js` / `dart compile wasm`).
+/// Mirrors Flutter's `kIsWeb` without pulling in `package:flutter`. Uses the
+/// `dart.library.js_interop` compile-time environment constant, which is set
+/// on both JS and wasm web targets.
+const bool isWeb = bool.fromEnvironment('dart.library.js_interop');
 
 /// The conventional bundled-artifact directory inside the package
 /// (`packages/gecko_db/lib/native/<os>/<arch>/<file>`), produced by
@@ -21,12 +27,46 @@ import '../errors/errors.dart';
 /// URIs resolve to it.
 const String bundledNativeDir = 'native';
 
+/// Bundled web-glue directory (inside [bundledNativeDir]) and file stem for
+/// the FRB wasm module. The glue is a wasm-bindgen `--target no-modules`
+/// pair: `gecko_db_rust.js` + `gecko_db_rust_bg.wasm`.
+const String bundledWebDir = 'native/web/wasm32';
+const String bundledWebStem = 'gecko_db_rust';
+
+/// Returns the URL prefix (directory, ending with `/`) where the FRB web glue
+/// is served, or null when not on the web. Tries the package URI first (which
+/// Flutter web resolves to the asset server) and falls back to the
+/// conventional `packages/<package>/...` path. Consumers can override the
+/// location explicitly via [DatabaseConfig.nativeLibraryPath], which on the
+/// web is interpreted as the glue URL prefix.
+// coverage:ignore-start web only validated live by tool web smoke
+Future<String?> bundledWebGluePrefix() async {
+  if (!isWeb) return null;
+  const relative = '$bundledWebDir/';
+  try {
+    final uri = await Isolate.resolvePackageUri(
+      Uri.parse('package:gecko_db/$relative$bundledWebStem.js'),
+    );
+    if (uri != null && uri.scheme != 'data') {
+      final text = uri.toString();
+      final base = text.substring(0, text.length - '$bundledWebStem.js'.length);
+      if (base.isNotEmpty) return base;
+    }
+  } catch (_) {
+    // Fall through to the conventional path.
+  }
+  return 'packages/gecko_db/$relative';
+}
+// coverage:ignore-end
+
 /// Returns the bundled artifact path for the *current* platform and
 /// architecture, or null when this host has no bundled artifact. Used as the
 /// no-build-steps fallback when a consumer does not supply an explicit
 /// [DatabaseConfig.nativeLibraryPath]. Resolved through the package URI so it
-/// works regardless of the process working directory.
+/// works regardless of the process working directory. On the web there is no
+/// FFI artifact, so this always returns null (use [bundledWebGluePrefix]).
 Future<String?> bundledArtifactPath() async {
+  if (isWeb) return null;
   final os = switch (Platform.operatingSystem) {
     'windows' => 'windows',
     'android' => 'android',
@@ -35,26 +75,14 @@ Future<String?> bundledArtifactPath() async {
     _ => null,
   };
   if (os == null) return null;
-  final arch = _hostArchitecture();
+  final arch = hostArchitecture();
+  if (arch == null) return null;
   final file = _artifactFileName(os);
   if (file == null) return null;
   final uri = await Isolate.resolvePackageUri(
     Uri.parse('package:gecko_db/$bundledNativeDir/$os/$arch/$file'),
   );
   return uri?.toFilePath();
-}
-
-/// Host CPU architecture mapped to the release-matrix keys. The `Abi` enum
-/// uses names like `windows_x64`, `android_arm64`, `linux_ia32`.
-String _hostArchitecture() {
-  final abi = Abi.current().toString().toLowerCase();
-  if (abi.endsWith('x64')) return 'x64';
-  if (abi.endsWith('arm64')) {
-    return Platform.isAndroid ? 'arm64-v8a' : 'arm64';
-  }
-  if (abi.contains('arm')) return Platform.isAndroid ? 'armeabi-v7a' : 'arm';
-  if (abi.contains('ia32')) return Platform.isAndroid ? 'x86' : 'x86';
-  return abi;
 }
 
 /// File name of the bundled artifact for [os] (matching `build_artifacts.dart`).

@@ -48,3 +48,4 @@ What becomes easier, harder, or riskier because of this choice.
 | [0010](0010-compaction-maintenance-and-diagnostics.md) | In-place compaction, maintenance state machine, and diagnostics | accepted |
 | [0011](0011-public-entry-and-release-contracts.md) | Public entry point and release contracts | accepted |
 | [0012](0012-cross-platform-artifact-matrix.md) | Cross-platform artifact matrix and bundled distribution | accepted |
+| [0013](0013-web-runtime-frb-glue-and-opfs.md) | Web runtime: FRB wasm glue and OPFS persistence | accepted |

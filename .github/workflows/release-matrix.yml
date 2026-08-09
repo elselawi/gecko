@@ -10,9 +10,11 @@
 #   7. uploads artifacts + logs for the release.
 #
 # Targets explicitly marked "CI-pending" in docs/compatibility.md (iOS device
-# builds, FRB web glue + OPFS) are intentionally not given jobs here until the
-# supporting sub-projects land — a release is blocked unless every target is
-# either built or explicitly marked unsupported.
+# builds) are intentionally not given jobs here until the supporting
+# sub-project lands — a release is blocked unless every target is either built
+# or explicitly marked unsupported. Web (FRB glue + OPFS) is implemented and
+# exercised by the `web` job below (wasm build + glue + headless Chromium
+# smoke via CDP).
 
 name: release-matrix
 
@@ -148,16 +150,53 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
       - uses: dart-lang/setup-dart@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-chromium@v1
+        id: setup-chromium
+        with:
+          chromium-version: 'stable'
       - run: dart pub get
-      - run: dart run tool/build_artifacts.dart build wasm32 --out=build/native
-      - run: dart run tool/build_artifacts.dart verify --artifact=build/native/gecko_db_rust.wasm --manifest=build/native/wasm32.json
+      - name: Install wasm-bindgen CLI (pinned to rust/Cargo.toml)
+        run: cargo install wasm-bindgen-cli --version 0.2.92 --locked
+      - name: Build + package the web glue
+        run: dart run tool/build_artifacts.dart build wasm32 --out=build/native
+      - name: Verify the wasm glue
+        run: dart run tool/build_artifacts.dart verify --artifact=build/native/gecko_db_rust_bg.wasm --manifest=build/native/wasm32.json
+      - name: Compile web smoke suites
+        run: |
+          dart compile js tool/web_smoke/web_smoke.dart -o build/web_smoke/app.js
+          dart compile js tool/web_smoke/opfs_worker.dart -o build/web_smoke/opfs_worker.js
+      - name: Run web smoke (headless Chromium via CDP)
+        env:
+          CHROME_BIN: ${{ steps.setup-chromium.outputs.chrome-path }}
+          CDP_PORT: 9222
+        run: |
+          dart run tool/web_smoke/serve.dart 8080 &
+          SERVER_PID=$!
+          "$CHROME_BIN" --headless=new --disable-gpu --no-sandbox \
+            --remote-debugging-port=9222 \
+            --user-data-dir=$PWD/build/cdp_profile about:blank &
+          CHROME_PID=$!
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9222/json/version >/dev/null && break
+            sleep 1
+          done
+          node tool/web_smoke/cdp_drive.mjs http://localhost:8080/ WEB-SMOKE-OK WEB-SMOKE-FAIL 90000
+          MAIN=$?
+          node tool/web_smoke/cdp_drive.mjs http://localhost:8080/opfs_test.html OPFS-SMOKE-OK OPFS-SMOKE-FAIL 90000
+          OPFS=$?
+          kill $CHROME_PID $SERVER_PID 2>/dev/null || true
+          [ $MAIN -eq 0 ] && [ $OPFS -eq 0 ]
       - uses: actions/upload-artifact@v4
         with:
           name: artifact-wasm32
           path: build/native/
 
-  # FRB web glue (wasm-bindgen) and OPFS worker: tracked as the remaining WS 7
-  # sub-project; the wasm artifact above is the first half. iOS device builds
-  # similarly require the FRB iOS plugin scaffold (Xcode) and are explicitly
-  # marked "CI-pending" in docs/compatibility.md — a release is blocked until
-  # they are either built here or remain explicitly marked unsupported.
+  # iOS device builds require the FRB iOS plugin scaffold (Xcode) and are
+  # explicitly marked "CI-pending" in docs/compatibility.md — a release is
+  # blocked until they are either built here or remain explicitly marked
+  # unsupported. Web (FRB glue + OPFS) is fully implemented (ADR-0013) and is
+  # exercised by the smoke step above; in-memory `Database.open` also works on
+  # the main thread without any worker.

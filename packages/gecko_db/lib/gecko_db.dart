@@ -100,8 +100,11 @@ export 'src/native/native_resolver.dart'
         IoResolverDownloader,
         bundledArtifactPath,
         bundledNativeDir,
+        bundledWebGluePrefix,
+        isWeb,
         nativeArtifactSha256,
         nativeArtifactManifest;
+export 'src/native/opfs.dart' show registerOpfsHandle;
 export 'src/native/generated/api.dart' show NativeWorker;
 export 'src/native/generated/frb_generated.dart' show RustLib;
 export 'src/raw/raw_engine.dart' show RawEngine, RawWriteMode;

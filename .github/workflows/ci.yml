@@ -35,7 +35,7 @@ jobs:
       - run: dart run tool/traceability_check.dart
       - run: dart run tool/workstream0_contract_test.dart
       - run: >-
-          dart run coverage:format_coverage --lcov
+          dart run coverage:format_coverage --lcov --check-ignore
           --in=packages/gecko_db/coverage
           -o packages/gecko_db/coverage/lcov.info
           --report-on=packages/gecko_db/lib
