@@ -321,15 +321,6 @@ class DatabaseImpl implements Database {
           final previous = previousRaw == null
               ? null
               : codec.decode(previousRaw);
-          final txnMutation = _TxnMutation(
-            table: mutation.table,
-            key: ByteKey(keyBytes),
-            recordId: mutation.key,
-            kind: mutation.kind,
-            value: mutation.kind == ChangeKind.put ? mutation.value : null,
-            previousVersion: previous,
-            origin: ChangeOrigin.user,
-          );
           if (mutation.kind == ChangeKind.put) {
             ops.add(
               RawPut(
