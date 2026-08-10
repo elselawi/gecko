@@ -445,15 +445,17 @@ batch validation failure, stale repair, and index/data atomicity; focused native
 and the full 528-test package suite pass. Crash/reopen coverage remains in the existing native batch
 and worker qualification tests; explicit index-enabled crash injection remains follow-up coverage.
 
-**Slice 2 — Native aggregate and raw-adapter cleanup ☐**
+**Slice 2 — Native aggregate and raw-adapter cleanup ✅**
 
-Audit `count()`/`distinct()` and `NativeRawBackend`/`NativeRawSnapshot` after M3–M7. Remove native-only
-Dart fallback loops, duplicate tuple/conversion branches, and non-snapshot paths that can reintroduce
-materialization. Preserve the in-memory reference path until M7.5, snapshot semantics, `lastPlan`,
-slow-query timings, typed errors, finalizer cleanup, read-only behavior, and Web dispatch parity.
+Native `count()` and `distinct()` now use snapshot-bound Rust durable-index candidate aggregates for
+indexed equality/range/prefix/multi-equality routes, while unindexed routes retain Rust predicate
+pushdown. Matching primary rows are no longer transferred to Dart merely to count or extract distinct
+values. Native routing no longer performs the transitional Dart candidate lookup; in-memory routing is
+unchanged. Delete-range pre-scans and `lastCommitSeq()` now dispose their native snapshots reliably.
 
-**Proof:** route matrix for unindexed, exact-eq, M5 multi-index, sorted/limited, and snapshot-bound
-aggregates; zero/full row-transfer assertions; raw-backend contract, close/finalizer, and MVCC tests.
+**Proof:** focused M3 aggregate, native snapshot, durable-index, and raw-backend suites pass (73 tests);
+full package and Rust validation passes; `lastPlan`, stage timings, snapshot cleanup, typed errors, and
+Web/shared-dispatch behavior remain covered.
 
 **Slice 3 — Native relationship retrieval ☐**
 

@@ -279,12 +279,10 @@ class QueryImpl<T> implements Query<T> {
   }) async* {
     if (t != null) t.start(_QueryStage.plan);
     if (t != null && idx != null) t.start(_QueryStage.indexLookup);
-    final candidateIds = _indexCandidates(idx);
-    // M7: native routing uses index metadata + durable Rust indexes directly;
-    // the transitional Dart index may intentionally be empty on native.
     final nativeRanges = snap is NativeRawSnapshot
         ? _nativeIndexedRanges(idx)
         : null;
+    final candidateIds = snap is NativeRawSnapshot ? null : _indexCandidates(idx);
     if (t != null) {
       if (idx != null) t.stop(_QueryStage.indexLookup);
       t.stop(_QueryStage.plan);
@@ -356,7 +354,6 @@ class QueryImpl<T> implements Query<T> {
       // candidate intersection in Rust. The broad field ranges are followed
       // by a complete Rust predicate recheck, preserving semantic range and
       // prefix behavior despite the v1 codec's non-sortable value bytes.
-      final nativeRanges = _nativeIndexedRanges(idx);
       if (nativeRanges != null && snap is NativeRawSnapshot) {
         if (t != null) t.start(_QueryStage.backendRead);
         final entries = await snap.queryIndexedMulti(
@@ -760,9 +757,20 @@ class QueryImpl<T> implements Query<T> {
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      if (_nativeIndexedRanges(secondary?.secondary) == null &&
-          snap is NativeRawSnapshot) {
+      final nativeRanges = _nativeIndexedRanges(secondary?.secondary);
+      if (snap is NativeRawSnapshot) {
         final predicateBytes = encodePredicate(_filters, codec: _codec);
+        if (nativeRanges != null) {
+          lastPlan = IndexPlan.secondaryIndex;
+          return snap.queryIndexedCount(
+            table: _table,
+            ranges: [
+              for (final range in nativeRanges)
+                (ByteKey(range.$1), ByteKey(range.$2)),
+            ],
+            predicateBytes: predicateBytes,
+          );
+        }
         lastPlan = IndexPlan.nativeFilteredScan;
         return snap.queryFilteredCount(
           table: _table,
@@ -789,15 +797,27 @@ class QueryImpl<T> implements Query<T> {
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      if (_nativeIndexedRanges(secondary?.secondary) == null &&
-          snap is NativeRawSnapshot) {
+      final nativeRanges = _nativeIndexedRanges(secondary?.secondary);
+      if (snap is NativeRawSnapshot) {
         final predicateBytes = encodePredicate(_filters, codec: _codec);
-        lastPlan = IndexPlan.nativeFilteredScan;
-        final fieldBytes = await snap.queryFilteredDistinct(
-          table: _table,
-          predicateBytes: predicateBytes,
-          field: field,
-        );
+        final fieldBytes = nativeRanges == null
+            ? await snap.queryFilteredDistinct(
+                table: _table,
+                predicateBytes: predicateBytes,
+                field: field,
+              )
+            : await snap.queryIndexedDistinct(
+                table: _table,
+                ranges: [
+                  for (final range in nativeRanges)
+                    (ByteKey(range.$1), ByteKey(range.$2)),
+                ],
+                predicateBytes: predicateBytes,
+                field: field,
+              );
+        lastPlan = nativeRanges == null
+            ? IndexPlan.nativeFilteredScan
+            : IndexPlan.secondaryIndex;
         final seen = <Object?>{};
         for (final bytes in fieldBytes) {
           if (bytes.isEmpty) continue;

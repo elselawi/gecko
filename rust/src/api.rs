@@ -241,6 +241,51 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// M7.1: snapshot-bound count over durable-index candidates. The complete
+    /// predicate is rechecked in Rust and only the scalar count crosses FRB.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn snapshot_query_indexed_count(
+        &self,
+        snapshot: u64,
+        table: String,
+        index_table: String,
+        ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>
+    ) -> Result<u64, String> {
+        self.worker
+            .snapshot_query_indexed_count(
+                snapshot,
+                &table,
+                &index_table,
+                &ranges,
+                &predicate_bytes,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// M7.1: snapshot-bound distinct extraction over durable-index
+    /// candidates. Only encoded values for [field] cross FRB.
+    pub async fn snapshot_query_indexed_distinct(
+        &self,
+        snapshot: u64,
+        table: String,
+        index_table: String,
+        ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>,
+        field: String
+    ) -> Result<Vec<Vec<u8>>, String> {
+        self.worker
+            .snapshot_query_indexed_distinct(
+                snapshot,
+                &table,
+                &index_table,
+                &ranges,
+                &predicate_bytes,
+                &field,
+            )
+            .map_err(encode_worker_error)
+    }
+
     /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
     /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
     /// (decoding only the referenced fields), and returns only the matching

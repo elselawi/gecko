@@ -524,6 +524,46 @@ class NativeWorkerClient {
     ];
   }
 
+  /// M7.1: snapshot-bound count over durable-index candidates.
+  Future<int> snapshotQueryIndexedCount({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<(List<int>, List<int>)> ranges,
+    required List<int> predicateBytes,
+  }) async {
+    return _asInt(
+      await _request('snapshotQueryIndexedCount', <Object?>[
+        snapshot,
+        table,
+        indexTable,
+        [for (final range in ranges) <Object?>[range.$1, range.$2]],
+        predicateBytes,
+      ]),
+    );
+  }
+
+  /// M7.1: snapshot-bound distinct field extraction over durable-index
+  /// candidates. Returns encoded field values; Dart performs final dedup.
+  Future<List<List<int>>> snapshotQueryIndexedDistinct({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<(List<int>, List<int>)> ranges,
+    required List<int> predicateBytes,
+    required String field,
+  }) async {
+    final result = await _request('snapshotQueryIndexedDistinct', <Object?>[
+      snapshot,
+      table,
+      indexTable,
+      [for (final range in ranges) <Object?>[range.$1, range.$2]],
+      predicateBytes,
+      field,
+    ]);
+    return [for (final bytes in (result as List)) List<int>.from(bytes as List)];
+  }
+
   /// M4: index-served query with an early LIMIT/OFFSET (snapshot-bound).
   Future<List<(List<int>, List<int>)>> snapshotQueryIndexedLimited({
     required int snapshot,

@@ -7,6 +7,11 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7.1 Slice 2 — Native aggregate/raw cleanup**: indexed native `count()` and
+  `distinct()` now use snapshot-bound Rust durable-index candidate aggregates,
+  avoiding primary-row transfer for aggregate-only queries. Unindexed predicate
+  pushdown remains unchanged; native Dart candidate lookup is skipped, and native
+  delete-range/LSN snapshot lifetimes are now closed deterministically.
 - **M7.1 Slice 1 — Rust-owned durable index maintenance**: native batch writes now
   pass declared indexed fields to Rust, which derives old/new values from encoded
   primary rows and updates `__gecko_index` atomically with puts, deletes, ranges,

@@ -24,9 +24,10 @@ Future<Object?> dispatchNativeWorker(
       return (await worker.applyBatch(
         encodedOps: List<int>.from(arguments[0] as List),
         indexDefinitions: [
-          for (final definition in (arguments.length > 1
-              ? List<Object?>.from(arguments[1] as List)
-              : const <Object?>[]))
+          for (final definition
+              in (arguments.length > 1
+                  ? List<Object?>.from(arguments[1] as List)
+                  : const <Object?>[]))
             _decodeIndexDefinition(definition),
         ],
       )).toString();
@@ -190,6 +191,45 @@ Future<Object?> dispatchNativeWorker(
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
       ];
+    case 'snapshotQueryIndexedCount':
+      final count = await worker.snapshotQueryIndexedCount(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        indexTable: arguments[2] as String,
+        ranges: [
+          for (final range in (arguments[3] as List))
+            (
+              Uint8List.fromList(
+                List<int>.from((range as List)[0] as List),
+              ),
+              Uint8List.fromList(List<int>.from(range[1] as List)),
+            ),
+        ],
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[4] as List),
+        ),
+      );
+      return count.toString();
+    case 'snapshotQueryIndexedDistinct':
+      final fields = await worker.snapshotQueryIndexedDistinct(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        indexTable: arguments[2] as String,
+        ranges: [
+          for (final range in (arguments[3] as List))
+            (
+              Uint8List.fromList(
+                List<int>.from((range as List)[0] as List),
+              ),
+              Uint8List.fromList(List<int>.from(range[1] as List)),
+            ),
+        ],
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[4] as List),
+        ),
+        field: arguments[5] as String,
+      );
+      return [for (final bytes in fields) bytes.toList()];
     case 'snapshotQueryIndexedLimited':
       final pairs = await worker.snapshotQueryIndexedLimited(
         snapshot: _asBigInt(arguments[0]),

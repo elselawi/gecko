@@ -142,22 +142,25 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     ];
     if (deleteRanges.isNotEmpty) {
       final snap = await snapshot();
-      for (final range in deleteRanges) {
-        for (final entry in await snap.scan(
-          range.table,
-          start: range.start,
-          end: range.end,
-        )) {
-          preRemoved.add((range.table, entry.key));
+      try {
+        for (final range in deleteRanges) {
+          for (final entry in await snap.scan(
+            range.table,
+            start: range.start,
+            end: range.end,
+          )) {
+            preRemoved.add((range.table, entry.key));
+          }
         }
+      } finally {
+        await snap.dispose();
       }
     }
     try {
       await _worker.applyBatch(
         Op.encodeBatch(wireOps),
         indexDefinitions: [
-          for (final entry in _durableIndexes.entries)
-            (entry.key, entry.value),
+          for (final entry in _durableIndexes.entries) (entry.key, entry.value),
         ],
       );
     } catch (error) {
@@ -262,8 +265,8 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
 
   @override
   Future<int> lastCommitSeq() async {
+    final snapshot = await this.snapshot();
     try {
-      final snapshot = await this.snapshot();
       final raw = await snapshot.read(
         geckoSyncMetaTable,
         ByteKey(const DefaultWireCodec().encode(geckoLsnKey)),
@@ -272,6 +275,8 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       return (const DefaultWireCodec().decode(raw) as int?) ?? 0;
     } catch (error) {
       throw mapNativeError(error);
+    } finally {
+      await snapshot.dispose();
     }
   }
 
@@ -519,6 +524,50 @@ class NativeRawSnapshot implements RawSnapshot {
         offset: offset,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M7.1: counts matching rows from durable-index candidates without
+  /// transferring primary rows to Dart.
+  Future<int> queryIndexedCount({
+    required String table,
+    required List<(ByteKey, ByteKey)> ranges,
+    required List<int> predicateBytes,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      return await _worker.snapshotQueryIndexedCount(
+        snapshot: _snapshotId,
+        table: table,
+        indexTable: indexTable,
+        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        predicateBytes: predicateBytes,
+      );
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M7.1: extracts only the requested field bytes from durable-index
+  /// candidates. Dart performs the final decode and insertion-order dedup.
+  Future<List<List<int>>> queryIndexedDistinct({
+    required String table,
+    required List<(ByteKey, ByteKey)> ranges,
+    required List<int> predicateBytes,
+    required String field,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      return await _worker.snapshotQueryIndexedDistinct(
+        snapshot: _snapshotId,
+        table: table,
+        indexTable: indexTable,
+        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        predicateBytes: predicateBytes,
+        field: field,
+      );
     } catch (error) {
       throw mapNativeError(error);
     }

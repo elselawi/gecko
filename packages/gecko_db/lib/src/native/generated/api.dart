@@ -259,6 +259,27 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> end,
   });
 
+  /// M7.1: snapshot-bound count over durable-index candidates. The complete
+  /// predicate is rechecked in Rust and only the scalar count crosses FRB.
+  Future<BigInt> snapshotQueryIndexedCount({
+    required BigInt snapshot,
+    required String table,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> ranges,
+    required List<int> predicateBytes,
+  });
+
+  /// M7.1: snapshot-bound distinct extraction over durable-index
+  /// candidates. Only encoded values for [field] cross FRB.
+  Future<List<Uint8List>> snapshotQueryIndexedDistinct({
+    required BigInt snapshot,
+    required String table,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> ranges,
+    required List<int> predicateBytes,
+    required String field,
+  });
+
   /// Snapshot-bound variant of [Self::query_indexed_limited].
   Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedLimited({
     required BigInt snapshot,

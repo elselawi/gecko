@@ -481,7 +481,7 @@ impl RedbWorker {
                         key,
                         previous.as_deref(),
                         Some(value),
-                        index_definitions,
+                        index_definitions
                     )?;
                 }
                 OpKind::Delete => {
@@ -512,7 +512,7 @@ impl RedbWorker {
                         key,
                         previous.as_deref(),
                         None,
-                        index_definitions,
+                        index_definitions
                     )?;
                 }
                 OpKind::DeleteRange => {
@@ -535,7 +535,10 @@ impl RedbWorker {
                             .map_err(|error| WorkerError::Storage(error.to_string()))?
                             .map(|entry| {
                                 entry
-                                    .map(|(key, value)| (key.value().to_vec(), value.value().to_vec()))
+                                    .map(|(key, value)| (
+                                        key.value().to_vec(),
+                                        value.value().to_vec(),
+                                    ))
                                     .map_err(|error| WorkerError::Storage(error.to_string()))
                             })
                             .collect::<Result<Vec<_>, WorkerError>>()?
@@ -557,7 +560,7 @@ impl RedbWorker {
                             &key,
                             Some(&value),
                             None,
-                            index_definitions,
+                            index_definitions
                         )?;
                     }
                 }
@@ -571,7 +574,10 @@ impl RedbWorker {
                             .map_err(|error| WorkerError::Storage(error.to_string()))?
                             .map(|entry| {
                                 entry
-                                    .map(|(key, value)| (key.value().to_vec(), value.value().to_vec()))
+                                    .map(|(key, value)| (
+                                        key.value().to_vec(),
+                                        value.value().to_vec(),
+                                    ))
                                     .map_err(|error| WorkerError::Storage(error.to_string()))
                             })
                             .collect::<Result<Vec<_>, WorkerError>>()?
@@ -593,7 +599,7 @@ impl RedbWorker {
                             &key,
                             Some(&value),
                             None,
-                            index_definitions,
+                            index_definitions
                         )?;
                     }
                 }
@@ -1012,6 +1018,158 @@ impl RedbWorker {
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_multi_with(transaction, table, index_table, ranges, predicate_bytes)
+    }
+
+    /// M7.1: counts matching rows from durable-index candidates without
+    /// transferring primary rows to Dart. The complete predicate is still
+    /// rechecked against each candidate row in this snapshot.
+    pub fn snapshot_query_indexed_count(
+        &self,
+        snapshot: u64,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8]
+    ) -> Result<u64, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_indexed_count_with(transaction, table, index_table, ranges, predicate_bytes)
+    }
+
+    /// M7.1: emits only the requested field bytes from durable-index
+    /// candidates. Dart performs the final decode and insertion-order dedup.
+    pub fn snapshot_query_indexed_distinct(
+        &self,
+        snapshot: u64,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8],
+        field: &str
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_indexed_distinct_with(
+            transaction,
+            table,
+            index_table,
+            ranges,
+            predicate_bytes,
+            field,
+        )
+    }
+
+    fn indexed_candidate_keys_with(
+        &self,
+        transaction: &ReadTransaction,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)]
+    ) -> Result<BTreeSet<Vec<u8>>, WorkerError> {
+        if ranges.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let index_def = table_definition(index_table);
+        let index_table = match transaction.open_table(index_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(BTreeSet::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut candidates: Option<BTreeSet<Vec<u8>>> = None;
+        for (start, end) in ranges {
+            let keys = index_table
+                .range(start.as_slice()..=end.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
+                .collect::<BTreeSet<_>>();
+            candidates = Some(match candidates {
+                None => keys,
+                Some(previous) => previous.intersection(&keys).cloned().collect(),
+            });
+            if candidates.as_ref().is_some_and(BTreeSet::is_empty) {
+                return Ok(BTreeSet::new());
+            }
+        }
+        Ok(candidates.unwrap_or_default())
+    }
+
+    fn query_indexed_count_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8]
+    ) -> Result<u64, WorkerError> {
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let candidates = self.indexed_candidate_keys_with(transaction, index_table, ranges)?;
+        let user_table = match transaction.open_table(table_definition(table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(0);
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut count = 0;
+        for row_key in candidates {
+            let Some(value) = user_table
+                .get(row_key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                continue;
+            };
+            if predicate.test_bytes(value.value()) {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    fn query_indexed_distinct_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8],
+        field: &str
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let candidates = self.indexed_candidate_keys_with(transaction, index_table, ranges)?;
+        let user_table = match transaction.open_table(table_definition(table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut result = Vec::new();
+        for row_key in candidates {
+            let Some(value) = user_table
+                .get(row_key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                continue;
+            };
+            let row_bytes = value.value();
+            if !predicate.test_bytes(row_bytes) {
+                continue;
+            }
+            let Some((start, end)) = crate::value_codec
+                ::find_field_range(row_bytes, field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                continue;
+            };
+            result.push(row_bytes[start..end].to_vec());
+        }
+        Ok(result)
     }
 
     fn query_indexed_multi_with(
@@ -1914,15 +2072,19 @@ fn maintain_durable_index(
         .map_err(|error| WorkerError::Storage(error.to_string()))?;
     for field in fields {
         let old_value = match old_row {
-            Some(row) => crate::value_codec::find_field_range(row, field)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
-                .map(|(start, end)| row[start..end].to_vec()),
+            Some(row) =>
+                crate::value_codec
+                    ::find_field_range(row, field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                    .map(|(start, end)| row[start..end].to_vec()),
             None => None,
         };
         let new_value = match new_row {
-            Some(row) => crate::value_codec::find_field_range(row, field)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
-                .map(|(start, end)| row[start..end].to_vec()),
+            Some(row) =>
+                crate::value_codec
+                    ::find_field_range(row, field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                    .map(|(start, end)| row[start..end].to_vec()),
             None => None,
         };
         if old_value == new_value {
@@ -1935,10 +2097,7 @@ fn maintain_durable_index(
         }
         if let Some(value) = new_value {
             index
-                .insert(
-                    durable_index_key(table, field, &value, record_key).as_slice(),
-                    record_key,
-                )
+                .insert(durable_index_key(table, field, &value, record_key).as_slice(), record_key)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
         }
     }
@@ -2402,10 +2561,7 @@ mod tests {
 
     fn index_value(worker: &RedbWorker, field: &str, value: &[u8], id: &[u8]) -> Option<Vec<u8>> {
         worker
-            .get(
-                "__gecko_index",
-                durable_index_key("items", field, value, id).as_slice(),
-            )
+            .get("__gecko_index", durable_index_key("items", field, value, id).as_slice())
             .unwrap()
     }
 
@@ -2414,44 +2570,45 @@ mod tests {
         let path = temp_path("native-index-mutations");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         let indexes = indexed_definition();
-        let old = encode_test_row(&[
-            ("age", encode_test_int64(10)),
-            ("name", encode_test_string("old")),
-        ]);
+        let old = encode_test_row(
+            &[
+                ("age", encode_test_int64(10)),
+                ("name", encode_test_string("old")),
+            ]
+        );
         let updated = encode_test_row(&[("age", encode_test_int64(20))]);
         worker
             .apply_batch_with_indexes(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k1".to_vec()),
-                    Some(old.clone()),
-                )],
-                &indexes,
+                &[op_with_table(OpKind::Put, "items", Some(b"k1".to_vec()), Some(old.clone()))],
+                &indexes
             )
             .unwrap();
-        assert_eq!(index_value(&worker, "age", &encode_test_int64(10), b"k1"), Some(b"k1".to_vec()));
-        assert_eq!(index_value(&worker, "name", &encode_test_string("old"), b"k1"), Some(b"k1".to_vec()));
+        assert_eq!(
+            index_value(&worker, "age", &encode_test_int64(10), b"k1"),
+            Some(b"k1".to_vec())
+        );
+        assert_eq!(
+            index_value(&worker, "name", &encode_test_string("old"), b"k1"),
+            Some(b"k1".to_vec())
+        );
 
         worker
             .apply_batch_with_indexes(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k1".to_vec()),
-                    Some(updated),
-                )],
-                &indexes,
+                &[op_with_table(OpKind::Put, "items", Some(b"k1".to_vec()), Some(updated))],
+                &indexes
             )
             .unwrap();
         assert_eq!(index_value(&worker, "age", &encode_test_int64(10), b"k1"), None);
-        assert_eq!(index_value(&worker, "age", &encode_test_int64(20), b"k1"), Some(b"k1".to_vec()));
+        assert_eq!(
+            index_value(&worker, "age", &encode_test_int64(20), b"k1"),
+            Some(b"k1".to_vec())
+        );
         assert_eq!(index_value(&worker, "name", &encode_test_string("old"), b"k1"), None);
 
         worker
             .apply_batch_with_indexes(
                 &[op_with_table(OpKind::Delete, "items", Some(b"k1".to_vec()), None)],
-                &indexes,
+                &indexes
             )
             .unwrap();
         assert_eq!(index_value(&worker, "age", &encode_test_int64(20), b"k1"), None);
@@ -2469,14 +2626,14 @@ mod tests {
                 OpKind::Put,
                 "items",
                 Some(b"k1".to_vec()),
-                Some(encode_test_row(&[("age", encode_test_int64(1))])),
+                Some(encode_test_row(&[("age", encode_test_int64(1))]))
             ),
             op_with_table(
                 OpKind::Put,
                 "items",
                 Some(b"k1".to_vec()),
-                Some(encode_test_row(&[("age", encode_test_int64(2))])),
-            ),
+                Some(encode_test_row(&[("age", encode_test_int64(2))]))
+            )
         ];
         worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
         assert_eq!(index_value(&worker, "age", &encode_test_int64(1), b"k1"), None);
@@ -2487,9 +2644,9 @@ mod tests {
                 OpKind::Put,
                 "items",
                 Some(b"k2".to_vec()),
-                Some(encode_test_row(&[("age", encode_test_int64(3))])),
+                Some(encode_test_row(&[("age", encode_test_int64(3))]))
             ),
-            op_with_table(OpKind::Put, "items", Some(b"k3".to_vec()), None),
+            op_with_table(OpKind::Put, "items", Some(b"k3".to_vec()), None)
         ];
         assert!(worker.apply_batch_with_indexes(&invalid, &indexes).is_err());
         assert_eq!(worker.get("items", b"k2").unwrap(), None);
@@ -2497,7 +2654,12 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    fn op_with_table(kind: OpKind, table: &str, key: Option<Vec<u8>>, value: Option<Vec<u8>>) -> Op {
+    fn op_with_table(
+        kind: OpKind,
+        table: &str,
+        key: Option<Vec<u8>>,
+        value: Option<Vec<u8>>
+    ) -> Op {
         Op {
             kind,
             table: table.into(),

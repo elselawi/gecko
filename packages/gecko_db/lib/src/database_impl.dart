@@ -279,10 +279,10 @@ class DatabaseImpl implements Database {
       // maintenance; only the transitional in-memory backend rebuilds the
       // Dart reference index.
       if (_engine.backend case final DurableIndexRegistrar registrar) {
-        registrar.registerDurableIndex(
-          name,
-          [...index.secondary.fields, ...index.secondary.prefixFields],
-        );
+        registrar.registerDurableIndex(name, [
+          ...index.secondary.fields,
+          ...index.secondary.prefixFields,
+        ]);
       }
       unawaited(_prepareIndex(name, index));
     }
@@ -982,10 +982,10 @@ class _TxnImpl implements Transaction {
           );
     if (index != null) {
       if (_db.engine.backend case final DurableIndexRegistrar registrar) {
-        registrar.registerDurableIndex(
-          name,
-          [...index.secondary.fields, ...index.secondary.prefixFields],
-        );
+        registrar.registerDurableIndex(name, [
+          ...index.secondary.fields,
+          ...index.secondary.prefixFields,
+        ]);
       }
     }
     return _CollectionImpl<T>(
