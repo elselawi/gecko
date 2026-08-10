@@ -619,7 +619,10 @@ void main() {
         final t = rec.timings!;
         expect(t.rowsScanned, 40);
         expect(t.rowsMatched, 40);
-        expect(t.sort, greaterThan(0), reason: 'sorted query must time sort');
+        // M9: the sort executes in Rust (top-K), so the Dart `sort` stage is
+        // zero and the sort cost is inside `backendRead`.
+        expect(t.sort, 0, reason: 'M9: no Dart-side sort executes');
+        expect(t.backendRead, greaterThan(0), reason: 'Rust top-K sort runs');
         expect(t.total, lessThanOrEqualTo(rec.durationMicros));
         await db.close();
       },

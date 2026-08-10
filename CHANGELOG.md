@@ -6,6 +6,25 @@ All notable changes to gecko_db are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **M9 — Query-execution thinning**: Dart no longer executes any query semantics. Every sorted
+  query — windowed and unbounded — routes through the Rust `query_sorted` / `query_indexed_ordered`
+  primitives via `_nativeOrderedCollect`; the Dart execution comparator `_compareDecoded` and the
+  indexed-eq predicate re-test (`_group.test`) are deleted (the native path applies the complete
+  predicate in Rust). Rust `query_indexed_ordered` now appends missing sort-field rows for
+  unbounded sorted queries (parity with the documented comparator order). Per-stage diagnostics
+  now report `t.sort == 0` (no Dart sort). `filter`/`sort` DSLs remain as the public authoring
+  surface — they serialize to Rust, never execute.
+- **M10 — Engine-logic thinning**: storage/aggregation computation moved out of
+  `database_impl.dart` into the Rust worker. (1) **Change-log pruning in Rust**: `prune_change_log`
+  runs in the same write transaction as the batch commit (retention count, dirty records always
+  kept, watermark advanced in `__gecko_sync_meta`); both Dart pruning blocks were deleted.
+  `applyBatch` gains a `changeLogMaxEntries` parameter threaded through FRB → worker client → raw
+  backend → engine. (2) **Sync-state aggregation in Rust**: new `pendingChanges` primitive scans
+  `__gecko_sync_state` and returns dirty local records sorted by `localMutationId`;
+  `readLocallyChanged` now decodes the Rust aggregation. Attachment/blob dedup remains in Dart
+  (documented follow-up: needs an attachment-map wire-format decoder in Rust).
+
 ### Added
 - **M8 — Rust-owned reactive registry** (ADR-0030): `watchAll()`, `watchAllDiff()`, and
   `query.where(...).watch()` register with a **non-durable reactive registry in the Rust

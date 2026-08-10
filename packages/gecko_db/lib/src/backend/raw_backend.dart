@@ -191,6 +191,11 @@ abstract class RawBackend {
   /// Number of active live-query registrations (diagnostics).
   Future<int> liveQueryCount();
 
+  /// M10: aggregates the pending local changes from the sync-state table
+  /// (dirty, non-remote, ordered by localMutationId). The scan/filter/sort
+  /// executes in Rust; Dart decodes the returned (key, record) pairs.
+  Future<List<RawEntry>> pendingChanges();
+
   /// Captures a consistent snapshot for reading.
   Future<RawSnapshot> snapshot();
 

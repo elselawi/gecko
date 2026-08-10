@@ -260,13 +260,18 @@ class NativeWorkerClient {
 
   /// M8 (ADR-0030): applies a batch and returns the reactive-registry deltas
   /// the worker produced for it (empty when no live registration was touched).
+  /// [changeLogMaxEntries] (0 = disabled) prunes the pending-sync change log
+  /// in the same write transaction when the batch touched it (M10).
   Future<List<RegistryDelta>> applyBatch(
     List<int> encodedOps, {
     List<(String, List<String>)> indexDefinitions = const [],
+    int changeLogMaxEntries = 0,
   }) async {
-    final result =
-        await _request('applyBatch', <Object?>[encodedOps, indexDefinitions])
-            as Map;
+    final result = await _request('applyBatch', <Object?>[
+      encodedOps,
+      indexDefinitions,
+      changeLogMaxEntries,
+    ]) as Map;
     return [
       for (final delta in (result['deltas'] as List))
         RegistryDelta(
@@ -308,6 +313,13 @@ class NativeWorkerClient {
   Future<int> liveQueryCount() async {
     final result = await _request('liveQueryCount', const <Object?>[]);
     return int.parse(result as String);
+  }
+
+  /// M10: aggregates pending local changes (dirty, non-remote, sorted by
+  /// localMutationId) in Rust; returns (key, record) pairs for Dart to decode.
+  Future<List<RawEntry>> pendingChanges() async {
+    final result = await _request('pendingChanges', const <Object?>[]);
+    return _decodeEntries(result);
   }
 
   /// Decodes a wire `[[keyBytes, valueBytes], ...]` list into [RawEntry]s.

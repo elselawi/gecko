@@ -312,6 +312,9 @@ class _ThrowingBatchBackend implements RawBackend {
   Future<int> liveQueryCount() => _delegate.liveQueryCount();
 
   @override
+  Future<List<RawEntry>> pendingChanges() => _delegate.pendingChanges();
+
+  @override
   Future<RawSnapshot> snapshot() => _delegate.snapshot();
 
   @override

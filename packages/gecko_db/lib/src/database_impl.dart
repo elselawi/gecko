@@ -6,7 +6,6 @@ library;
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:path/path.dart' as path_util;
 
@@ -58,7 +57,6 @@ class DatabaseImpl implements Database {
     this.path,
     this._engine,
     this._clock,
-    this._changeLogMaxEntries,
     this._maxKnownSchemaVersion,
     this._readOnly,
     this._compactionSnapshotDrainTimeout,
@@ -69,7 +67,6 @@ class DatabaseImpl implements Database {
   final RawEngine _engine;
   final bool _readOnly;
   final DateTime Function() _clock;
-  final int _changeLogMaxEntries;
   final int _maxKnownSchemaVersion;
   final Duration _compactionSnapshotDrainTimeout;
   final _AsyncMutex _txnMutex = _AsyncMutex();
@@ -174,6 +171,7 @@ class DatabaseImpl implements Database {
         nativeLibraryPath: config.nativeLibraryPath,
         encryptionKey: encryptionKey,
         encryptionKeyGeneration: config.encryptionKeyGeneration,
+        changeLogMaxEntries: config.changeLogMaxEntries,
       );
       db = DatabaseImpl._(
         path,
@@ -185,7 +183,6 @@ class DatabaseImpl implements Database {
           slowQueryThresholdMicros: config.slowQueryThresholdMicros,
         ),
         config.clock,
-        config.changeLogMaxEntries,
         config.maxKnownSchemaVersion,
         config.readOnly,
         config.compactionSnapshotDrainTimeout,
@@ -391,44 +388,8 @@ class DatabaseImpl implements Database {
             ),
           );
         }
-        if (_changeLogMaxEntries > 0) {
-          final logEntries = await snapshot.scanAll(geckoChangeLogTable);
-          final excess =
-              logEntries.length + mutations.length - _changeLogMaxEntries;
-          if (excess > 0) {
-            var removed = 0;
-            var highestPrunedLsn = 0;
-            for (final entry in logEntries) {
-              if (removed >= excess) break;
-              final prior = _recordFromMap(
-                codec.decode(entry.value ?? const []),
-              );
-              if (!prior.dirty) {
-                ops.add(RawDelete(geckoChangeLogTable, entry.key));
-                removed++;
-                if (prior.localMutationId > highestPrunedLsn) {
-                  highestPrunedLsn = prior.localMutationId;
-                }
-              }
-            }
-            if (highestPrunedLsn > 0) {
-              final oldWatermarkRaw = await snapshot.read(
-                geckoSyncMetaTable,
-                ByteKey(codec.encode(geckoWatermarkKey)),
-              );
-              final oldWatermark = oldWatermarkRaw == null
-                  ? 0
-                  : (codec.decode(oldWatermarkRaw) as int? ?? 0);
-              ops.add(
-                RawPut(
-                  geckoSyncMetaTable,
-                  ByteKey(codec.encode(geckoWatermarkKey)),
-                  codec.encode(math.max(oldWatermark, highestPrunedLsn)),
-                ),
-              );
-            }
-          }
-        }
+        // M10: change-log pruning executes in the Rust commit path (retention
+        // from DatabaseConfig.changeLogMaxEntries); no Dart scan/prune here.
         return ops;
       },
       buildChanges: (_) => [
@@ -1073,44 +1034,8 @@ class _TxnImpl implements Transaction {
             ),
           );
         }
-        if (_db._changeLogMaxEntries > 0) {
-          final logEntries = await snapshot.scanAll(geckoChangeLogTable);
-          final excess =
-              logEntries.length + _mutations.length - _db._changeLogMaxEntries;
-          if (excess > 0) {
-            var removed = 0;
-            var highestPrunedLsn = 0;
-            for (final entry in logEntries) {
-              if (removed >= excess) break;
-              final prior = _recordFromMap(
-                _codec.decode(entry.value ?? const []),
-              );
-              if (!prior.dirty) {
-                ops.add(RawDelete(geckoChangeLogTable, entry.key));
-                removed++;
-                if (prior.localMutationId > highestPrunedLsn) {
-                  highestPrunedLsn = prior.localMutationId;
-                }
-              }
-            }
-            if (highestPrunedLsn > 0) {
-              final oldWatermarkRaw = await snapshot.read(
-                geckoSyncMetaTable,
-                ByteKey(_codec.encode(geckoWatermarkKey)),
-              );
-              final oldWatermark = oldWatermarkRaw == null
-                  ? 0
-                  : (_codec.decode(oldWatermarkRaw) as int? ?? 0);
-              ops.add(
-                RawPut(
-                  geckoSyncMetaTable,
-                  ByteKey(_codec.encode(geckoWatermarkKey)),
-                  _codec.encode(math.max(oldWatermark, highestPrunedLsn)),
-                ),
-              );
-            }
-          }
-        }
+        // M10: change-log pruning executes in the Rust commit path (retention
+        // from DatabaseConfig.changeLogMaxEntries); no Dart scan/prune here.
         return ops;
       },
       buildChanges: (lsn) {
@@ -1326,20 +1251,18 @@ class _SyncHookImpl implements SyncHookApi {
   @override
   Future<List<PendingChange>> readLocallyChanged() async {
     _db._assertOpen();
-    final entries = await _db.engine.rawScanAll(geckoSyncStateTable);
-    final latest = <String, ChangeRecord>{};
-    for (final entry in entries) {
-      final record = _recordFromMap(_codec.decode(entry.value ?? const []));
-      if (record.collection == null) continue;
-      latest['${record.collection}:${record.recordId}'] = record;
-    }
+    // M10: the aggregation (scan + dirty/non-remote filter + localMutationId
+    // sort) executes in Rust; Dart decodes the returned records into the
+    // public model.
+    final records = [
+      for (final entry in await _db.engine.pendingChanges())
+        _recordFromMap(_codec.decode(entry.value ?? const [])),
+    ];
     return [
-      for (final record in latest.values)
-        if (record.dirty && record.origin != ChangeOrigin.remoteSync)
+      for (final record in records)
+        if (record.collection != null)
           PendingChange(recordId: record.recordId, change: record),
-    ]..sort(
-      (a, b) => a.change.localMutationId.compareTo(b.change.localMutationId),
-    );
+    ];
   }
 
   @override

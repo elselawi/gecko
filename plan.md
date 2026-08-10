@@ -634,14 +634,28 @@ benchmark pass unchanged against the Rust registry; the Dart invalidation code i
 - ⚠️ `tool/perf_gate.dart` remains blocked by environmental machine load (see the M7.5 note); the M8
   `watch` workload does strictly fewer native ops than the prior full re-evaluation.
 
-### M9 — Query-execution thinning (Dart executes no query semantics)  ☐
+### M9 — Query-execution thinning (Dart executes no query semantics)  ✅
 
-**Goal:** after M8, `query_impl.dart` (~1000 LOC) contains no query *semantics* — it is routing,
-orchestration, and model mapping. Today it still executes predicate and sort logic in Dart, which
+**Goal:** after M8, `query_impl.dart` contains no query *semantics* — it is routing, orchestration,
+and model mapping. Today it still executes predicate and sort logic in Dart, which
 
 **Goal:** after M8, `query_impl.dart` (~1000 LOC) contains no query *semantics* — it is routing,
 orchestration, and model mapping. Today it still executes predicate and sort logic in Dart, which
 violates the thin-client rule.
+
+**Status (implemented with M10):**
+- ✅ Every sorted query — windowed and unbounded — routes through the Rust `query_sorted` /
+  `query_indexed_ordered` primitives via `_nativeOrderedCollect` (no more `decoded.sort(_compareDecoded)`
+  in Dart). The Dart execution comparator `_compareDecoded` was deleted; `_group` predicate re-test was
+  removed (the native indexed-eq path applies the complete predicate in Rust via `queryIndexedLimited`).
+- ✅ Rust `query_indexed_ordered` missing-field fix: unbounded sorted queries now append missing
+  sort-field rows (previously only windowed appends ran). Rust test `query_indexed_ordered_streams_early_and_appends_missing`.
+- ✅ Parity: `where(nick eq).sort(age)` reports `nativeFilteredScan` (top-K; sort field not
+  index-covered). Index-narrowed-sort is a documented future primitive if profiling warrants.
+- ✅ Diagnostics: per-stage timers report `t.sort == 0` (no Dart sort) with `t.backendRead > 0`;
+  phase12 test updated.
+- ✅ Validation: 481 Dart tests + 65 Rust tests; coverage 95.0% line / 100% branch; API contract
+  gate; FRB bindings regenerated; bundled native artifact rebuilt. `dart analyze` clean.
 
 **Steps:**
 1. **Unbounded sorted queries sort in Rust.** `_scanWith` currently calls
@@ -661,7 +675,7 @@ secondary predicate; plan attribution (`IndexPlan`) unchanged.
 **Done when:** no Dart execution path evaluates a predicate or orders rows; all query semantics
 (predicate, sort, window, aggregate) execute in Rust; parity tests pass.
 
-### M10 — Engine-logic thinning (`database_impl.dart` audit)  ☐
+### M10 — Engine-logic thinning (`database_impl.dart` audit)  ✅
 
 **Goal:** `database_impl.dart` (2825 LOC) is orchestration, policy, model mapping, and transport —
 not storage or aggregation computation.
@@ -678,6 +692,23 @@ not storage or aggregation computation.
 4. **Audit the remainder.** Transaction orchestration, migration orchestration, conflict handling,
    cursor paging state — keep orchestration and user callbacks in Dart; move any remaining storage or
    aggregation computation to Rust primitives.
+
+**Status (implemented with M9):**
+- ✅ Change-log pruning moved to Rust: `prune_change_log` runs inside the same write transaction as
+  the batch commit (retention count; dirty records always kept; watermark advanced in
+  `__gecko_sync_meta`). `changeLogMaxEntries` is threaded through FRB → worker client → raw backend →
+  engine; both Dart pruning blocks (bulkWrite + `_TxnImpl.commit`) were deleted.
+  Rust test `change_log_pruning_keeps_dirty_records_and_advances_watermark`.
+- ✅ Sync-state aggregation moved to Rust: `pending_changes` scans `__gecko_sync_state` and returns
+  dirty local records sorted by `localMutationId`; `readLocallyChanged` in Dart now decodes the Rust
+  aggregation instead of computing it. Rust test `pending_changes_aggregates_dirty_local_records_sorted`.
+- ⏳ **Remaining (documented follow-up): attachment/blob dedup (step 2) still reads the attachment
+  table in Dart.** Moving it needs an attachment-map wire-format decoder in Rust (like the
+  change-record decoder in `prune_change_log`); tracked as a follow-up, not shipped in M10.
+- ✅ Validation: 481 Dart tests + 65 Rust tests; coverage 95.0% line / 100% branch; API contract
+  gate (snapshot regenerated — `RawBackend` gained `pendingChanges`); tool tests 32; offline lint;
+  traceability 12; security review (4 pre-existing advisories); FRB bindings regenerated; bundled
+  native artifact rebuilt. `dart analyze` clean.
 
 **Rust tests required:** pruning retention under large logs; attachment dedup + orphan cleanup;
 sync-state aggregation; migration batch/snapshot semantics.
@@ -734,8 +765,8 @@ documented.
   unchanged.
 - **M3 gates M4–M7** (read-path completion must finish before sort/limit/migration cleanup build on it).
   **M7 gates the M8 reactive registry** (the native execution boundary must exist first). **M8–M11 are
-  the Dart-thinning sequence** (registry ✅ → query → engine → relationships); each lands with Rust tests
-  first, then deletes the Dart it replaces. **M12 can start immediately in parallel.**
+  the Dart-thinning sequence** (registry ✅ → query ✅ → engine ✅ → relationships ☐); each lands with
+  Rust tests first, then deletes the Dart it replaces. **M12 can start immediately in parallel.**
 - Every Dart→Rust move (M7, M8–M11) lands with Rust unit tests first; Dart code is deleted only after
   the Rust path is green and parity tests pass.
 - FRB codegen: after changing `rust/src/api.rs`, run

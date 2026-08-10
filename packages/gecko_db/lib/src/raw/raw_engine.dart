@@ -113,6 +113,13 @@ class RawEngine {
     return _backend.liveQueryCount();
   }
 
+  /// M10: aggregates pending local changes in Rust (scan/filter/sort executed
+  /// there); Dart only decodes the returned records.
+  Future<List<RawEntry>> pendingChanges() {
+    _assertUsable();
+    return _backend.pendingChanges();
+  }
+
   /// Applies [ops] atomically and forwards any M8 reactive-registry deltas the
   /// worker produced to [liveDeltas] (one delta per touched registration).
   Future<void> _applyBatchWithDeltas(List<RawOp> ops) async {

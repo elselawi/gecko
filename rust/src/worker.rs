@@ -453,13 +453,26 @@ impl RedbWorker {
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)]
     ) -> Result<ApplyBatchOutcome, WorkerError> {
-        self.apply_batch_impl(operations, index_definitions)
+        self.apply_batch_impl(operations, index_definitions, 0)
+    }
+
+    /// M8/M10: like [Self::apply_batch_reactive], but also prunes the
+    /// pending-sync change log in the same transaction when the batch touched
+    /// it and [change_log_max_entries] (0 = disabled) is exceeded.
+    pub fn apply_batch_reactive_with_retention(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)],
+        change_log_max_entries: u64,
+    ) -> Result<ApplyBatchOutcome, WorkerError> {
+        self.apply_batch_impl(operations, index_definitions, change_log_max_entries)
     }
 
     fn apply_batch_impl(
         &mut self,
         operations: &[Op],
-        index_definitions: &[(String, Vec<String>)]
+        index_definitions: &[(String, Vec<String>)],
+        change_log_max_entries: u64,
     ) -> Result<ApplyBatchOutcome, WorkerError> {
         if self.read_only {
             return Err(
@@ -652,6 +665,13 @@ impl RedbWorker {
 
         // M8: re-evaluate every touched live registration in the same write
         // transaction (the registry reads the just-applied state), then commit.
+        // M10: prune the pending-sync change log in the same transaction when
+        // the batch grew it and a retention limit is configured.
+        if change_log_max_entries > 0
+            && affected.iter().any(|(table, _)| table == "__gecko_change_log")
+        {
+            prune_change_log(&transaction, change_log_max_entries)?;
+        }
         let deltas = self.registry.apply(&transaction, &affected, &cleared)?;
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         self.commit_sequence += 1;
@@ -684,6 +704,43 @@ impl RedbWorker {
     /// M8 (ADR-0030): removes a live-query registration (idempotent).
     pub fn unregister_live_query(&mut self, id: u64) {
         self.registry.unregister(id);
+    }
+
+    /// M10 (plan §M10): aggregates the pending local changes from the
+    /// sync-state table: only DIRTY records whose origin is not `remoteSync`,
+    /// ordered by `localMutationId`. Returns `(key, record bytes)` pairs; Dart
+    /// decodes them into the public `PendingChange` model. Each sync-state key
+    /// holds exactly one record, so no per-(collection, recordId) dedup is
+    /// needed — the aggregation, filter, and sort execute here, not in Dart.
+    pub fn pending_changes(&self) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        let state = match transaction.open_table(table_definition("__gecko_sync_state")) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut rows: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
+        for entry in state
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row = entry.1.value();
+            if !change_record_dirty(row) {
+                continue;
+            }
+            let origin = match crate::value_codec::find_field(row, "origin") {
+                Ok(Some(crate::value_codec::RowValue::String(s))) => s,
+                _ => String::new(),
+            };
+            if origin == "remoteSync" {
+                continue;
+            }
+            let lsn = change_record_mutation_id(row);
+            rows.push((entry.0.value().to_vec(), row.to_vec(), lsn));
+        }
+        rows.sort_by_key(|(_, _, lsn)| *lsn);
+        Ok(rows.into_iter().map(|(key, row, _)| (key, row)).collect())
     }
 
     /// Number of active live-query registrations (diagnostics).
@@ -2140,12 +2197,14 @@ impl RedbWorker {
                 }
             }
         }
-        // Non-eq mode: if the index stream did not fill the window, the rows
-        // missing `sort_field` (which sort LAST for ascending) must be
-        // appended. They are found with a table scan (stable recordId order,
-        // matching Dart's stable sort of ties). In eq-bounded mode every
-        // matching row carries the sort field, so no append is needed.
-        let needs_append = !eq_bounded && want.is_some_and(|w| (matches.len() as u64) < w);
+        // Non-eq mode: if the index stream did not fill the window (or there
+        // is no window — an unbounded sorted query), the rows missing
+        // `sort_field` (which sort LAST for ascending) must be appended. They
+        // are found with a table scan (stable recordId order, matching Dart's
+        // stable sort of ties). In eq-bounded mode every matching row carries
+        // the sort field, so no append is needed.
+        let needs_append = !eq_bounded
+            && want.is_none_or(|w| (matches.len() as u64) < w);
         if needs_append {
             let mut present = std::collections::HashSet::new();
             for k in &matched_keys {
@@ -2299,6 +2358,99 @@ fn map_open_error(error: DatabaseError, path: &str) -> WorkerError {
 pub(crate) fn table_definition(name: &str) -> BytesTable {
     let full_name = format!("{TABLE_PREFIX}{name}");
     TableDefinition::new(Box::leak(full_name.into_boxed_str()))
+}
+
+/// Reads the `dirty` flag from a change-record map (encoded with the
+/// DefaultWireCodec port). A missing `dirty` field defaults to true (dirty →
+/// kept), matching the Dart `_recordFromMap` default.
+fn change_record_dirty(row_bytes: &[u8]) -> bool {
+    match crate::value_codec::find_field(row_bytes, "dirty") {
+        Ok(Some(crate::value_codec::RowValue::Bool(b))) => b,
+        _ => true,
+    }
+}
+
+/// Reads `localMutationId` from a change-record map.
+fn change_record_mutation_id(row_bytes: &[u8]) -> u64 {
+    match crate::value_codec::find_field(row_bytes, "localMutationId") {
+        Ok(Some(crate::value_codec::RowValue::Int64(n))) => n.max(0) as u64,
+        _ => 0,
+    }
+}
+
+/// M10 (plan §M10): prunes the pending-sync change log in the given write
+/// transaction when it exceeds [max_entries]. Only NON-DIRTY records (already
+/// synced) are pruned, oldest-first (the log is keyed by `[lsn, ordinal]`, so
+/// table iteration order is commit order). The sync watermark is advanced to
+/// the highest pruned LSN — matching the previous Dart-side behavior, now
+/// executed in the same transaction as the batch that grew the log.
+fn prune_change_log(
+    transaction: &WriteTransaction,
+    max_entries: u64,
+) -> Result<(), WorkerError> {
+    if max_entries == 0 {
+        return Ok(());
+    }
+    let mut log = match transaction.open_table(table_definition("__gecko_change_log")) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(error) => return Err(WorkerError::Storage(error.to_string())),
+    };
+    let mut count: u64 = 0;
+    let mut non_dirty: Vec<(Vec<u8>, u64)> = Vec::new();
+    for entry in log
+        .iter()
+        .map_err(|error| WorkerError::Storage(error.to_string()))?
+    {
+        let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+        let row = entry.1.value();
+        count += 1;
+        if !change_record_dirty(row) {
+            non_dirty.push((entry.0.value().to_vec(), change_record_mutation_id(row)));
+        }
+    }
+    let excess = count.saturating_sub(max_entries);
+    if excess == 0 {
+        return Ok(());
+    }
+    let mut highest_pruned_lsn: u64 = 0;
+    for (key, lsn) in non_dirty.into_iter().take(excess as usize) {
+        log.remove(key.as_slice()).map_err(|error| WorkerError::Storage(error.to_string()))?;
+        if lsn > highest_pruned_lsn {
+            highest_pruned_lsn = lsn;
+        }
+    }
+    if highest_pruned_lsn > 0 {
+        let mut meta = match transaction.open_table(table_definition("__gecko_sync_meta")) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        // Watermark key = DefaultWireCodec string "watermark".
+        let mut key = vec![crate::value_codec::TAG_STRING];
+        let wm = b"watermark";
+        key.extend_from_slice(&(wm.len() as u32).to_be_bytes());
+        key.extend_from_slice(wm);
+        let old = meta
+            .get(key.as_slice())
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+            .map(|v| v.value().to_vec());
+        let old_wm = old
+            .as_deref()
+            .and_then(|bytes| crate::value_codec::decode_value(bytes).ok())
+            .and_then(|value| match value {
+                crate::value_codec::RowValue::Int64(n) => Some(n.max(0) as u64),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let new_wm = old_wm.max(highest_pruned_lsn);
+        // Watermark value = DefaultWireCodec int64.
+        let mut value = vec![crate::value_codec::TAG_INT64];
+        value.extend_from_slice(&(new_wm as i64).to_be_bytes());
+        meta.insert(key.as_slice(), value.as_slice())
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn index_fields_for<'a>(
@@ -3622,6 +3774,26 @@ mod tests {
             .unwrap();
         assert_eq!(off[0].0, b"k2");
         assert_eq!(off[1].0, b"k3");
+        // M9: unbounded (limit None) sorted queries must ALSO append the
+        // missing-field row (the index stream alone would drop it).
+        let all = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        let keys: Vec<&[u8]> = all.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(
+            keys,
+            vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -4074,6 +4246,164 @@ mod tests {
         assert!(result.deltas.is_empty());
         // Unregister is idempotent.
         worker.unregister_live_query(id);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // --- M10: change-log pruning in the Rust commit path ---
+
+    fn encode_log_key(lsn: u64) -> Vec<u8> {
+        let mut out = vec![crate::value_codec::TAG_INT64];
+        out.extend_from_slice(&(lsn as i64).to_be_bytes());
+        out
+    }
+
+    fn encode_change_record(dirty: bool, lsn: u64) -> Vec<u8> {
+        let mut dirty_bytes = vec![crate::value_codec::TAG_BOOL];
+        dirty_bytes.push(if dirty { 1 } else { 0 });
+        let mut id_bytes = vec![crate::value_codec::TAG_INT64];
+        id_bytes.extend_from_slice(&(lsn as i64).to_be_bytes());
+        encode_test_row(&[("dirty", dirty_bytes), ("localMutationId", id_bytes)])
+    }
+
+    fn watermark_key() -> Vec<u8> {
+        let mut key = vec![crate::value_codec::TAG_STRING];
+        let wm = b"watermark";
+        key.extend_from_slice(&(wm.len() as u32).to_be_bytes());
+        key.extend_from_slice(wm);
+        key
+    }
+
+    fn watermark_value(n: u64) -> Vec<u8> {
+        let mut out = vec![crate::value_codec::TAG_INT64];
+        out.extend_from_slice(&(n as i64).to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn change_log_pruning_keeps_dirty_records_and_advances_watermark() {
+        let path = temp_path("m10-prune");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // 5 non-dirty records (lsn 1..5) + 2 dirty records (lsn 6,7) + a
+        // watermark already at 3.
+        let mut seed = Vec::new();
+        for lsn in 1..=5u64 {
+            seed.push(op_with_table(
+                OpKind::Put,
+                "__gecko_change_log",
+                Some(encode_log_key(lsn)),
+                Some(encode_change_record(false, lsn)),
+            ));
+        }
+        for lsn in 6..=7u64 {
+            seed.push(op_with_table(
+                OpKind::Put,
+                "__gecko_change_log",
+                Some(encode_log_key(lsn)),
+                Some(encode_change_record(true, lsn)),
+            ));
+        }
+        seed.push(op_with_table(
+            OpKind::Put,
+            "__gecko_sync_meta",
+            Some(watermark_key()),
+            Some(watermark_value(3)),
+        ));
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+
+        // Retention 3: a change-log-touching batch makes count 8 → excess 5,
+        // so the 5 oldest NON-DIRTY records (lsn 1..5) are pruned and the
+        // watermark advances to max(3, 5) = 5.
+        let result = worker
+            .apply_batch_reactive_with_retention(
+                &[op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(8)),
+                    Some(encode_change_record(true, 8)),
+                )],
+                &[],
+                3,
+            )
+            .unwrap();
+        assert!(result.deltas.is_empty());
+        for lsn in 1..=5u64 {
+            assert_eq!(
+                worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap(),
+                None,
+                "non-dirty lsn {lsn} should be pruned"
+            );
+        }
+        // Dirty records (6,7,8) survive.
+        assert!(worker.get("__gecko_change_log", &encode_log_key(6)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key(7)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key(8)).unwrap().is_some());
+        // Watermark advanced to 5.
+        let wm = worker.get("__gecko_sync_meta", &watermark_key()).unwrap();
+        assert_eq!(
+            crate::value_codec::decode_value(&wm.unwrap()).ok(),
+            Some(crate::value_codec::RowValue::Int64(5))
+        );
+
+        // A batch that does NOT touch the change log must not prune.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k1".to_vec()),
+                    Some(vec![1]),
+                )],
+                &[],
+                1,
+            )
+            .unwrap();
+        assert!(worker.get("__gecko_change_log", &encode_log_key(6)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key(7)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key(8)).unwrap().is_some());
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn encode_change_record_with_origin(dirty: bool, lsn: u64, origin: &str) -> Vec<u8> {
+        let mut dirty_bytes = vec![crate::value_codec::TAG_BOOL];
+        dirty_bytes.push(if dirty { 1 } else { 0 });
+        let mut id_bytes = vec![crate::value_codec::TAG_INT64];
+        id_bytes.extend_from_slice(&(lsn as i64).to_be_bytes());
+        encode_test_row(
+            &[
+                ("dirty", dirty_bytes),
+                ("localMutationId", id_bytes),
+                ("origin", encode_test_string(origin)),
+            ],
+        )
+    }
+
+    #[test]
+    fn pending_changes_aggregates_dirty_local_records_sorted() {
+        let path = temp_path("m10-pending");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let rows: Vec<(&[u8], bool, &str, u64)> = vec![
+            (b"a", true, "user", 10),
+            (b"b", true, "remoteSync", 20),
+            (b"c", false, "user", 30),
+            (b"d", true, "user", 5),
+        ];
+        let mut ops = Vec::new();
+        for (key, dirty, origin, lsn) in rows {
+            ops.push(op_with_table(
+                OpKind::Put,
+                "__gecko_sync_state",
+                Some(key.to_vec()),
+                Some(encode_change_record_with_origin(dirty, lsn, origin)),
+            ));
+        }
+        worker.apply_batch(&ops).unwrap();
+        let got = worker.pending_changes().unwrap();
+        // Only dirty + non-remote records qualify: a (lsn 10) and d (lsn 5);
+        // sorted by localMutationId → d, a.
+        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(keys, vec![&b"d"[..], &b"a"[..]]);
+        // A missing sync-state table yields an empty result, never an error.
+        assert!(worker.pending_changes().is_ok());
         let _ = std::fs::remove_file(path);
     }
 }

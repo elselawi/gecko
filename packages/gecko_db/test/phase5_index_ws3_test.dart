@@ -576,7 +576,10 @@ void main() {
         }
         final q = col.where({'nick': 'g2'}).sort([const SortSpec('age')]);
         final result = await q.findAll();
-        expect(q.lastPlan, IndexPlan.secondaryIndex);
+        // M9: every sorted query routes through Rust. The sort field (age) is
+        // NOT covered by the durable nick index, so Rust serves it as a
+        // filtered-scan + top-K (`nativeFilteredScan`), never a Dart sort.
+        expect(q.lastPlan, IndexPlan.nativeFilteredScan);
         // Every result is in group g2 and ages are ascending.
         for (final r in result) {
           expect(r.nick, 'g2');

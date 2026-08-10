@@ -30,6 +30,9 @@ Future<Object?> dispatchNativeWorker(
                   : const <Object?>[]))
             _decodeIndexDefinition(definition),
         ],
+        changeLogMaxEntries: _asBigInt(
+          arguments.length > 2 ? arguments[2] : 0,
+        ),
       );
       return <String, Object?>{
         'sequence': result.sequence.toString(),
@@ -56,6 +59,11 @@ Future<Object?> dispatchNativeWorker(
       return null;
     case 'liveQueryCount':
       return (await worker.liveQueryCount()).toString();
+    case 'pendingChanges':
+      final pairs = await worker.pendingChanges();
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
     case 'repairIndex':
       await worker.repairIndex(
         table: arguments[0] as String,

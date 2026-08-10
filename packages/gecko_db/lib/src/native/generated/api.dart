@@ -15,6 +15,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
   Future<ApplyBatchResult> applyBatch({
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
+    required BigInt changeLogMaxEntries,
   });
 
   /// Explicitly releases the redb file handle before the Dart object is
@@ -76,6 +77,11 @@ abstract class NativeWorker implements RustOpaqueInterface {
     key: key,
     keyGen: keyGen,
   );
+
+  /// M10 (plan §M10): aggregates the pending local changes from the
+  /// sync-state table (dirty, non-remote, ordered by localMutationId) in
+  /// Rust. Dart decodes the returned records into `PendingChange`.
+  Future<List<(Uint8List, Uint8List)>> pendingChanges();
 
   /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
   /// [table], evaluates [predicate] against each row's encoded bytes IN RUST

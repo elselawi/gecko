@@ -31,6 +31,7 @@ class WebWorkerClient {
   Future<List<RegistryDelta>> applyBatch(
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
+    int changeLogMaxEntries = 0,
   }) async => _unsupported();
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
@@ -40,6 +41,7 @@ class WebWorkerClient {
   }) async => _unsupported();
   Future<void> unregisterLiveQuery(int id) async => _unsupported();
   Future<int> liveQueryCount() async => _unsupported();
+  Future<List<RawEntry>> pendingChanges() async => _unsupported();
   Future<List<int>?> get({
     required String table,
     required List<int> key,

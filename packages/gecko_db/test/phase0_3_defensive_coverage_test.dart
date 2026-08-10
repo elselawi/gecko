@@ -60,6 +60,9 @@ class _DelayedBackend implements RawBackend {
   Future<int> liveQueryCount() => delegate.liveQueryCount();
 
   @override
+  Future<List<RawEntry>> pendingChanges() => delegate.pendingChanges();
+
+  @override
   Future<RawSnapshot> snapshot() => delegate.snapshot();
 
   @override

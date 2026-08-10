@@ -21,7 +21,6 @@ import 'durable_index_bounds.dart';
 import 'filter.dart';
 import 'predicate_codec.dart';
 import 'sort_spec_codec.dart';
-import 'sorting.dart';
 
 /// A decoded row plus its raw key, carried during query evaluation.
 class _Decoded {
@@ -146,8 +145,6 @@ class QueryImpl<T> implements Query<T> {
         .._limit = _limit
         .._offset = _offset;
 
-  FilterGroup get _group => FilterGroup(_filters);
-
   /// Lazy iteration over matching decoded rows in sort order. Native queries
   /// use durable Rust indexes directly.
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
@@ -242,23 +239,17 @@ class QueryImpl<T> implements Query<T> {
         final (field, value) = nativeEq;
         final (start, end) = eqBounds(_table, field, value, codec: _codec);
         if (t != null) t.start(_QueryStage.backendRead);
-        // M4: when the caller wants a window, the index scan applies the full
-        // predicate in Rust and stops early (never transfers rows beyond it).
-        final windowed = nativeLimit != null || nativeOffset > 0;
-        final entries = windowed
-            ? await snap.queryIndexedLimited(
-                table: _table,
-                start: ByteKey(start),
-                end: ByteKey(end),
-                predicateBytes: encodePredicate(_filters, codec: _codec),
-                limit: nativeLimit,
-                offset: nativeOffset,
-              )
-            : await snap.queryIndexed(
-                table: _table,
-                start: ByteKey(start),
-                end: ByteKey(end),
-              );
+        // M9: the index scan always applies the complete predicate in Rust
+        // (and stops early when a window is requested), so Dart never
+        // re-tests rows or orders them.
+        final entries = await snap.queryIndexedLimited(
+          table: _table,
+          start: ByteKey(start),
+          end: ByteKey(end),
+          predicateBytes: encodePredicate(_filters, codec: _codec),
+          limit: nativeLimit,
+          offset: nativeOffset,
+        );
         if (t != null) t.stop(_QueryStage.backendRead);
         final decoded = <_Decoded>[];
         for (final entry in entries) {
@@ -275,20 +266,10 @@ class QueryImpl<T> implements Query<T> {
           if (t != null) t.stop(_QueryStage.mapCopy);
           decoded.add(_Decoded(entry.key, row));
         }
-        if (_sort.isNotEmpty) {
-          if (t != null) t.start(_QueryStage.sort);
-          decoded.sort(_compareDecoded);
-          if (t != null) t.stop(_QueryStage.sort);
-        }
         if (t != null) t.start(_QueryStage.predicate);
         for (final item in decoded) {
-          // The windowed Rust route already applied the complete predicate;
-          // the unwindowed primitive is only an index join and still needs
-          // the Dart predicate recheck.
-          if (windowed || _group.test(item.row)) {
-            if (t != null) t.matched++;
-            yield item;
-          }
+          if (t != null) t.matched++;
+          yield item;
         }
         if (t != null) t.stopAccum(_QueryStage.predicate);
         return;
@@ -321,11 +302,6 @@ class QueryImpl<T> implements Query<T> {
         }
         if (t != null) t.stop(_QueryStage.mapCopy);
         decoded.add(_Decoded(entry.key, row));
-      }
-      if (_sort.isNotEmpty) {
-        if (t != null) t.start(_QueryStage.sort);
-        decoded.sort(_compareDecoded);
-        if (t != null) t.stop(_QueryStage.sort);
       }
       if (t != null) t.start(_QueryStage.predicate);
       for (final item in decoded) {
@@ -374,13 +350,8 @@ class QueryImpl<T> implements Query<T> {
       if (t != null) t.stop(_QueryStage.mapCopy);
       decoded.add(_Decoded(entry.key, row));
     }
-    if (_sort.isNotEmpty) {
-      if (t != null) t.start(_QueryStage.sort);
-      decoded.sort(_compareDecoded);
-      if (t != null) t.stop(_QueryStage.sort);
-    }
-    // The predicate was already evaluated in Rust; re-test in Dart only when
-    // timing is armed (to populate the `predicate` stage for the breakdown).
+    // The predicate was already evaluated in Rust; the timing predicate stage
+    // below only counts matched rows for the breakdown.
     if (t != null) t.start(_QueryStage.predicate);
     for (final item in decoded) {
       if (t != null) t.matched++;
@@ -394,22 +365,12 @@ class QueryImpl<T> implements Query<T> {
   Map<Object?, Object?> _mapOf(Object? value) =>
       value is Map ? Map<Object?, Object?>.from(value) : <Object?, Object?>{};
 
-  /// M4: the query-engine sort comparator. Rows are ordered by [compareRows]
-  /// (Dart's documented field ordering); ties are then broken by the record
-  /// key bytes so the result is DETERMINISTIC and matches the durable index's
-  /// `(value, recordId)` order (which the native index-ordered fast path and
-  /// the Rust top-K use). Dart's `List.sort` is not stable, so without this
-  /// tiebreak equal-key results would be arbitrary and differ per backend.
-  int _compareDecoded(_Decoded a, _Decoded b) {
-    final c = compareRows(a.row, b.row, _sort);
-    return c != 0 ? c : a.key.compareTo(b.key);
-  }
-
   /// Applies limit/offset after an already-ordered stream.
   Future<List<_Decoded>> _collectOrdered({_QueryTimings? t}) async {
-    // M4: sorted + limited queries route to the Rust top-K / index-ordered
-    // path — no full materialization, no Dart sort.
-    if (_sort.isNotEmpty && (_limit != null || (_offset ?? 0) > 0)) {
+    // M9: EVERY sorted query routes through Rust — the worker applies the
+    // predicate + sort + window (top-K or index-ordered). Dart never orders
+    // rows; it only materializes the returned entries.
+    if (_sort.isNotEmpty) {
       return _nativeOrderedCollect(t);
     }
     final matching = <_Decoded>[];
@@ -433,13 +394,20 @@ class QueryImpl<T> implements Query<T> {
     return matching.sublist(sliceStart, end);
   }
 
-  /// M4: routes a sorted + limited query through the Rust top-K or
-  /// index-ordered path, returning the fully-ordered window (predicate +
-  /// sort + limit/offset all applied in Rust).
-  Future<List<_Decoded>> _nativeOrderedCollect(_QueryTimings? t) async {
+  /// M4/M9: routes a sorted query through the Rust top-K or index-ordered
+  /// path, returning the fully-ordered result (predicate + sort + window all
+  /// applied in Rust). [snapshot] may be supplied by a caller that already
+  /// holds one (e.g. the snapshot-bound cursor); otherwise one is opened and
+  /// disposed here.
+  Future<List<_Decoded>> _nativeOrderedCollect(
+    _QueryTimings? t, {
+    NativeRawSnapshot? snapshot,
+  }) async {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
-    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
+    final ownsSnapshot = snapshot == null;
+    final snap =
+        snapshot ?? (await _engine.backend.snapshot() as NativeRawSnapshot);
     try {
       final idx = secondary;
       final predicateBytes = encodePredicate(_filters, codec: _codec);
@@ -499,7 +467,9 @@ class QueryImpl<T> implements Query<T> {
       if (t != null) t.stopAccum(_QueryStage.predicate);
       return decoded;
     } finally {
-      await snap.dispose();
+      if (ownsSnapshot) {
+        await snap.dispose();
+      }
     }
   }
 
@@ -594,16 +564,20 @@ class QueryImpl<T> implements Query<T> {
 
   /// Lazily streams matching rows without materializing the full result
   /// set. Unsorted queries stream directly from the backend; sorted queries
-  /// must materialize order and are therefore equivalent to [findAll], which
-  /// is documented.
+  /// must materialize order (M9: the sort executes in Rust) and are therefore
+  /// equivalent to [findAll], which is documented.
   @override
   Stream<T> iterate() {
+    if (_sort.isNotEmpty) {
+      return () async* {
+        final items = await _nativeOrderedCollect(null);
+        for (final d in items) {
+          yield fromRow(d.row);
+        }
+      }();
+    }
     // M3: route through `_scan()` (which delegates to `_scanWith`) so the
-    // native fast path (indexed eq + predicate push) applies. Previously
-    // this bypassed it via a per-id `snap.read` loop in `_streamUnsorted`,
-    // which silently fell back to the Dart scan + `_group.test` on native
-    // and missed the M2 predicate-push win (the relationship N+1 pattern).
-    // `_scan` handles snapshot lifecycle + sort materialization uniformly.
+    // native fast path (indexed eq + predicate push) applies.
     return _scan().map((d) => fromRow(d.row));
   }
 
@@ -703,6 +677,23 @@ class QueryImpl<T> implements Query<T> {
     final rawCursor = afterKey == null ? null : ByteKey(afterKey as List<int>);
     final page = <_Decoded>[];
     var sawAfter = afterKey == null;
+    // Sorted queries materialize their ordered set in Rust (M9) and page over
+    // it; unsorted queries stream directly from the backend.
+    if (_sort.isNotEmpty) {
+      final ordered = await _nativeOrderedCollect(null);
+      for (final item in ordered) {
+        if (!sawAfter) {
+          if (rawCursor != null && item.key.compareTo(rawCursor) <= 0) {
+            continue;
+          }
+          sawAfter = true;
+        }
+        page.add(item);
+        if (page.length >= limit) break;
+      }
+      final nextCursor = page.isEmpty ? null : page.last.key.bytes;
+      return ([for (final item in page) fromRow(item.row)], nextCursor);
+    }
     await for (final item in _scan()) {
       if (!sawAfter) {
         if (rawCursor != null && item.key.compareTo(rawCursor) <= 0) continue;
@@ -804,8 +795,11 @@ class QueryImpl<T> implements Query<T> {
   }
 
   /// Materializes the ordered matching set against [snap] (used by the
-  /// snapshot-bound cursor).
+  /// snapshot-bound cursor). Sorted materialization executes in Rust (M9).
   Future<List<_Decoded>> _materialize(NativeRawSnapshot snap) async {
+    if (_sort.isNotEmpty) {
+      return _nativeOrderedCollect(null, snapshot: snap);
+    }
     final result = <_Decoded>[];
     await for (final item in _scanWith(snap, _secondary, null)) {
       result.add(item);

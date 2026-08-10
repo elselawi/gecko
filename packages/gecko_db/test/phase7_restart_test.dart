@@ -46,6 +46,8 @@ class _FailingBackend implements RawBackend {
   Future<void> unregisterLiveQuery(int id) => _inner.unregisterLiveQuery(id);
   @override
   Future<int> liveQueryCount() => _inner.liveQueryCount();
+  @override
+  Future<List<RawEntry>> pendingChanges() => _inner.pendingChanges();
 
   @override
   bool get isReadOnly => _inner.isReadOnly;

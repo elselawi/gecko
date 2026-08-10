@@ -19,10 +19,14 @@ import 'raw_backend.dart';
 
 /// A file-backed backend using the generated flutter_rust_bridge worker.
 class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
-  NativeRawBackend._(this._worker, this._readOnly);
+  NativeRawBackend._(this._worker, this._readOnly, {int changeLogMaxEntries = 0})
+    : _changeLogMaxEntries = changeLogMaxEntries;
 
   final NativeWorkerClient _worker;
   final bool _readOnly;
+  /// M10: pending-sync change-log retention (0 = disabled); pruned in the
+  /// Rust commit path when a batch grows the log beyond this bound.
+  final int _changeLogMaxEntries;
   final Map<String, List<String>> _durableIndexes = <String, List<String>>{};
 
   @override
@@ -101,6 +105,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     String? nativeLibraryPath,
     List<int>? encryptionKey,
     int encryptionKeyGeneration = 1,
+    int changeLogMaxEntries = 0,
   }) async {
     try {
       final backend = NativeRawBackend._(
@@ -112,6 +117,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
           encryptionKeyGeneration: encryptionKeyGeneration,
         ),
         readOnly,
+        changeLogMaxEntries: changeLogMaxEntries,
       );
       try {
         final handshake = CompatibilityHandshake.decode(
@@ -162,6 +168,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
         indexDefinitions: [
           for (final entry in _durableIndexes.entries) (entry.key, entry.value),
         ],
+        changeLogMaxEntries: _changeLogMaxEntries,
       );
       return ApplyBatchResult(
         affected: {
@@ -216,6 +223,17 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
   Future<int> liveQueryCount() async {
     try {
       return await _worker.liveQueryCount();
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M10: aggregates pending local changes in Rust; Dart only decodes the
+  /// returned records.
+  @override
+  Future<List<RawEntry>> pendingChanges() async {
+    try {
+      return await _worker.pendingChanges();
     } catch (error) {
       throw mapNativeError(error);
     }

@@ -139,7 +139,8 @@ impl NativeWorker {
     pub async fn apply_batch(
         &mut self,
         encoded_ops: Vec<u8>,
-        index_definitions: Vec<(String, Vec<String>)>
+        index_definitions: Vec<(String, Vec<String>)>,
+        change_log_max_entries: u64,
     ) -> Result<ApplyBatchResult, String> {
         let operations = crate::wire::Op
             ::decode_batch(&encoded_ops)
@@ -150,7 +151,11 @@ impl NativeWorker {
             })?;
         let result = self
             .worker
-            .apply_batch_reactive(&operations, &index_definitions)
+            .apply_batch_reactive_with_retention(
+                &operations,
+                &index_definitions,
+                change_log_max_entries,
+            )
             .map_err(encode_worker_error)?;
         Ok(ApplyBatchResult {
             sequence: result.sequence,
@@ -178,6 +183,13 @@ impl NativeWorker {
     pub async fn unregister_live_query(&mut self, id: u64) -> Result<(), String> {
         self.worker.unregister_live_query(id);
         Ok(())
+    }
+
+    /// M10 (plan §M10): aggregates the pending local changes from the
+    /// sync-state table (dirty, non-remote, ordered by localMutationId) in
+    /// Rust. Dart decodes the returned records into `PendingChange`.
+    pub async fn pending_changes(&self) -> Result<Vec<ByteEntry>, String> {
+        self.worker.pending_changes().map_err(encode_worker_error)
     }
 
     /// Number of active live-query registrations (diagnostics).
