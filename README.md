@@ -6,8 +6,9 @@ SharedPreferences replacement you never have to hand-roll an observable layer fo
 widgets consume live, typed queries directly — no separate state-management
 package required.
 
-**Status: in active development (M6.5 pre-release simplification next).** See
-[`plan.md`](plan.md) for the full roadmap and milestone progress checkboxes.
+**Status: in active development (M7.5 file-backed Rust consolidation kickoff).** See
+[`plan.md`](plan.md) and [`docs/m7-5-migration-plan.md`](docs/m7-5-migration-plan.md) for the
+roadmap and staged migration plan.
 
 ---
 

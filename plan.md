@@ -504,12 +504,16 @@ selected relationship operations; migration callbacks and public/reactive semant
 the route matrix and M8 handoff are documented; coverage, parity, security, FRB, Rust, and release gates
 pass. M7.5 then removes the Dart `InMemoryBackend` and public in-memory mode.
 
-### M7.5 — File-backed Rust engine consolidation  ☐ after M7.1
+### M7.5 — File-backed Rust engine consolidation  ◐ kickoff after M7.1
 
 **Goal:** remove the Dart `InMemoryBackend` and the public in-memory database mode while preserving Web
 support through the Rust/Wasm + OPFS file-backed path. After M7.5, every supported database is backed
 by Rust/redb and a file-like persistent store; Dart no longer contains a second storage/query/index
 engine.
+
+**Kickoff:** ADR-0028 locks the pre-release product decision and
+`docs/m7-5-migration-plan.md` records the dependency inventory, fixture conversion,
+sequencing, measurements, and gates. No public API or backend deletion has happened yet.
 
 **Product contract after M7.5:**
 
