@@ -7,6 +7,17 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7.5 — File-backed Rust engine consolidation complete**: the Dart
+  `InMemoryBackend` and `SecondaryIndex` are deleted, and every supported store
+  is Rust/redb (native file or OPFS file). `DatabaseConfig.inMemory`, the
+  `useInMemory` opener path, `mem://`, `Database.open(':memory:')`, the wasm
+  `:memory:` worker branch, and the main-thread `:memory:` web smoke are
+  removed. All fixtures, benchmarks, examples, tools, docs, and Web smokes are
+  file-backed. The query engine, collection reads, and relationship manager
+  contain no Dart-only execution branches (snapshots are typed
+  `NativeRawSnapshot`); Rust is the sole durable-index authority with
+  repair-on-open wired into collection creation. Reactive streams serialize
+  async re-reads so emissions stay in change-feed order on the native worker.
 - **M7.5 kickoff** (ADR-0028): locked the file-backed Rust/redb product
   contract and migration plan. The public `DatabaseConfig.inMemory` option,
   `useInMemory` opener path, and `InMemoryBackend` export are removed; temporary

@@ -9,16 +9,16 @@ Web. See ADR-0028 for the locked decision.
 
 | Area | Current dependency | M7.5 replacement | Status |
 |---|---|---|---|
-| Public API | `DatabaseConfig.inMemory`, `Database.open` forwarding `useInMemory` | File/OPFS path only | Open |
-| Concrete opener | `DatabaseImpl.open(..., useInMemory)` | NativeRawBackend for all supported paths | Open |
-| Public export | `InMemoryBackend` from `gecko_db.dart` | Remove export | Open |
-| Storage engine | `in_memory_backend.dart`, `_State`, `_Table`, `_MemSnapshot` | Rust/redb and NativeRawSnapshot | Open |
-| Query engine | `SecondaryIndex`, Dart candidate execution, Dart full scans | Rust durable bounds/predicate/sort/aggregate routes | Audit |
-| Tests | `mem://`, `useInMemory: true`, direct `InMemoryBackend` | Temporary native files and Web/OPFS contract tests | Open |
-| Differential tests | in-memory versus native | native temporary-file contract plus Rust/Web parity | Open |
-| Benchmarks/examples | memory fixtures and paths | temporary native files or explicit OPFS fixtures | Open |
-| Documentation | in-memory/API and `:memory:` examples | file-backed native/temporary OPFS terminology | Open |
-| Web | `:memory:` main-thread smoke and OPFS Worker | temporary/persistent OPFS file smoke | Qualify |
+| Public API | `DatabaseConfig.inMemory`, `Database.open` forwarding `useInMemory` | File/OPFS path only | ✅ Done |
+| Concrete opener | `DatabaseImpl.open(..., useInMemory)` | NativeRawBackend for all supported paths | ✅ Done |
+| Public export | `InMemoryBackend` from `gecko_db.dart` | Remove export | ✅ Done |
+| Storage engine | `in_memory_backend.dart`, `_State`, `_Table`, `_MemSnapshot` | Rust/redb and NativeRawSnapshot | ✅ Done (deleted) |
+| Query engine | `SecondaryIndex`, Dart candidate execution, Dart full scans | Rust durable bounds/predicate/sort/aggregate routes | ✅ Done (deleted) |
+| Tests | `mem://`, `useInMemory: true`, direct `InMemoryBackend` | Temporary native files and Web/OPFS contract tests | ✅ Done |
+| Differential tests | in-memory versus native | native temporary-file contract plus Rust/Web parity | ✅ Done |
+| Benchmarks/examples | memory fixtures and paths | temporary native files or explicit OPFS fixtures | ✅ Done |
+| Documentation | in-memory/API and `:memory:` examples | file-backed native/temporary OPFS terminology | ✅ Done |
+| Web | `:memory:` main-thread smoke and OPFS Worker | temporary/persistent OPFS file smoke | ✅ Done (OPFS worker + WebWorkerClient smokes) |
 
 ## Sequencing rules
 

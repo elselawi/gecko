@@ -504,7 +504,7 @@ selected relationship operations; migration callbacks and public/reactive semant
 the route matrix and M8 handoff are documented; coverage, parity, security, FRB, Rust, and release gates
 pass. M7.5 then removes the Dart `InMemoryBackend` and public in-memory mode.
 
-### M7.5 — File-backed Rust engine consolidation  ◐ kickoff after M7.1
+### M7.5 — File-backed Rust engine consolidation  ✅ complete
 
 **Goal:** remove the Dart `InMemoryBackend` and the public in-memory database mode while preserving Web
 support through the Rust/Wasm + OPFS file-backed path. After M7.5, every supported database is backed
@@ -514,8 +514,13 @@ engine.
 **Progress:** ADR-0028 locks the pre-release product decision and
 `docs/m7-5-migration-plan.md` records the dependency inventory, fixture conversion,
 sequencing, measurements, and gates. The public `DatabaseConfig.inMemory` option,
-`useInMemory` opener path, and public `InMemoryBackend` export are now removed. Fixture
-conversion and deletion of the remaining Dart backend are still open.
+`useInMemory` opener path, public `InMemoryBackend` export, the Dart `InMemoryBackend`
+and `SecondaryIndex` files, and every `mem://`/`:memory:` path (including the wasm
+`open_wasm_opfs` branch and the main-thread web smoke) are removed. All fixtures,
+benchmarks, examples, tools, docs, and Web smokes are file-backed (native temporary files
+or OPFS). The query engine, collection reads, and relationship manager no longer contain
+Dart-only execution branches; Rust is the sole durable-index authority and repair-on-open
+is wired into collection creation.
 
 **Product contract after M7.5:**
 
@@ -530,30 +535,31 @@ conversion and deletion of the remaining Dart backend are still open.
 **Steps:**
 1. ✅ **Lock the product decision.** ADR-0028 defines native-file/OPFS-file support, removal of
    in-memory APIs, the Web persistence contract, encryption behavior, and the replacement test strategy.
-2. ◐ **Remove the public in-memory surface.** `DatabaseConfig.inMemory`, the public `useInMemory` opener
-   path, and the public `InMemoryBackend` export are removed. Remaining `mem://`/`:memory:` fixtures,
-   documentation, and internal implementation references await fixture conversion.
-   `:memory:`, and related public documentation, examples, error branches, and API snapshot entries.
-3. ☐ **Delete the Dart backend.** Remove `InMemoryBackend`, Dart-only storage snapshots, Dart-only query
-   and index execution, and backend-specific branches that exist only for in-memory behavior.
-4. ☐ **Add/finish Rust ephemeral-file support only if needed.** Do not recreate a second engine. If tests
-   need disposable stores, use temporary native files; if Web needs ephemeral behavior, use a temporary
-   OPFS file and close/delete it. Do not reintroduce `:memory:` as a product mode.
-5. ☐ **Retain and qualify Web OPFS.** Keep `WebWorkerClient`, OPFS registration, Wasm artifacts, browser
-   smoke tests, persistence/reopen behavior, and explicit Web encryption rejection. Update terminology from
-   "in-memory Web" to "temporary or persistent OPFS file".
-6. ☐ **Replace differential testing.** Convert in-memory-vs-native tests into native temporary-file tests,
-   Rust unit/contract tests, and native-vs-Web/OPFS tests where practical. Preserve semantic coverage for
-   filters, sorting, indexes, snapshots, transactions, migrations, relationships, and errors.
-7. ☐ **Rework fixtures and benchmarks.** Replace `mem://` fixtures with isolated temporary native files;
-   ensure cleanup after crashes/failures; update comparative/performance harnesses and open-latency metrics.
-8. ☐ **Audit lifecycle and concurrency.** Verify file locks, close/reopen, temporary-file cleanup, OPFS
-   access-handle release, worker finalization, snapshots, and same-path duplicate-open behavior.
-9. ☐ **Recalculate coverage and artifacts.** Remove obsolete Dart-backend tests, add Rust/OPFS contract
-   coverage, regenerate the API snapshot and FRB artifacts if needed, and preserve the ≥95%/100% gates.
-10. ☐ **Run release gates.** Run full native tests, Rust tests, Web smoke, API/traceability, security,
-    offline lint, coverage, artifact/binding, crash/reopen, transaction, migration, relationship,
-    encryption, and cleanup checks.
+2. ✅ **Remove the public in-memory surface.** `DatabaseConfig.inMemory`, the public `useInMemory` opener
+   path, and the public `InMemoryBackend` export are removed, along with the API snapshot entry, public
+   documentation, examples, error branches, and Web `:memory:` handling.
+3. ✅ **Delete the Dart backend.** `InMemoryBackend`, `SecondaryIndex`, Dart-only storage snapshots, and
+   Dart-only query/index/relationship execution branches are deleted; query snapshots are typed
+   `NativeRawSnapshot` and repair-on-open is Rust-owned.
+4. ✅ **Ephemeral stores are temporary files.** No second engine exists; tests use isolated temporary
+   native files and Web uses temporary/persistent OPFS files. `:memory:` is not a product mode.
+5. ✅ **Retain and qualify Web OPFS.** `WebWorkerClient`, OPFS registration, Wasm artifacts, browser
+   smoke tests (OPFS worker + WebWorkerClient), persistence/reopen behavior, and explicit Web encryption
+   rejection remain; terminology is file-backed only.
+6. ✅ **Replace differential testing.** Raw/typed/randomized differential tests replay against two
+   independent native files; Rust unit/contract tests and Web/OPFS smokes cover the remaining parity.
+7. ✅ **Rework fixtures and benchmarks.** All `mem://` fixtures use isolated temporary native files with
+   deterministic cleanup; benchmarks/examples use temporary native files; `tool/native_process_helper`
+   and the performance/query profilers are native-only.
+8. ✅ **Audit lifecycle and concurrency.** File locks, close/reopen, temporary-file cleanup, OPFS
+   access-handle release, worker finalization, snapshots, duplicate-open behavior, read-only opens, and
+   reactive stream ordering are verified by native suites.
+9. ✅ **Recalculate coverage and artifacts.** The API snapshot is regenerated; FRB bindings/artifacts are
+   unchanged (no host-affecting Rust API change); coverage is ≥95% line / 100% branch with targeted
+   native coverage tests.
+10. ✅ **Run release gates.** Full native tests, Rust tests, API/traceability, security, offline lint,
+    coverage, artifact/binding, differential, crash/reopen, transaction, migration, relationship,
+    encryption, and cleanup gates pass (web smoke CI updated for the OPFS suites).
 
 **What remains in Dart:** public API, query authoring, model mapping, migration callbacks, reactive
 stream lifecycle, relationship declarations/policies, typed errors, and Web Worker/client integration.

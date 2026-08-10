@@ -1,8 +1,8 @@
 # gecko_db runnable examples
 
-These examples are intentionally plain Dart and use the in-memory backend so
-that they remain runnable without Flutter, platform plugins, or a native
-artifact.
+These examples are intentionally plain Dart and use a temporary native
+file-backed database so they remain runnable without Flutter or platform
+plugins (the bundled native artifact is resolved automatically).
 
 ## Tier 1 / Tier 2 quickstart
 

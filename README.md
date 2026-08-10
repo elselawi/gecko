@@ -36,10 +36,10 @@ roadmap and staged migration plan.
 |-------|------|-------|
 | 0 | Foundations & contracts (API, error taxonomy, wire format, ADRs, coverage gate) | ✅ |
 | 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; **web engine live-validated** (OPFS persistence in a Worker, ADR-0013); iOS explicitly CI-pending |
-| 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
+| 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ✅ Rust/redb native file backend (M7.5: no Dart storage engine) |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
-| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015); native index-served eq fast path — one FRB hop, no N+1 (ADR-0016); native predicate push for unindexed scans — full-scan 100k 482 ms → 39 ms, 12.4× (ADR-0017); M3 read-path completion — `iterate`/`count`/`distinct` on the native fast path, aggregate pushdown, and public `Collection.getMany(ids)` (ADR-0018); M4 indexed sorting + early LIMIT — index-covered sorts stream in order (no sort, no materialization; `ORDER BY indexedField LIMIT 20` on 100k = ~0.2 ms), non-indexed sorts use a Rust top-K heap, deterministic record-key tie-break across all paths (ADR-0019); M5 indexed range/prefix/multi-eq candidate intersection in Rust — broad durable field bounds plus full predicate recheck, with covered aggregate routing (ADR-0020); M6 retains the worker isolate; M6.5 simplifies encryption to one optional native Rust physical-encryption path with raw keys and public rotation (ADR-0021/0022); M7 moves native durable-index repair and indexed relationship reads to Rust while retaining the transitional in-memory reference backend until M7.5 (ADR-0023) |
+| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + durable Rust secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015); native index-served eq fast path — one FRB hop, no N+1 (ADR-0016); native predicate push for unindexed scans — full-scan 100k 482 ms → 39 ms, 12.4× (ADR-0017); M3 read-path completion — `iterate`/`count`/`distinct` on the native fast path, aggregate pushdown, and public `Collection.getMany(ids)` (ADR-0018); M4 indexed sorting + early LIMIT — index-covered sorts stream in order (no sort, no materialization; `ORDER BY indexedField LIMIT 20` on 100k = ~0.2 ms), non-indexed sorts use a Rust top-K heap, deterministic record-key tie-break across all paths (ADR-0019); M5 indexed range/prefix/multi-eq candidate intersection in Rust — broad durable field bounds plus full predicate recheck, with covered aggregate routing (ADR-0020); M6 retains the worker isolate; M6.5 simplifies encryption to one optional native Rust physical-encryption path with raw keys and public rotation (ADR-0021/0022); M7 moves native durable-index repair and indexed relationship reads to Rust while retaining the transitional in-memory reference backend until M7.5 (ADR-0023) |
 | 6 | Relationships & referential integrity (Tier 3): FK helpers, delete behaviors, eager load, cycle detection | ✅ many-to-many joins, delete hooks, restrict-naming; typed-collection wiring open |
 | 7 | Transactions, durable change tracking, sync hooks, LSN ordering, origin tagging, idempotency, and GC watermark | ✅ |
 | 8 | Pluggable conflict resolution, three-way merge, preserved manual conflicts, and atomic resolution | ✅ |
@@ -270,8 +270,8 @@ The design is documented in [`plan.md`](plan.md) and in the
   key enables encryption. The application owns key storage; gecko_db provides
   no custom crypto registry, provider abstraction, logical value wrapper, or
   text key encoding. Public raw-key rotation remains atomic and crash
-  recoverable. Web and in-memory encryption are explicitly unsupported
-  (ADR-0022; physical format and rotation are recorded in ADR-0009).
+  recoverable. Web encryption is explicitly unsupported (ADR-0022; physical
+  format and rotation are recorded in ADR-0009).
 - **Compaction & maintenance.** Workstream 5 adds in-place compaction via
   `Database.maintenance` (`compact()`/`recover()`/`storageStats()`) with a
   five-state machine (idle/compacting/committed/failed/recovering), a durable
@@ -290,8 +290,8 @@ The design is documented in [`plan.md`](plan.md) and in the
 ### Repository layout
 
 ```
-packages/gecko_db/        Public API + in-memory engine (pure Dart)
-rust/gecko_db_rust/       Rust engine crate (redb wrapper)       [in progress]
+packages/gecko_db/        Public API (Dart facade over the Rust engine)
+rust/gecko_db_rust/       Rust engine crate (redb wrapper)
 docs/adr/                 Architecture decision records
 tool/                     Coverage gate, golden-fixture generator
 plan.md                   The full, versioned roadmap
@@ -359,9 +359,9 @@ the repo root; long modes via `GECKO_LONG_TEST=1`, nightly in CI):
 | Area | Command / file | What it proves |
 |---|---|---|
 | Randomized correctness | `test/phase14_randomized_ws8_test.dart` | Fixed-seed randomized put/delete/clear/queries against an expected model after every step |
-| Backend differential | `test/phase14_differential_ws8_test.dart` | Identical seeded op sequences on in-memory vs native produce identical results |
+| Backend differential | `test/phase14_differential_ws8_test.dart` | Identical seeded op sequences on two independent native files produce identical results |
 | Crash safety | `test/phase14_crash_injection_ws8_test.dart` | Hard kill at **every** native commit boundary leaves a fully-present contiguous durable prefix — no partial batch, no lost commit |
-| Isolation | `test/phase14_parallel_ws8_test.dart` | N in-memory + native databases run concurrently with per-instance sentinels, no file-lock contention |
+| Isolation | `test/phase14_parallel_ws8_test.dart` | N native databases on distinct files run concurrently with per-instance sentinels, no file-lock contention |
 | Large data | `test/phase14_large_data_ws8_test.dart` | 100k+ rows + indexes, 100KB+ values bit-exact, many indexes, 10k pending-sync log, 300 attachments, 13-step migration chain |
 | Soak | `test/phase14_soak_ws8_test.dart` | Sustained writes/watches/queries/migrations/compaction/reopen cycles under physical AES-256-GCM encryption; raw file leaks no plaintext |
 | Regression gate | `benchmark/bench.dart` + `tool/perf_gate.dart` | Pins `benchmark/baseline.json`; fails if any workload regresses beyond tolerance (`dart run tool/perf_gate.dart`; `--update` to refresh) |
