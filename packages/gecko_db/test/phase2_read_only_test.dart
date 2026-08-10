@@ -3,11 +3,15 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 void main() {
-  test('in-memory read-only database rejects all write entry points', () async {
+  test('native read-only database rejects all write entry points', () async {
+    final directory = await Directory.systemTemp.createTemp('gecko-readonly-');
+    addTearDown(() => directory.delete(recursive: true));
+    final path = '${directory.path}${Platform.pathSeparator}db.redb';
     final db = await DatabaseImpl.open(
-      'mem://read-only',
-      useInMemory: true,
+      path,
       config: const DatabaseConfig(readOnly: true),
     );
     final collection = db.collection<Map<String, Object?>>(

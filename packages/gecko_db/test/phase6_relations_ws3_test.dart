@@ -314,11 +314,6 @@ void main() {
     });
   }
 
-  runSuite(
-    'in-memory',
-    (tag) async => DatabaseImpl.open('mem://ws3r-$tag', useInMemory: true),
-  );
-
   runSuite('native file', (tag) async {
     final dir = await Directory.systemTemp.createTemp('gecko-ws3r-$tag-');
     addTearDown(() async {

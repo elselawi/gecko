@@ -320,11 +320,6 @@ void main() {
     });
   }
 
-  runSuite(
-    'in-memory',
-    (tag) async => DatabaseImpl.open('mem://m4-$tag', useInMemory: true),
-  );
-
   runSuite('native file', (tag) async {
     final dir = await Directory.systemTemp.createTemp('gecko-m4-$tag-');
     addTearDown(() async {

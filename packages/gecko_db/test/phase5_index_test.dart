@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _Rec {
   _Rec(this.id, this.name, [this.age, this.nick]);
   final String id;
@@ -30,7 +32,7 @@ _Rec _fromRow(Object? row) {
 Object? _id(_Rec r) => r.id;
 
 Future<DatabaseImpl> _open(String name, {List<String>? indexFields}) =>
-    DatabaseImpl.open('mem://p5b-$name', useInMemory: true);
+    openNativeTestDatabase('phase5-$name');
 
 Collection<_Rec> _coll(
   DatabaseImpl db,
