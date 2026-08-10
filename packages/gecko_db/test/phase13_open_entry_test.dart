@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 String _repoRoot() {
   if (Directory.current.path.endsWith(
     'packages${Platform.pathSeparator}gecko_db',
@@ -29,12 +31,12 @@ String _nativeLibraryPath(String root) {
 
 void main() {
   test(
-    'Database.open with inMemory config returns a usable public handle',
+    'Database.open with a temporary native file returns a usable public handle',
     () async {
-      final db = await Database.open(
-        'mem://ws6-entry',
-        config: const DatabaseConfig(inMemory: true),
-      );
+      final directory = await Directory.systemTemp.createTemp('gecko-entry-');
+      addTearDown(() => directory.delete(recursive: true));
+      final path = '${directory.path}${Platform.pathSeparator}db.redb';
+      final db = await Database.open(path);
       expect(db, isA<Database>());
       final notes = db.collection<Map<String, Object?>>(
         'notes',

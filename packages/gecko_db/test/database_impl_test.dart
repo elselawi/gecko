@@ -1,6 +1,8 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _User {
   _User(this.id, this.name);
   final String id;
@@ -14,7 +16,7 @@ Object? _id(_User u) => u.id;
 void main() {
   group('DatabaseImpl lifecycle', () {
     test('open, write, read, close; double-open rejected', () async {
-      final db = await DatabaseImpl.open('mem://a', useInMemory: true);
+      final db = await openNativeTestDatabase('database-a');
       final col = db.collection<_User>(
         'users',
         toRow: _toRow,
@@ -23,18 +25,21 @@ void main() {
       );
       await col.put(_User('u1', 'Alice'));
       expect((await col.get('u1'))!.name, 'Alice');
-      expect(DatabaseImpl.isOpenAt('mem://a'), isTrue);
+      expect(DatabaseImpl.isOpenAt(db.path), isTrue);
 
       await db.close();
-      expect(DatabaseImpl.isOpenAt('mem://a'), isFalse);
+      expect(DatabaseImpl.isOpenAt(db.path), isFalse);
     });
 
     test(
       'a second open of the same path fails with DatabaseAlreadyOpenError',
       () async {
-        final db = await DatabaseImpl.open('mem://b', useInMemory: true);
+        final directory = await Directory.systemTemp.createTemp('gecko-db-b-');
+        addTearDown(() => directory.delete(recursive: true));
+        final path = '${directory.path}${Platform.pathSeparator}db.redb';
+        final db = await DatabaseImpl.open(path);
         expect(
-          () => DatabaseImpl.open('mem://b', useInMemory: true),
+          () => DatabaseImpl.open(path),
           throwsA(
             isA<GeckoError>().having(
               (e) => e.type,
@@ -48,16 +53,16 @@ void main() {
     );
 
     test('isReadOnly and path are surfaced', () async {
-      final db = await DatabaseImpl.open('mem://c', useInMemory: true);
+      final db = await openNativeTestDatabase('database-c');
       expect(db.isReadOnly, isFalse);
-      expect(db.path, 'mem://c');
+      expect(db.path, isNotEmpty);
       await db.close();
     });
   });
 
   group('DatabaseImpl typed collection (Tier 1 surface)', () {
     test('get/put/delete/getAll round-trip through the backend', () async {
-      final db = await DatabaseImpl.open('mem://d', useInMemory: true);
+      final db = await openNativeTestDatabase('database-d');
       final col = db.collection<_User>(
         'users',
         toRow: _toRow,
@@ -79,7 +84,7 @@ void main() {
     test(
       'put without an id extractor auto-assigns a stable id (Phase 3)',
       () async {
-        final db = await DatabaseImpl.open('mem://e', useInMemory: true);
+        final db = await openNativeTestDatabase('database-e');
         final col = db.collection<_User>(
           'users',
           toRow: _toRow,
@@ -98,7 +103,7 @@ void main() {
     );
 
     test('collection rejects reserved table names', () async {
-      final db = await DatabaseImpl.open('mem://f', useInMemory: true);
+      final db = await openNativeTestDatabase('database-f');
       expect(
         () => db.collection<_User>(
           '__gecko_internal',
@@ -117,7 +122,7 @@ void main() {
     });
 
     test('patch on missing record throws keyNotFound', () async {
-      final db = await DatabaseImpl.open('mem://g', useInMemory: true);
+      final db = await openNativeTestDatabase('database-g');
       final col = db.collection<_User>(
         'users',
         toRow: _toRow,
@@ -138,7 +143,7 @@ void main() {
     });
 
     test('writeTxn runs a body without error for existing records', () async {
-      final db = await DatabaseImpl.open('mem://h', useInMemory: true);
+      final db = await openNativeTestDatabase('database-h');
       final col = db.collection<_User>(
         'users',
         toRow: _toRow,
@@ -163,7 +168,7 @@ void main() {
     test(
       'auto-assignment is not required; explicit duplicate id upserts',
       () async {
-        final db = await DatabaseImpl.open('mem://i', useInMemory: true);
+        final db = await openNativeTestDatabase('database-i');
         final col = db.collection<_User>(
           'users',
           toRow: _toRow,

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _M {
   _M(this.id, this.v);
   final String id;

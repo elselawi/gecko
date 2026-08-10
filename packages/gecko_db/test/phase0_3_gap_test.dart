@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _GapUser {
   _GapUser(this.id, this.name);
   final String id;
@@ -16,7 +18,7 @@ Object? _gapId(_GapUser user) => user.id;
 
 void main() {
   test('typed delete of a missing record is a no-op', () async {
-    final db = await DatabaseImpl.open('mem://gap-delete', useInMemory: true);
+    final db = await openNativeTestDatabase('gap-delete');
     final users = db.collection<_GapUser>(
       'users',
       toRow: _gapRow,
@@ -29,7 +31,7 @@ void main() {
   });
 
   test('typed getAll of an empty collection returns an empty list', () async {
-    final db = await DatabaseImpl.open('mem://gap-empty', useInMemory: true);
+    final db = await openNativeTestDatabase('gap-empty');
     final users = db.collection<_GapUser>(
       'users',
       toRow: _gapRow,
@@ -43,7 +45,7 @@ void main() {
   });
 
   test('calls after close fail with typed InvalidOperationError', () async {
-    final db = await DatabaseImpl.open('mem://gap-close', useInMemory: true);
+    final db = await openNativeTestDatabase('gap-close');
     final users = db.collection<_GapUser>(
       'users',
       toRow: _gapRow,
@@ -77,7 +79,7 @@ void main() {
   });
 
   test('schema definition validates at collection-open', () async {
-    final db = await DatabaseImpl.open('mem://gap-schema', useInMemory: true);
+    final db = await openNativeTestDatabase('gap-schema');
     expect(
       () => db.collection<_GapUser>(
         'bad',
@@ -109,7 +111,7 @@ void main() {
   });
 
   test('typed put preserves unknown stored fields on rewrite', () async {
-    final db = await DatabaseImpl.open('mem://gap-unknown', useInMemory: true);
+    final db = await openNativeTestDatabase('gap-unknown');
     final users = db.collection<_GapUser>(
       'users',
       toRow: _gapRow,
@@ -132,7 +134,7 @@ void main() {
   });
 
   test('typed multi-megabyte binary values round-trip', () async {
-    final db = await DatabaseImpl.open('mem://gap-large', useInMemory: true);
+    final db = await openNativeTestDatabase('gap-large');
     final codec = const DefaultWireCodec();
     final bytes = Uint8List.fromList(List<int>.filled(3 * 1024 * 1024, 0x5A));
     await db.engine.rawPut(
