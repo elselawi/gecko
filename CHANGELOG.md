@@ -7,6 +7,12 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7 — Native execution ownership core** (ADR-0023): native collection index
+  preparation now verifies and atomically repairs durable `__gecko_index`
+  entries in Rust without rebuilding a duplicate Dart index. Indexed native
+  relationship child reads use durable Rust index lookup, while unindexed FK
+  reads use Rust predicate pushdown. The Dart index rebuild remains only for
+  the transitional in-memory reference backend until M7.5.
 - **M6 — Measured architecture decisions** (ADR-0021):
   - Retains the worker-isolate native client as the default. The measured
     isolate round trip is 57.3µs versus 25.1µs for direct FRB, but the isolate

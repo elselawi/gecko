@@ -65,7 +65,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1365447694;
+  int get rustContentHash => 1449912299;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -207,6 +207,12 @@ abstract class RustLibApi extends BaseApi {
     required List<int> oldKey,
     required List<int> newKey,
     required int oldGen,
+  });
+
+  Future<void> crateApiNativeWorkerRepairIndex({
+    required NativeWorker that,
+    required String table,
+    required List<String> fields,
   });
 
   Future<Uint8List?> crateApiNativeWorkerSnapshotGet({
@@ -1244,6 +1250,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiNativeWorkerRepairIndex({
+    required NativeWorker that,
+    required String table,
+    required List<String> fields,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_String(table, serializer);
+          sse_encode_list_String(fields, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerRepairIndexConstMeta,
+        argValues: [that, table, fields],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerRepairIndexConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_repair_index",
+        argNames: ["that", "table", "fields"],
+      );
+
+  @override
   Future<Uint8List?> crateApiNativeWorkerSnapshotGet({
     required NativeWorker that,
     required BigInt snapshot,
@@ -1264,7 +1310,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 23,
             port: port_,
           );
         },
@@ -1306,7 +1352,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1350,7 +1396,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 25,
             port: port_,
           );
         },
@@ -1393,7 +1439,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1437,7 +1483,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1485,7 +1531,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1541,7 +1587,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1595,7 +1641,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1666,7 +1712,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1731,7 +1777,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1804,7 +1850,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1865,7 +1911,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1902,7 +1948,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1938,7 +1984,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2657,12 +2703,6 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     offset: offset,
   );
 
-  /// Phase 2 native query fast path: range-scans the durable index table
-  /// [index_table] for keys in `[start..=end]`, joins each entry's value
-  /// (the user-table row key) back to its row in [table], and returns the
-  /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
-  /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
-  /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
   Future<List<(Uint8List, Uint8List)>> queryIndexed({
     required String table,
     required String indexTable,
@@ -2758,6 +2798,22 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     table: table,
     start: start,
     end: end,
+  );
+
+  /// Phase 2 native query fast path: range-scans the durable index table
+  /// [index_table] for keys in `[start..=end]`, joins each entry's value
+  /// (the user-table row key) back to its row in [table], and returns the
+  /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
+  /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
+  /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
+  /// M7: verifies and atomically repairs durable index entries for [table].
+  Future<void> repairIndex({
+    required String table,
+    required List<String> fields,
+  }) => RustLib.instance.api.crateApiNativeWorkerRepairIndex(
+    that: this,
+    table: table,
+    fields: fields,
   );
 
   Future<Uint8List?> snapshotGet({

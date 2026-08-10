@@ -174,6 +174,19 @@ class NativeRawBackend implements RawBackend {
     );
   }
 
+  /// M7: verifies and atomically repairs the durable index entries for [table]
+  /// from the primary rows in Rust. Native queries do not rebuild a Dart index.
+  Future<void> repairIndex({
+    required String table,
+    required List<String> fields,
+  }) async {
+    try {
+      await _worker.repairIndex(table: table, fields: fields);
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
   /// Phase 2 native query fast path: range-scans the durable `__gecko_index`
   /// table for keys in `[start..=end]`, joins each entry's value (the
   /// user-table row key) back to its row in [table], and returns the

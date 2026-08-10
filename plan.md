@@ -51,8 +51,9 @@ There are two execution paths. **Native (VM):** caller isolate → `Isolate.spaw
 **Milestones 1–2 (done)** moved the hot query path into Rust: indexed equality traverses the durable
 `__gecko_index` table in one FRB hop (`RedbWorker::query_indexed`), and unindexed scans push the
 predicate to Rust (`RedbWorker::query_filtered` + `value_codec.rs` + `predicate.rs`). Dart now acts as
-a client for the read/query path on the native backend; the in-memory backend retains the Dart path
-(it has no Rust).
+a client for the read/query path on the native backend. The Dart in-memory backend is retained only as
+a transitional reference implementation until M7.5; the final supported paths are Rust-owned native
+files and Rust/Wasm OPFS files.
 
 ---
 
@@ -68,7 +69,8 @@ references them; where older text conflicts, the contract wins.
 2. **Encryption/compression must be length-preserving per page.** The sole pre-release encryption
    mechanism is optional native Rust AES-256-GCM: 12-byte nonce + 16-byte tag in page slack,
    ciphertext replaces payload. A wrong key surfaces as a typed `DecryptionError`, never silently
-   wrong data. Web and in-memory encryption are unsupported.
+   wrong data. Native-file encryption is supported; Web OPFS remains file-backed but unencrypted;
+   there is no in-memory database mode.
 3. **Sync scope.** Only the local transactional change-tracking metadata + local conflict resolution are
    in scope. The transport (HTTP, SQLite, CRDT…), identity, and conflict *policies* are out of scope.
 4. **Concurrency & lifecycle.** One worker per file; cross-process exclusion is redb's OS lock;
@@ -108,7 +110,7 @@ All ✅. The table names the subsystem + key proof; consult the named ADR/test f
 |---|---|---|
 | 0 | Foundations: public API shape, `Op` wire format, error taxonomy, coverage gate, traceability | ADR-0001 manual mappers; ADR-0002 wire v1; ADR-0004 error envelope; `tool/api_snapshot.dart`, `tool/coverage_gate.dart` |
 | 1 | Zero-setup cross-platform distribution: federated plugins, native resolver, OPFS web worker | ADR-0012 artifact matrix, ADR-0013 web glue; iOS explicitly CI-pending (see M9) |
-| 2 | Core engine: Rust `redb` worker, single-writer, MVCC, in-memory backend, crash recovery | ADR-0003 worker isolate, ADR-0005 client+finalizer, ADR-0006 MVCC snapshots; `phase2_*` tests |
+| 2 | Core engine: Rust `redb` worker, single-writer, MVCC, historical in-memory backend, crash recovery | ADR-0003 worker isolate, ADR-0005 client+finalizer, ADR-0006 MVCC snapshots; `phase2_*` tests; M7.5 removes the Dart backend before release |
 | 3 | Codegen-free typed modeling: `RowSchema`, `toRow`/`fromRow`, patch, auto-ids, Tier 1 API | `phase3_integration_test.dart`, `row_schema_test.dart` |
 | 4 | Reactivity: `watch(id)` / `watchAll()` / `database.watchAll()` streams | `watch_test.dart` |
 | 5 | Query engine + indexing (Tier 2): filters, sort, pagination, count/distinct, durable indexes | ADR-0008 durable indexes; `query_test.dart`, `phase5_index_ws3_test.dart` |
@@ -125,8 +127,9 @@ All ✅. The table names the subsystem + key proof; consult the named ADR/test f
 
 All ✅ except two explicitly-deferred items (noted ☐).
 
-- **WS0–2** ✅ Contract lock, native worker lifecycle, backend differential/conformance (in-memory ↔
-  native parity via `raw_backend_contract_test.dart` + `phase2_differential_test.dart`).
+- **WS0–2** ✅ Contract lock, native worker lifecycle, and historical backend differential/conformance
+  (in-memory ↔ native parity via `raw_backend_contract_test.dart` + `phase2_differential_test.dart`).
+  M7.5 replaces this transitional Dart-memory comparison with native-file and Web/OPFS contract tests.
 - **WS3** ✅ Durable indexes + relationships (`__gecko_index`, drift repair, reactive relations).
 - **WS4** ✅ Physical encryption (AES-256-GCM per page, raw-key contract, rotation crash matrix).
   M6.5 removes the historical key-provider and logical-encryption layers before release.
@@ -151,7 +154,7 @@ the already-done Phases 1–3 of Wave A). **All done.**
 |---|---|---|---|
 | **M1** Instrument the read/query path | `benchmark/boundary.dart` (per-layer latency), `QueryStageTimings` (8 query-path stages on `SlowQueryRecord.timings`), `benchmark/query_profile.dart` (1k/100k split) | ADR-0015 | FRB floor ~18–19µs dwarfs redb's get; full-scan 100k `backendRead` 70%, indexed eq `backendRead` 88% (N+1) |
 | **M2 Native query fast path** | (a) `RedbWorker::query_indexed` — durable-index traversal in one hop (kills N+1); (b) `RedbWorker::query_filtered` + `value_codec.rs` (Rust port of `DefaultWireCodec`) + `predicate.rs` (predicate evaluator) — push predicate to Rust | ADR-0016 (indexed), ADR-0017 (predicate push) | Indexed eq 100k: 38ms→12ms (3.2×); full-scan 100k: 482ms→39ms (**12.4×**, meets ≥10× target) |
-| **M3** Read-path completion + `getMany` | (a) route `iterate()` through `_scanWith` (deleted the `_streamUnsorted` per-id loop); (b) aggregate pushdown `query_filtered_count` / `query_filtered_distinct` (+ `value_codec::find_field_range`); (c) public `Collection.getMany(ids)` = `RedbWorker::get_many` (one read txn, N keys); (d) relationship `children` batches through `snap.getMany` | ADR-0018 | `count()`/`distinct()` on native transfer zero rows (count) / one field-slice per row (distinct); `getMany` kills the relationship N+1; all read paths now use the native fast path || **M4–M6.5** Query optimization + architecture | Indexed sort/limit, indexed filter intersection, worker/encryption architecture decisions, pre-release encryption simplification | ADR-0019–0022 | M4 indexed sort+limit 154µs median on 100k; M5 multi-eq ~1.0ms but broad range/prefix bounds remain slower than full scan; M6 isolate 57.3µs vs direct FRB 25.1µs and logical encryption 121.6ms vs plain 4.4ms, motivating M6.5 removal |
+| **M3** Read-path completion + `getMany` | (a) route `iterate()` through `_scanWith` (deleted the `_streamUnsorted` per-id loop); (b) aggregate pushdown `query_filtered_count` / `query_filtered_distinct` (+ `value_codec::find_field_range`); (c) public `Collection.getMany(ids)` = `RedbWorker::get_many` (one read txn, N keys); (d) relationship `children` batches through `snap.getMany` | ADR-0018 | `count()`/`distinct()` on native transfer zero rows (count) / one field-slice per row (distinct); `getMany` kills the relationship N+1; all read paths now use the native fast path || **M4–M7** Query optimization + architecture | Indexed sort/limit, indexed filter intersection, worker/encryption architecture decisions, pre-release encryption simplification, native execution ownership | ADR-0019–0023 | M4 indexed sort+limit 154µs median on 100k; M5 multi-eq ~1.0ms but broad range/prefix bounds remain slower than full scan; M6 isolate 57.3µs vs direct FRB 25.1µs and logical encryption 121.6ms vs plain 4.4ms; M7 Rust index repair + native FK lookup/predicate push |
 **Known gaps after M2 — closed by M3 (ADR-0018):**
 - `iterate()` / `count()` / `distinct()` / `first()` / `findPage()` on native now **use the native
   fast path** (`iterate` via `_scanWith`; `count`/`distinct` via aggregate pushdown; `first`/`findPage`
@@ -176,12 +179,13 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6 done; M6.5 next; M7–M10 open).
-> Each milestone has a goal, concrete steps, a "done when" check, and — where it moves Dart→Rust — an
-> ROI note and the Rust tests + Dart deletions it requires.
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6.5 done; M7 next; M7.5 follows;
+> M8–M10 open). Each milestone has a goal, concrete steps, a "done when" check, and — where it moves
+> Dart→Rust — an ROI note and the Rust tests + Dart deletions it requires.
 >
 > **Ordering.** M3 gates M4–M7 (read-path completion must finish before sort/limit/migration cleanup
-> build on it). **M9 can start immediately in parallel** with anything.
+> build on it). M7 must establish the native execution boundary before M8 changes reactivity semantics.
+> **M9 can start immediately in parallel** with anything.
 
 ### M3 — Read-path completion + `getMany` (projection & batch reads)  ✅ done (ADR-0018)
 
@@ -358,46 +362,136 @@ making every native query use the same Rust path.
 and physical-format compatibility remain; logical/custom/provider surfaces are gone; encrypted native
 queries retain M4/M5 routes; all security, parity, API, coverage, and release gates pass.
 
-### M7 — Dart→Rust migration cleanup (the "Dart as thin client" pass)  ☐ next
+### M7 — Native execution ownership and Dart cleanup  ✅ core slice done (ADR-0023); remaining audit work ☐
 
-**Goal:** now that the read/query path moved to Rust (M2–M5), audit and delete Dart code that is
-genuinely redundant on the native backend, and strengthen Rust unit tests to cover what the deleted Dart
-tests covered.
+**Goal:** make Rust the authoritative execution engine for native databases while keeping Dart as the
+public API, model-mapping, reactive, migration-callback, and transitional in-memory reference layer.
+M7.5 then removes that reference backend from the product; M7 must not make final architecture decisions
+that depend on `InMemoryBackend` surviving release. Remove only
+Dart execution logic that duplicates a proven Rust native path; do not move code merely to reduce the
+Dart line count.
 
-This is NOT "move everything to Rust" — only high-ROI moves. The in-memory backend keeps its Dart path
-(no Rust). For each candidate below, the rule is: **move to Rust only if (a) it's on the native hot path
-AND (b) the Rust port has stronger test coverage than the Dart it replaces.**
+This is **not** "move everything to Rust." During M7, the in-memory backend may remain as a temporary
+semantic differential oracle; M7.5 removes it after native execution ownership is proven. Web uses the
+Rust/Wasm path through its existing OPFS worker. Every move
+must satisfy all four gates: (a) it is on a native hot path, (b) the Rust path has equal or stronger
+coverage, (c) snapshot/error/diagnostic semantics are preserved, and (d) native/in-memory parity passes.
 
-**Candidates (in ROI order):**
+**Required native route matrix:** before deleting any Dart path, document and test every read operation
+as native Rust, in-memory Dart reference, or Web Rust/Wasm. Each route records its `lastPlan`, snapshot
+boundary, backend hop count, rows transferred, and typed-error behavior. This matrix is part of M7's
+completion evidence.
 
-| Move | Why | Dart deleted | Rust tests added |
+**Candidates and required decisions (in ROI order):**
+
+| Candidate | Why | M7 action | Rust/native proof |
 |---|---|---|---|
-| **Sort + limit/offset** (✅ done in M4/ADR-0019) | Hot path (`ORDER BY … LIMIT`) | Dart `compareRows`/`decoded.sort` on native (index-covered) — native routes through `_nativeOrderedCollect`; Dart sort retained for in-memory parity only | top-K heap + indexed-order streaming (`query_sorted` + `query_indexed_ordered`) |
-| **`SecondaryIndex` rebuild-at-open → lazy/optional** | On native open, Dart reads the *whole* `__gecko_index` table to rebuild the in-memory index (a full-table scan). If Rust serves all index lookups via the durable table (M3+M5 done), the in-memory index becomes a pure cache; rebuild can be lazy/optional. | `_indexCandidates` + `SecondaryIndex.lookup*` on native (keep for in-memory) | durable-index scan + intersection in Rust |
-| **Change-feed affected-query computation** (ties to M8) | A write currently broadcasts to *all* live queries, each re-evaluating in Dart. Rust could compute which queries a batch affects (via the durable index) and emit only affected-query signals. | Dart per-query re-eval fan-out | affected-query set computation in Rust |
-| **`count`/`distinct` aggregates** (part of M3) | Materialize-then-count in Dart → count-only in Rust | Dart `count()`/`distinct()` scan loops on native | aggregate pushdown tests |
-| **`getMany`** (part of M3) | Per-id reads → one batched read | Dart per-id `snap.read` loops in relationships + `_streamUnsorted` | `get_many` Rust tests |
+| **Secondary-index rebuild at open** | Native currently rebuilds a complete Dart `SecondaryIndex` from `__gecko_index`, duplicating durable state and adding an open-time full scan. | Remove the native Dart rebuild/readiness dependency during M7; retain it only as a temporary reference until M7.5 removes the Dart backend. Decide and implement one authoritative native repair/verification path. | 100k+ open-latency benchmark; stale/missing/extra index repair; put/update/delete/bulk-write atomicity; concurrent reopen/crash tests. |
+| **Durable-index maintenance ownership** | Removing the Dart index cache is safe only if durable index writes and repair remain authoritative and atomic. | Audit `_durableIndexOps`, bulk writes, deletes, updates, prefix entries, drift repair, and transactions. Prefer moving maintenance/repair into Rust if that is required to eliminate split authority; otherwise document the temporary boundary explicitly. | Rust tests for index/data atomicity, replacement, deletion, bulk batches, missing tables, stale repair, and rollback. |
+| **Native aggregate paths** | M3 already added Rust count/distinct, but Dart fallback branches can silently reintroduce materialization. | Audit `count()`/`distinct()` for unindexed, exact-eq, M5 multi-index, sorted/limited, and snapshot-bound queries. Delete redundant native Dart loops; retain only temporary reference coverage until M7.5. | Result/order parity, plan attribution, zero/full row-transfer assertions, snapshot consistency. |
+| **Native relationship reads** | `children()` still combines Dart index metadata with `getMany`; `parent()` decodes in Dart; `loadAllChildren()` scans and filters in Dart. | Move candidate retrieval and batched child/parent reads to Rust where a stable snapshot-bound operation is beneficial. Keep relationship declarations, delete behaviors, and public policy in Dart. Prioritize `loadAllChildren()` full-scan avoidance. | Native/Web parity, missing/stale FK behavior, snapshot consistency, N+1/backend-hop benchmark, delete-policy regression tests. |
+| **Native raw-backend adapters** | `NativeRawBackend`/`NativeRawSnapshot` contain repeated Dart tuple conversion and native-path branching accumulated across M2–M6. | Audit direct worker calls, snapshot lifecycle, non-snapshot helpers, error mapping, diagnostics, and duplicated conversion/filter logic. Remove only redundant native execution code. | Raw-backend contract, finalizer, close, read-only, MVCC snapshot, typed-error, and Web protocol tests. |
+| **M3/M4 completed paths** | Sort/top-K/indexed ordering, `getMany`, and basic aggregate pushdown are already implemented. | Treat these as audits/regression guards, not new migrations. Remove stale comments or dead fallback branches only after route-matrix proof. | Existing M3/M4 Rust tests plus parity and plan assertions. |
+| **M8 handoff primitives** | Change-feed invalidation currently broadcasts batches and queries re-evaluate in Dart. A Rust query registry would change lifecycle and reactive semantics. | Do not build a persistent Rust query registry in M7. Expose only measured primitives needed by M8: changed row keys, changed indexed fields, and batch metadata. | Coalescing, ordering, cancellation, close, backpressure, and replay contract remains unchanged. |
 
-**What stays in Dart (do NOT move):**
-- `Filter` / `FilterGroup` / `Filter.eq/between/prefix` — the **public authoring API**
-  (`col.where({'x':1}).range(...)`). `encodePredicate` reads them.
-- The in-memory backend's entire query path (`InMemoryBackend` has no Rust).
-- `toRow`/`fromRow` model mapping (codegen-free design principle).
-- The worker-isolate transport itself (M6 decides its fate).
+**What stays in Dart (do not move in M7):**
 
-**Done when:** each moved subsystem has Rust unit tests covering the cases the deleted Dart tests
-covered; the deleted Dart tests are removed (or converted to thin parity tests calling the Rust path);
-coverage gate stays ≥95% line / 100% branch; parity tests confirm identical results across native +
-in-memory.
+- `Filter` / `FilterGroup` / `Filter.eq/between/prefix` — the public query-authoring API; `encodePredicate`
+  serializes them for Rust.
+- `toRow`/`fromRow` model mapping and typed collection APIs.
+- Migration callbacks (`MigrationStep.upgrade` and `RecordRewriter`); Rust may own bounded streaming,
+  snapshots, and atomic batches, but cannot execute arbitrary user Dart callbacks.
+- Reactive stream objects, subscriber lifecycle, cancellation, backpressure, and public change models.
+- Relationship declarations and delete-policy decisions; Rust may own candidate retrieval/traversal.
+- The in-memory backend's full Dart query path and the worker-isolate transport.
+
+**M7 implementation sequence:**
+
+1. ✅ Inventory the native/in-memory/Web route matrix and capture before metrics.
+2. ✅ Remove native `SecondaryIndex` rebuild dependency and define durable-index repair ownership.
+3. ✅ Move durable-index verification/repair to Rust via `repair_index`; prove atomicity with drift tests.
+4. ✅ Audit native aggregates and raw adapters; existing M3/M4 Rust routes remain authoritative.
+5. ✅ Add native relationship child primitives: durable indexed FK lookup and Rust predicate push fallback.
+6. ☐ Add only the M8 handoff primitives; leave query registration and invalidation policy to M8.
+7. ✅ Convert the completed native ownership changes into thin contract/parity tests; retain the
+   temporary in-memory reference tests only until M7.5 removes the backend.
+8. ✅ Run regression, coverage, Rust, security, traceability, artifact, and performance gates for the
+   completed core slice.
+
+**Core slice done when:** ✅ native has Rust-owned index repair and query execution; no native Dart index
+rebuild remains; native indexed relationship children use Rust durable lookup/predicate push; M3/M4
+behavior is unchanged; route, snapshot, error, diagnostics, parity, coverage, FRB, Rust, security,
+traceability, and performance gates pass. M7.5 remains the final removal of the temporary Dart
+reference backend; remaining M7 work is the route-matrix completion and M8 handoff, not a new query
+registry.
+
+### M7.5 — File-backed Rust engine consolidation  ☐ after M7
+
+**Goal:** remove the Dart `InMemoryBackend` and the public in-memory database mode while preserving Web
+support through the Rust/Wasm + OPFS file-backed path. After M7.5, every supported database is backed
+by Rust/redb and a file-like persistent store; Dart no longer contains a second storage/query/index
+engine.
+
+**Product contract after M7.5:**
+
+- Native desktop/mobile: Dart API → worker isolate → Rust/redb → native database file.
+- Web: Dart `WebWorkerClient` → Dedicated Worker → Rust/Wasm/redb → OPFS database file.
+- No `DatabaseConfig.inMemory`, `useInMemory`, `mem://` path, or `Database.open(':memory:')`.
+- No Dart `InMemoryBackend`, Dart-only query execution, or Dart-only secondary-index authority.
+- Native physical encryption remains optional and Rust-owned; Web OPFS remains file-backed but
+  unencrypted under the M6.5 native-only encryption policy.
+- Temporary directories/files are used for tests; they are not a separate database implementation.
+
+**Steps:**
+1. ☐ **Lock the product decision.** Add an ADR defining native-file/OPFS-file support, removal of
+   in-memory APIs, the Web persistence contract, encryption behavior, and the replacement test strategy.
+2. ☐ **Remove the public in-memory surface.** Remove `DatabaseConfig.inMemory`, `useInMemory`, `mem://`,
+   `:memory:`, and related public documentation, examples, error branches, and API snapshot entries.
+3. ☐ **Delete the Dart backend.** Remove `InMemoryBackend`, Dart-only storage snapshots, Dart-only query
+   and index execution, and backend-specific branches that exist only for in-memory behavior.
+4. ☐ **Add/finish Rust ephemeral-file support only if needed.** Do not recreate a second engine. If tests
+   need disposable stores, use temporary native files; if Web needs ephemeral behavior, use a temporary
+   OPFS file and close/delete it. Do not reintroduce `:memory:` as a product mode.
+5. ☐ **Retain and qualify Web OPFS.** Keep `WebWorkerClient`, OPFS registration, Wasm artifacts, browser
+   smoke tests, persistence/reopen behavior, and explicit Web encryption rejection. Update terminology from
+   "in-memory Web" to "temporary or persistent OPFS file".
+6. ☐ **Replace differential testing.** Convert in-memory-vs-native tests into native temporary-file tests,
+   Rust unit/contract tests, and native-vs-Web/OPFS tests where practical. Preserve semantic coverage for
+   filters, sorting, indexes, snapshots, transactions, migrations, relationships, and errors.
+7. ☐ **Rework fixtures and benchmarks.** Replace `mem://` fixtures with isolated temporary native files;
+   ensure cleanup after crashes/failures; update comparative/performance harnesses and open-latency metrics.
+8. ☐ **Audit lifecycle and concurrency.** Verify file locks, close/reopen, temporary-file cleanup, OPFS
+   access-handle release, worker finalization, snapshots, and same-path duplicate-open behavior.
+9. ☐ **Recalculate coverage and artifacts.** Remove obsolete Dart-backend tests, add Rust/OPFS contract
+   coverage, regenerate the API snapshot and FRB artifacts if needed, and preserve the ≥95%/100% gates.
+10. ☐ **Run release gates.** Run full native tests, Rust tests, Web smoke, API/traceability, security,
+    offline lint, coverage, artifact/binding, crash/reopen, transaction, migration, relationship,
+    encryption, and cleanup checks.
+
+**What remains in Dart:** public API, query authoring, model mapping, migration callbacks, reactive
+stream lifecycle, relationship declarations/policies, typed errors, and Web Worker/client integration.
+Dart no longer executes database storage, index, predicate, sort, aggregate, or snapshot semantics.
+
+**Dart deletions expected:** the complete `InMemoryBackend` and its storage/query/index branches, the
+in-memory configuration and path surface, differential fixture helpers, and obsolete documentation/tests.
+The exact count is recorded after implementation.
+
+**Done when:** every supported database path is Rust-owned and file-backed (native file or OPFS file);
+no public in-memory mode or Dart storage engine remains; Web OPFS persistence and smoke tests pass; all
+native/Web parity, lifecycle, file-cleanup, encryption, API, coverage, FRB, Rust, and release gates pass.
 
 ### M8 — Incremental reactivity  ☐
 
 **Goal:** a write updates only the live result sets it can affect (not a full re-evaluation).
 
 **Steps:**
-1. On each change batch, compute which indexes/queries are affected and update only those result sets
-   (start in Dart; if M7's affected-query computation moved to Rust, wire it).
-2. Preserve the coalesced single-event-per-batch behavior; only the per-query work changes.
+1. Consume M7's documented change metadata handoff (changed row keys, indexed fields, and batch
+   metadata); do not assume a Rust query registry exists.
+2. Define query registration, identity, lifecycle, cancellation, backpressure, replay, and snapshot
+   semantics before moving invalidation computation.
+3. Compute which indexes/queries are affected and update only those result sets (start in Dart; move
+   pure candidate computation to Rust only after the lifecycle contract is locked).
+4. Preserve the coalesced single-event-per-batch behavior; only the per-query work changes.
 
 **Done when:** with N live filtered queries and a single-row write, the update cost does not grow with
 the size of the watched collections.
@@ -431,6 +525,7 @@ documented.
 - The §0 design principles (single writer, always batched, coverage gate, file-format contract) apply
   unchanged.
 - **M3 gates M4–M7** (read-path completion must finish before sort/limit/migration cleanup build on it).
+  **M7 gates the M8 invalidation handoff**; M8 owns query registration and reactive lifecycle semantics.
   **M9 can start immediately in parallel.**
 - Every Dart→Rust move (M7) lands with Rust unit tests first; Dart code is deleted only after the Rust
   path is green and parity tests pass.
@@ -455,7 +550,7 @@ documented.
 | 7 | Local/remote changes merge deterministically | Phase 8 conflict-resolution tests |
 | 8 | Attachment metadata stays consistent with record changes | Phase 9 tests |
 | 9 | Large datasets stay responsive | Phase 5 + 12 perf tests + `benchmark/baseline.json` gate (M1–M4 deepen this) |
-| 10 | Tests use isolated in-memory databases | Phase 2 in-memory backend, used throughout |
+| 10 | Tests use isolated file-backed databases | M7.5 temporary native files + Web OPFS isolation; no Dart in-memory backend |
 | 11 | Initialization, recovery, migrations are reliable | Phase 2 crash-recovery + Phase 10 migrations |
 | 12 | App-specific store layer shrinks substantially | Phase 13 examples; consumer fixture LOC vs hand-rolled Hive layer |
 
@@ -468,7 +563,7 @@ Before publishing a production release, require all answers below to be "yes":
 - [ ] Generated bindings are reproducible and committed/packaged correctly.
 - [ ] Every supported platform has a checksum-verified artifact + clean consumer fixture (iOS = M9).
 - [ ] Dart and Rust analyzers, tests, coverage, and lint gates pass.
-- [ ] Shared backend differential suite passes (in-memory ↔ native ↔ web).
+- [ ] Shared file-backed contract suite passes (native files ↔ Web/OPFS); no Dart in-memory backend remains.
 - [ ] Crash-recovery and reopen drills pass at fixed seeds.
 - [ ] Transaction, index, sync, attachment, migration, crypto, and compaction atomicity tests pass.
 - [ ] No sensitive plaintext in database files, temp dirs, logs, diagnostics, crash reports, or artifacts.

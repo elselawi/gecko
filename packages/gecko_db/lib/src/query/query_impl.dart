@@ -176,8 +176,10 @@ class QueryImpl<T> implements Query<T> {
 
   FilterGroup get _group => FilterGroup(_filters);
 
-  /// Lazy iteration over matching decoded rows in sort order, consulting the
-  /// optional secondary index when the equality filters are covered.
+  /// Lazy iteration over matching decoded rows in sort order. Native queries
+  /// use durable Rust indexes directly; the Dart secondary index remains only
+  /// for the transitional in-memory reference backend. Readiness still waits
+  /// for Rust's asynchronous durable-index repair.
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
@@ -278,11 +280,16 @@ class QueryImpl<T> implements Query<T> {
     if (t != null) t.start(_QueryStage.plan);
     if (t != null && idx != null) t.start(_QueryStage.indexLookup);
     final candidateIds = _indexCandidates(idx);
+    // M7: native routing uses index metadata + durable Rust indexes directly;
+    // the transitional Dart index may intentionally be empty on native.
+    final nativeRanges = snap is NativeRawSnapshot
+        ? _nativeIndexedRanges(idx)
+        : null;
     if (t != null) {
       if (idx != null) t.stop(_QueryStage.indexLookup);
       t.stop(_QueryStage.plan);
     }
-    if (candidateIds != null) {
+    if (candidateIds != null || nativeRanges != null) {
       lastPlan = IndexPlan.secondaryIndex;
       // Phase 2 native fast path: when the snapshot is a NativeRawSnapshot
       // (redb file backend) and the query is a single equality filter
@@ -389,7 +396,7 @@ class QueryImpl<T> implements Query<T> {
         return;
       }
       final decoded = <_Decoded>[];
-      for (final id in candidateIds) {
+      for (final id in candidateIds ?? const <Object?>[]) {
         if (t != null) t.start(_QueryStage.backendRead);
         final raw = await snap.read(_table, ByteKey(_codec.encode(id)));
         if (raw == null) continue;

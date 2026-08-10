@@ -403,6 +403,26 @@ void main() {
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
 
+    test('native index preparation does not scan rows in Dart', () async {
+      final db = await openNative();
+      final col = _coll(db, 't', indexFields: ['name']);
+      for (var i = 0; i < 50; i++) {
+        await col.put(_Rec('r$i', 'name-${i % 5}'));
+      }
+      expect(await _durableIndexCount(db), 50);
+      await db.close();
+
+      final reopened = await openNative();
+      try {
+        final reopenedCol = _coll(reopened, 't', indexFields: ['name']);
+        final result = await reopenedCol.where({'name': 'name-2'}).findAll();
+        expect(result, hasLength(10));
+        expect(reopened.engine.scannedRows, 0);
+      } finally {
+        await reopened.close();
+      }
+    });
+
     test('index entries are durable and survive close/reopen', () async {
       final db = await openNative();
       final col = _coll(db, 't', indexFields: ['name']);

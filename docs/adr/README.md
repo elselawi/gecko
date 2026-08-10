@@ -54,6 +54,7 @@ What becomes easier, harder, or riskier because of this choice.
 | [0020](0020-m5-indexed-range-prefix-intersection.md) | M5 indexed range, prefix, and multi-equality intersection | accepted |
 | [0021](0021-m6-architecture-decisions-measured.md) | M6 measured architecture decisions | accepted |
 | [0022](0022-m6-5-rust-only-encryption-simplification.md) | M6.5 Rust-only physical encryption simplification | accepted |
+| [0023](0023-m7-native-execution-ownership.md) | M7 native execution ownership | accepted |
 | [0011](0011-public-entry-and-release-contracts.md) | Public entry point and release contracts | accepted |
 | [0012](0012-cross-platform-artifact-matrix.md) | Cross-platform artifact matrix and bundled distribution | accepted |
 | [0013](0013-web-runtime-frb-glue-and-opfs.md) | Web runtime: FRB wasm glue and OPFS persistence | accepted |

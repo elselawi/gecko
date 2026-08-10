@@ -24,6 +24,12 @@ Future<Object?> dispatchNativeWorker(
       return (await worker.applyBatch(
         encodedOps: List<int>.from(arguments[0] as List),
       )).toString();
+    case 'repairIndex':
+      await worker.repairIndex(
+        table: arguments[0] as String,
+        fields: [for (final field in (arguments[1] as List)) field as String],
+      );
+      return null;
     case 'get':
       final value = await worker.get_(
         table: arguments[0] as String,

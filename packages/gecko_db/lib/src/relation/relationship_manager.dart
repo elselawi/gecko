@@ -11,8 +11,12 @@ import 'dart:async';
 
 import '../api/change.dart';
 import '../backend/byte_key.dart';
+import '../backend/native_raw_backend.dart' show NativeRawSnapshot;
 import '../backend/raw_backend.dart';
 import '../errors/errors.dart';
+import '../query/durable_index_bounds.dart';
+import '../query/filter.dart';
+import '../query/predicate_codec.dart';
 import '../query/query_impl.dart';
 import '../raw/raw_engine.dart';
 import '../wire/wire_codec.dart';
@@ -132,12 +136,45 @@ class RelationshipManager {
     String fk,
   ) async {
     final index = _indexLookup?.call(r.childCollection);
+    if (snap is NativeRawSnapshot &&
+        index != null &&
+        index.secondary.isIndexed(fk)) {
+      // M7: native relationship lookup streams the durable index in Rust;
+      // the Dart secondary index is not populated on native open anymore.
+      final (start, end) = eqBounds(
+        r.childCollection,
+        fk,
+        parentId,
+        codec: _codec,
+      );
+      final entries = await snap.queryIndexed(
+        table: r.childCollection,
+        start: ByteKey(start),
+        end: ByteKey(end),
+      );
+      final rows = <Map<Object?, Object?>>[];
+      for (final entry in entries) {
+        final row = _mapOf(_codec.decode(entry.value ?? const []));
+        if (row[fk] == parentId) rows.add(row);
+      }
+      return rows;
+    }
+    if (snap is NativeRawSnapshot) {
+      // Native unindexed relationship lookup still evaluates the predicate in
+      // Rust, transferring only matching child rows to Dart.
+      final entries = await snap.queryFiltered(
+        table: r.childCollection,
+        predicateBytes: encodePredicate([
+          Filter.eq(fk, parentId),
+        ], codec: _codec),
+      );
+      return [
+        for (final entry in entries)
+          _mapOf(_codec.decode(entry.value ?? const [])),
+      ];
+    }
     if (index != null && index.secondary.isIndexed(fk)) {
       final ids = index.secondary.lookupEq({fk: parentId})!;
-      // M3: one batched read (a single native `get_many` hop on the Rust
-      // backend) instead of one `snap.read` per child id (the relationship
-      // N+1). The FK re-check is kept because the in-memory index may be
-      // stale relative to the snapshot's committed state in edge cases.
       final entries = await snap.getMany(r.childCollection, [
         for (final id in ids) _byteOf(id),
       ]);

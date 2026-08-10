@@ -9,7 +9,7 @@ use redb::{
     backends::FileBackend, Database, DatabaseError, ReadOnlyDatabase, ReadTransaction,
     ReadableDatabase, ReadableTable, TableDefinition, TableHandle,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -663,6 +663,93 @@ impl RedbWorker {
     /// Releases a snapshot. Idempotent: unknown ids are ignored.
     pub fn drop_snapshot(&mut self, id: u64) {
         self.snapshots.remove(&id);
+    }
+
+    /// M7: verifies and repairs all durable-index entries for [table] in Rust.
+    /// The caller supplies the declared indexed fields; primary rows are the
+    /// source of truth and the repair is committed atomically with no Dart row
+    /// materialization. Index values are the encoded primary record keys.
+    pub fn repair_index(&mut self, table: &str, fields: &[String]) -> Result<(), WorkerError> {
+        if self.read_only {
+            return Err(WorkerError::InvalidOperation(
+                "database is read-only; index repair is not allowed".into(),
+            ));
+        }
+        let transaction = self.begin_read()?;
+        let primary_def = table_definition(table);
+        let primary = match transaction.open_table(primary_def) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut expected = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        for entry in primary
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let (record_key, row_value) =
+                entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let record_key = record_key.value().to_vec();
+            let row_bytes = row_value.value();
+            for field in fields {
+                let Some((start, end)) = crate::value_codec::find_field_range(row_bytes, field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                else {
+                    continue;
+                };
+                expected.insert(
+                    durable_index_key(table, field, &row_bytes[start..end], &record_key),
+                    record_key.clone(),
+                );
+            }
+        }
+        drop(transaction);
+
+        let transaction = self.begin_read()?;
+        let index_def = table_definition("__gecko_index");
+        let mut current = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        if let Ok(index) = transaction.open_table(index_def) {
+            for entry in index
+                .iter()
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+            {
+                let (key, value) =
+                    entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                let key_bytes = key.value().to_vec();
+                if durable_index_table(&key_bytes).as_deref() == Some(table) {
+                    current.insert(key_bytes, value.value().to_vec());
+                }
+            }
+        }
+        drop(transaction);
+        if current == expected {
+            return Ok(());
+        }
+
+        let transaction = match &self.database {
+            WorkerDatabase::ReadWrite(database) => database
+                .begin_write()
+                .map_err(|error| WorkerError::Storage(error.to_string()))?,
+            WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
+        };
+        let mut index = transaction
+            .open_table(index_def)
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        for key in current.keys().filter(|key| !expected.contains_key(*key)) {
+            index
+                .remove(key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        for (key, value) in expected {
+            index
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        drop(index);
+        transaction
+            .commit()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        Ok(())
     }
 
     /// Phase 2 native query fast path: range-scans the durable `__gecko_index`
@@ -1630,6 +1717,37 @@ fn table_definition(name: &str) -> BytesTable {
     TableDefinition::new(Box::leak(full_name.into_boxed_str()))
 }
 
+fn durable_index_key(table: &str, field: &str, value: &[u8], record_key: &[u8]) -> Vec<u8> {
+    use crate::value_codec::TAG_LIST;
+    let mut out = vec![TAG_LIST];
+    out.extend_from_slice(&4u32.to_be_bytes());
+    out.extend_from_slice(&encode_index_string(table));
+    out.extend_from_slice(&encode_index_string(field));
+    out.extend_from_slice(value);
+    out.extend_from_slice(record_key);
+    out
+}
+
+fn encode_index_string(value: &str) -> Vec<u8> {
+    use crate::value_codec::TAG_STRING;
+    let bytes = value.as_bytes();
+    let mut out = vec![TAG_STRING];
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+    out
+}
+
+fn durable_index_table(bytes: &[u8]) -> Option<String> {
+    let value = crate::value_codec::decode_value(bytes).ok()?;
+    let crate::value_codec::RowValue::List(values) = value else {
+        return None;
+    };
+    match values.first() {
+        Some(crate::value_codec::RowValue::String(table)) => Some(table.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2365,6 +2483,40 @@ mod tests {
         let last = end.pop().unwrap();
         end.push(last + 1);
         (prefix, end)
+    }
+
+    #[test]
+    fn repair_index_rebuilds_durable_entries_from_primary_rows() {
+        let (path, mut worker) = seed_indexed_age_fixture("repair-index");
+        let (start, end) = age_field_bounds();
+        let before = worker
+            .query_indexed("items", "__gecko_index", &start, &end)
+            .unwrap();
+        assert_eq!(before.len(), 4);
+        worker
+            .apply_batch(&[Op {
+                kind: OpKind::Delete,
+                table: "__gecko_index".into(),
+                key: Some(index_key("items", "age", &encode_test_int64(20), b"k1")),
+                value: None,
+                start: None,
+                end: None,
+            }])
+            .unwrap();
+        assert_eq!(
+            worker
+                .query_indexed("items", "__gecko_index", &start, &end)
+                .unwrap()
+                .len(),
+            3
+        );
+        worker.repair_index("items", &["age".to_string()]).unwrap();
+        let after = worker
+            .query_indexed("items", "__gecko_index", &start, &end)
+            .unwrap();
+        assert_eq!(after.len(), 4);
+        assert!(after.iter().any(|entry| entry.0 == b"k1"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

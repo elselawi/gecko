@@ -273,7 +273,10 @@ class DatabaseImpl implements Database {
             ),
           );
     if (index != null) {
-      unawaited(_rebuildIndex(name, index));
+      // M7: native index verification/repair runs in Rust from the durable
+      // primary rows; only the transitional in-memory backend rebuilds the
+      // Dart reference index.
+      unawaited(_prepareIndex(name, index));
     }
     return _CollectionImpl<T>(
       this,
@@ -286,10 +289,24 @@ class DatabaseImpl implements Database {
     );
   }
 
-  /// (Re)builds [index] from the current table contents at collection-open and
-  /// verifies the durable `__gecko_index` table against the primary-derived
-  /// entries, repairing any drift atomically (one backend batch). An index can
-  /// therefore never be silently ahead of or behind its primary table.
+  /// Prepares [index] for queries. Native uses Rust as the durable index
+  /// authority and repairs drift without materializing primary rows in Dart;
+  /// the in-memory backend keeps the transitional Dart reference rebuild.
+  Future<void> _prepareIndex(String name, CollectionIndex index) async {
+    if (_engine.backend is NativeRawBackend) {
+      await (_engine.backend as NativeRawBackend).repairIndex(
+        table: name,
+        fields: [...index.secondary.fields, ...index.secondary.prefixFields],
+      );
+      index.markReady();
+      return;
+    }
+    await _rebuildIndex(name, index);
+  }
+
+  /// (Re)builds [index] from the current table contents at collection-open.
+  /// This path is retained only for the transitional in-memory reference
+  /// backend until M7.5 removes it.
   Future<void> _rebuildIndex(String name, CollectionIndex index) async {
     if (!_rebuildingIndexes.add(name)) {
       // Another rebuild is in flight for this table; wait for it.

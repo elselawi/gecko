@@ -112,12 +112,6 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
-  /// Phase 2 native query fast path: range-scans the durable index table
-  /// [index_table] for keys in `[start..=end]`, joins each entry's value
-  /// (the user-table row key) back to its row in [table], and returns the
-  /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
-  /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
-  /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
   Future<List<(Uint8List, Uint8List)>> queryIndexed({
     required String table,
     required String indexTable,
@@ -192,6 +186,18 @@ abstract class NativeWorker implements RustOpaqueInterface {
     newKey: newKey,
     oldGen: oldGen,
   );
+
+  /// Phase 2 native query fast path: range-scans the durable index table
+  /// [index_table] for keys in `[start..=end]`, joins each entry's value
+  /// (the user-table row key) back to its row in [table], and returns the
+  /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
+  /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
+  /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
+  /// M7: verifies and atomically repairs durable index entries for [table].
+  Future<void> repairIndex({
+    required String table,
+    required List<String> fields,
+  });
 
   Future<Uint8List?> snapshotGet({
     required BigInt snapshot,

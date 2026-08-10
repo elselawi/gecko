@@ -261,6 +261,14 @@ class NativeWorkerClient {
   Future<int> applyBatch(List<int> encodedOps) async =>
       _asInt(await _request('applyBatch', <Object?>[encodedOps]));
 
+  /// M7: verifies and atomically repairs durable index entries for [table].
+  Future<void> repairIndex({
+    required String table,
+    required List<String> fields,
+  }) async {
+    await _request('repairIndex', <Object?>[table, fields]);
+  }
+
   Future<List<int>?> get({
     required String table,
     required List<int> key,

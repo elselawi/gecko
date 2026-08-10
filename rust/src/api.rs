@@ -183,6 +183,13 @@ impl NativeWorker {
     /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
     /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
     /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
+    /// M7: verifies and atomically repairs durable index entries for [table].
+    pub async fn repair_index(&mut self, table: String, fields: Vec<String>) -> Result<(), String> {
+        self.worker
+            .repair_index(&table, &fields)
+            .map_err(encode_worker_error)
+    }
+
     pub async fn query_indexed(
         &self,
         table: String,
