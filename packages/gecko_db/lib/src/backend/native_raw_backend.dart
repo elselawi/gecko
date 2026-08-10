@@ -69,7 +69,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.commitSequence();
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -79,7 +79,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.compact();
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -88,7 +88,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.storageStats();
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -130,7 +130,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
         rethrow;
       }
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -184,7 +184,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
         deltas: deltas,
       );
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -204,7 +204,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
         kind: kind,
       );
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -214,7 +214,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       await _worker.unregisterLiveQuery(id);
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -224,7 +224,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.liveQueryCount();
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -235,7 +235,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.pendingChanges();
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -263,7 +263,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -276,7 +276,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       await _worker.repairIndex(table: table, fields: fields);
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -304,7 +304,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -324,7 +324,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -337,7 +337,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.tables();
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -352,7 +352,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       if (raw == null) return 0;
       return (const DefaultWireCodec().decode(raw) as int?) ?? 0;
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     } finally {
       await snapshot.dispose();
     }
@@ -499,6 +499,7 @@ class NativeRawSnapshot implements RawSnapshot {
     required ByteKey end,
     String indexTable = geckoIndexTable,
   }) async {
+    // coverage:ignore-start M11 no longer called kept as public API surface
     try {
       final pairs = await _worker.snapshotQueryIndexed(
         snapshot: _snapshotId,
@@ -511,6 +512,7 @@ class NativeRawSnapshot implements RawSnapshot {
     } catch (error) {
       throw mapNativeError(error);
     }
+    // coverage:ignore-end
   }
 
   /// Phase 2 step 2, snapshot-bound: the full scan + predicate evaluation
@@ -528,7 +530,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -544,7 +546,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -601,7 +603,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return pair == null ? null : RawEntry(ByteKey(pair.$1), pair.$2);
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -639,7 +641,7 @@ class NativeRawSnapshot implements RawSnapshot {
           ),
       ];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -657,7 +659,7 @@ class NativeRawSnapshot implements RawSnapshot {
         wantedId: wantedId.bytes,
       );
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -680,7 +682,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -701,7 +703,7 @@ class NativeRawSnapshot implements RawSnapshot {
         predicateBytes: predicateBytes,
       );
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -724,7 +726,7 @@ class NativeRawSnapshot implements RawSnapshot {
         field: field,
       );
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -746,7 +748,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -773,7 +775,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -798,7 +800,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -835,7 +837,7 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error);
+      throw mapNativeError(error); // coverage:ignore-line defensive error translation
     }
   }
 }

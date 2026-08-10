@@ -1,0 +1,32 @@
+name: gecko_db_benchmark
+description: >-
+  Dev-only comparative benchmark harness: gecko_db vs Hive CE, Sembast, SQLite
+  (package:sqlite3), Isar (isar_community), and Drift under identical fixtures.
+  Kept as its own package so the benchmark-only native-assets dependencies
+  (sqlite3 3.x runs Dart native-assets build hooks, which pollute spawned
+  process stdout) never touch the monorepo root.
+publish_to: none
+version: 0.0.0
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  gecko_db:
+    path: ../packages/gecko_db
+  # Comparative benchmark targets (VM-only, dev tooling).
+  hive_ce: ^2.19.3
+  sembast: ">=3.8.0 <3.8.7"
+  sqlite3: ^3.5.1
+  drift: ^2.34.3
+  isar_community: ^3.3.2
+
+dev_dependencies:
+  lints: ^6.0.0
+  drift_dev: ^2.34.0
+  build_runner: ^2.15.1
+  isar_community_generator: ^3.3.2
+
+# NOTE: do not add this package to the root workspace / melos `packages/**`.
+# It is intentionally standalone so `dart run` from the repo root (tooling,
+# tests, native_process_helper) never triggers native-assets build hooks.

@@ -22,9 +22,13 @@
 //     the generated files are committed so the benchmark runs with no build
 //     step.
 //
-// Run from the repo root (requires release native artifact):
-//   dart run benchmark/comparative.dart          # all six
-//   dart run benchmark/comparative.dart --json   # machine-readable
+// Run from the benchmark package (requires release native artifact):
+//   cd benchmark && dart run comparative.dart          # all six
+//   cd benchmark && dart run comparative.dart --json   # machine-readable
+//
+// The benchmark is its own package on purpose: sqlite3 3.x runs Dart
+// native-assets build hooks that would otherwise pollute the monorepo root's
+// `dart run` stdout (breaking the process tests that read exact markers).
 //
 library;
 
