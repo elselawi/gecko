@@ -257,7 +257,7 @@ void main() {
   );
 
   test('raw engine diagnostics count writes and write failures', () async {
-    final engine = RawEngine(_ThrowingBatchBackend());
+    final engine = RawEngine(_ThrowingBatchBackend(db.engine.backend));
     engine.setDiagnosticsEnabled(true);
     await expectLater(
       engine.rawPut('t', ByteKey([1]), [1]),
@@ -277,10 +277,14 @@ void main() {
 }
 
 /// A backend whose writes always fail, to exercise the engine's write-failure
-/// accounting paths deterministically.
+/// accounting paths deterministically. Reads delegate to the real native
+/// backend so the engine can take its pre-write snapshot.
 class _ThrowingBatchBackend implements RawBackend {
+  _ThrowingBatchBackend(this._delegate);
+  final RawBackend _delegate;
+
   @override
-  bool get isReadOnly => false;
+  bool get isReadOnly => _delegate.isReadOnly;
 
   @override
   Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops) async {
@@ -288,25 +292,17 @@ class _ThrowingBatchBackend implements RawBackend {
   }
 
   @override
-  Future<RawSnapshot> snapshot() async {
-    throw UnimplementedError();
-  }
+  Future<RawSnapshot> snapshot() => _delegate.snapshot();
 
   @override
-  Future<bool> tableExists(String table) async {
-    throw UnimplementedError();
-  }
+  Future<bool> tableExists(String table) => _delegate.tableExists(table);
 
   @override
-  Future<List<String>> tables() async {
-    throw UnimplementedError();
-  }
+  Future<List<String>> tables() => _delegate.tables();
 
   @override
-  Future<int> lastCommitSeq() async {
-    throw UnimplementedError();
-  }
+  Future<int> lastCommitSeq() => _delegate.lastCommitSeq();
 
   @override
-  Future<void> close() async {}
+  Future<void> close() => _delegate.close();
 }

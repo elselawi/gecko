@@ -5,6 +5,15 @@ import 'package:test/test.dart';
 
 import 'support/native_database.dart';
 
+/// Polls until [condition] holds (the native worker emits change-feed events
+/// asynchronously, so a single event-loop turn is not enough).
+Future<void> _waitFor(bool Function() condition) async {
+  for (var i = 0; i < 40 && !condition(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  expect(condition(), isTrue);
+}
+
 class _User {
   _User(this.id, this.name, this.age, [this.tags]);
   final String id;
@@ -327,22 +336,22 @@ void main() {
         final query = col.where().range('age', min: 25);
         final snapshots = <int>[];
         final sub = query.watch().listen((list) => snapshots.add(list.length));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => snapshots.isNotEmpty);
         expect(snapshots.first, 1);
 
         // b now matches.
         await col.put(_User('b', 'B', 30));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => snapshots.length >= 2);
         expect(snapshots.last, 2);
 
         // a stops matching.
         await col.put(_User('a', 'A', 10));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => snapshots.length >= 3);
         expect(snapshots.last, 1);
 
         // Update a row that stays matching.
         await col.put(_User('b', 'B2', 31));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => snapshots.length >= 4);
         expect(snapshots.last, 1);
 
         await sub.cancel();
@@ -368,11 +377,11 @@ void main() {
 
       var emissions = 0;
       final sub = colA.where({'age': 30}).watch().listen((_) => emissions++);
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => emissions >= 1);
       final initial = emissions;
 
       await colB.put(_User('b', 'B', 30));
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(emissions, initial, reason: 'write to B must not re-emit A query');
 
       await sub.cancel();
@@ -420,7 +429,8 @@ void main() {
       final query = col.where({'age': 30}) as QueryImpl<_User>;
       expect(query.lastPlan, IndexPlan.fullScan);
       await query.findAll();
-      expect(query.lastPlan, IndexPlan.fullScan);
+      // Unindexed native queries push the predicate to Rust.
+      expect(query.lastPlan, IndexPlan.nativeFilteredScan);
       await db.close();
     });
   });

@@ -258,6 +258,12 @@ class DatabaseImpl implements Database {
           ...index.prefixFields,
         ]);
       }
+      // M7.5: Rust is the sole durable-index authority. Run the one-time
+      // per-session repair so rows written before the index was declared are
+      // covered, and drift is corrected (the worker compares expected entries
+      // derived from primary rows against `__gecko_index`). Fire-and-forget:
+      // queries await `index.ready` before routing through the index.
+      unawaited(_prepareIndex(name, index));
     }
     return _CollectionImpl<T>(
       this,
@@ -268,6 +274,29 @@ class DatabaseImpl implements Database {
       schema: schema,
       index: index,
     );
+  }
+
+  /// Prepares [index] for queries (M7.5 native-only). Rust repairs the
+  /// durable index from the primary rows in one atomic worker transaction;
+  /// no Dart index is built. Coalesced: only the first `collection()` call
+  /// per table runs the repair; later calls observe [CollectionIndex.isReady]
+  /// and skip it. A failed repair never blocks queries — the next
+  /// `collection()` call retries.
+  Future<void> _prepareIndex(String name, CollectionIndex index) async {
+    if (index.isReady) return;
+    try {
+      final backend = _engine.backend;
+      if (backend is NativeRawBackend) {
+        await backend.repairIndex(
+          table: name,
+          fields: [...index.fields, ...index.prefixFields],
+        );
+      }
+    } catch (_) {
+      // Best-effort drift correction; never block a query on repair failure.
+    } finally {
+      index.markReady();
+    }
   }
 
   final Map<String, int> _autoIdCounters = <String, int>{};
@@ -673,15 +702,24 @@ class _CollectionImpl<T> implements Collection<T> {
     _db._assertOpen();
     late StreamController<T?> controller;
     late StreamSubscription<ChangeSet> sub;
+    // Serialize async re-reads so emissions stay in change-feed order even
+    // when the native worker round-trip completes out of order.
+    var emitting = Future<void>.value();
     controller = StreamController<T?>(
       onListen: () {
         // Emit the current value immediately (StreamBuilder-friendly).
-        get(id).then(controller.add);
+        emitting = emitting.then(
+          (_) async => controller.add(await get(id)),
+        );
         sub = _db.engine.changes.stream.listen((ChangeSet change) {
           final relevant = change.changes.any(
             (entry) => entry.table == name && entry.key == id,
           );
-          if (relevant) get(id).then(controller.add);
+          if (relevant) {
+            emitting = emitting.then(
+              (_) async => controller.add(await get(id)),
+            );
+          }
         });
       },
       onCancel: () async {
@@ -697,6 +735,9 @@ class _CollectionImpl<T> implements Collection<T> {
     late StreamController<CollectionDiff<T>> controller;
     late StreamSubscription<ChangeSet> sub;
     var previous = <Object?, T>{};
+    // Serialize the diff computation so concurrent native round-trips never
+    // interleave (each emission derives from the previous committed state).
+    var emitting = Future<void>.value();
     controller = StreamController<CollectionDiff<T>>(
       onListen: () async {
         final initial = await getAll();
@@ -709,35 +750,37 @@ class _CollectionImpl<T> implements Collection<T> {
             snapshot: initial,
           ),
         );
-        sub = _db.engine.changes.stream.listen((change) async {
+        sub = _db.engine.changes.stream.listen((change) {
           if (!change.changes.any((entry) => entry.table == name)) return;
-          final nextList = await getAll();
-          final next = _keyed(nextList);
-          final added = <T>[];
-          final updated = <T>[];
-          final removed = <T>[];
-          for (final entry in next.entries) {
-            final old = previous[entry.key];
-            if (old == null) {
-              added.add(entry.value);
-            } else if (!_sameMapped(old, entry.value)) {
-              updated.add(entry.value);
+          emitting = emitting.then((_) async {
+            final nextList = await getAll();
+            final next = _keyed(nextList);
+            final added = <T>[];
+            final updated = <T>[];
+            final removed = <T>[];
+            for (final entry in next.entries) {
+              final old = previous[entry.key];
+              if (old == null) {
+                added.add(entry.value);
+              } else if (!_sameMapped(old, entry.value)) {
+                updated.add(entry.value);
+              }
             }
-          }
-          for (final entry in previous.entries) {
-            if (!next.containsKey(entry.key)) removed.add(entry.value);
-          }
-          previous = next;
-          if (added.isNotEmpty || updated.isNotEmpty || removed.isNotEmpty) {
-            controller.add(
-              CollectionDiff<T>(
-                added: added,
-                updated: updated,
-                removed: removed,
-                snapshot: nextList,
-              ),
-            );
-          }
+            for (final entry in previous.entries) {
+              if (!next.containsKey(entry.key)) removed.add(entry.value);
+            }
+            previous = next;
+            if (added.isNotEmpty || updated.isNotEmpty || removed.isNotEmpty) {
+              controller.add(
+                CollectionDiff<T>(
+                  added: added,
+                  updated: updated,
+                  removed: removed,
+                  snapshot: nextList,
+                ),
+              );
+            }
+          });
         });
       },
       onCancel: () async => sub.cancel(),
@@ -760,13 +803,20 @@ class _CollectionImpl<T> implements Collection<T> {
     _db._assertOpen();
     late StreamController<List<T>> controller;
     late StreamSubscription<ChangeSet> sub;
+    // Serialize async re-reads so emissions stay in change-feed order even
+    // when the native worker round-trip completes out of order.
+    var emitting = Future<void>.value();
     controller = StreamController<List<T>>(
       onListen: () {
         // Emit the current full list immediately.
-        getAll().then(controller.add);
+        emitting = emitting.then(
+          (_) async => controller.add(await getAll()),
+        );
         sub = _db.engine.changes.stream.listen((ChangeSet change) {
           if (change.changes.any((entry) => entry.table == name)) {
-            getAll().then(controller.add);
+            emitting = emitting.then(
+              (_) async => controller.add(await getAll()),
+            );
           }
         });
       },
@@ -840,6 +890,7 @@ class _TxnImpl implements Transaction {
           ...index.prefixFields,
         ]);
       }
+      unawaited(_db._prepareIndex(name, index));
     }
     return _CollectionImpl<T>(
       _db,

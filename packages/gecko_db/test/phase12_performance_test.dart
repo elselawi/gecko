@@ -208,8 +208,8 @@ void main() {
       await item.put(_Item('a', 'A'));
       final diffs = <CollectionDiff<_Item>>[];
       final sub = item.watchAllDiff().listen(diffs.add);
-      await Future<void>.delayed(Duration.zero);
-      expect(diffs.single.added, hasLength(1));
+      await _waitFor(() => diffs.isNotEmpty);
+      expect(diffs.first.added, hasLength(1));
       await item.put(_Item('b', 'B'));
       await _waitFor(() => diffs.length >= 2);
       expect(diffs.last.added.single.id, 'b');

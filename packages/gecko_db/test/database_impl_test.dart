@@ -131,8 +131,8 @@ void main() {
         fromRow: _fromRow,
         id: _id,
       );
-      expect(
-        () => col.patch('nope', {'name': 'x'}),
+      await expectLater(
+        col.patch('nope', {'name': 'x'}),
         throwsA(
           isA<GeckoError>().having(
             (e) => e.type,

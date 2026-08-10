@@ -31,6 +31,11 @@ class _Decoded {
 }
 
 /// Metadata for the declared durable indexes of a collection.
+///
+/// The declared fields are registered with the native worker so Rust owns
+/// durable index maintenance. [ready] resolves once the one-time per-session
+/// Rust repair has run (so rows written before the index was declared are
+/// covered); queries await it before routing through the durable index.
 class CollectionIndex {
   CollectionIndex({
     required List<String> fields,
@@ -40,8 +45,19 @@ class CollectionIndex {
 
   final List<String> fields;
   final List<String> prefixFields;
-  Future<void> get ready => Future<void>.value();
-  bool get isReady => true;
+  final Completer<void> _ready = Completer<void>();
+
+  /// Completes once the durable index has been repaired (M7.5: Rust is the
+  /// sole authority; there is no Dart index to build).
+  Future<void> get ready => _ready.future;
+
+  /// Whether the one-time repair for this session has completed.
+  bool get isReady => _ready.isCompleted;
+
+  /// Marks the index prepared for queries. Idempotent.
+  void markReady() {
+    if (!_ready.isCompleted) _ready.complete();
+  }
 }
 
 /// The concrete [`Query`] implementation.
@@ -136,6 +152,7 @@ class QueryImpl<T> implements Query<T> {
   /// use durable Rust indexes directly.
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
       yield* _scanWith(
@@ -458,6 +475,7 @@ class QueryImpl<T> implements Query<T> {
   /// the snapshot is not native so the caller falls back to the Dart path.
   Future<List<_Decoded>?> _nativeOrderedCollect(_QueryTimings? t) async {
     final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     if (snap is! NativeRawSnapshot) {
       await snap.dispose();
@@ -570,6 +588,7 @@ class QueryImpl<T> implements Query<T> {
       return;
     }
     final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
       yield* _scanWith(
@@ -643,6 +662,7 @@ class QueryImpl<T> implements Query<T> {
     // increment loop). Indexed-eq queries keep the existing `queryIndexed`
     // path (the result set is already small and joined in one hop).
     final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
       final nativeRanges = _nativeIndexedRanges(secondary);
@@ -682,6 +702,7 @@ class QueryImpl<T> implements Query<T> {
     // whole row). Dart decodes + dedups. Indexed-eq queries keep the
     // `queryIndexed` path (small result set, already joined).
     final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
       final nativeRanges = _nativeIndexedRanges(secondary);
@@ -757,6 +778,8 @@ class QueryImpl<T> implements Query<T> {
   @override
   QueryCursor<T> cursor({int? pageSize}) {
     final snapFuture = () async {
+      final secondary = _secondary;
+      if (secondary != null) await secondary.ready;
       return _engine.backend.snapshot();
     }();
     return _QueryCursorImpl<T>(this, snapFuture, pageSize ?? _limit);

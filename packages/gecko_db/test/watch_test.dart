@@ -5,6 +5,15 @@ import 'package:test/test.dart';
 
 import 'support/native_database.dart';
 
+/// Polls until [condition] holds (the native worker emits change-feed events
+/// asynchronously, so a single event-loop turn is not enough).
+Future<void> _waitFor(bool Function() condition) async {
+  for (var i = 0; i < 40 && !condition(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  expect(condition(), isTrue);
+}
+
 class _User {
   _User(this.id, this.name);
   final String id;
@@ -33,12 +42,12 @@ void main() {
 
         final values = <_User?>[];
         final sub = col.watch('u1').listen(values.add);
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => values.isNotEmpty);
         expect(values, hasLength(1)); // initial
         expect(values.single!.name, 'A');
 
         await col.put(_User('u1', 'B'));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => values.length >= 2);
         expect(values.last!.name, 'B');
 
         await sub.cancel();
@@ -60,10 +69,10 @@ void main() {
 
         final values = <_User?>[];
         final sub = col.watch('u1').listen(values.add);
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => values.isNotEmpty);
 
         await col.delete('u1');
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => values.any((v) => v == null));
         expect(values.last, isNull);
         await sub.cancel();
         await db.close();
@@ -82,11 +91,11 @@ void main() {
 
       final values = <_User?>[];
       final sub = col.watch('u1').listen(values.add);
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => values.isNotEmpty);
       final initialCount = values.length;
 
       await col.put(_User('u2', 'Other'));
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(
         values.length,
         initialCount,
@@ -113,10 +122,10 @@ void main() {
         final s2 = <String>[];
         final sub1 = col.watch('u1').listen((u) => s1.add(u?.name ?? ''));
         final sub2 = col.watch('u1').listen((u) => s2.add(u?.name ?? ''));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => s1.isNotEmpty && s2.isNotEmpty);
 
         await col.put(_User('u1', 'Updated'));
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => s1.length >= 2 && s2.length >= 2);
 
         expect(s1, ['A', 'Updated']);
         expect(s2, ['A', 'Updated']);
@@ -139,20 +148,20 @@ void main() {
 
       final snapshots = <int>[];
       final sub = col.watchAll().listen((list) => snapshots.add(list.length));
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => snapshots.isNotEmpty);
       expect(snapshots, [0]); // initial empty
 
       await col.put(_User('u1', 'A'));
       await col.put(_User('u2', 'B'));
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => snapshots.isNotEmpty && snapshots.last == 2);
       expect(snapshots.last, 2);
 
       await col.put(_User('u1', 'A2')); // update
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => snapshots.length >= 3 && snapshots.last == 2);
       expect(snapshots.last, 2);
 
       await col.delete('u1');
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => snapshots.last == 1);
       expect(snapshots.last, 1);
 
       await sub.cancel();
@@ -179,13 +188,13 @@ void main() {
 
         var emissions = 0;
         final sub = colA.watchAll().listen((_) => emissions++);
-        await Future<void>.delayed(Duration.zero);
+        await _waitFor(() => emissions >= 1);
         final initial = emissions;
 
         for (var i = 0; i < 1000; i++) {
           await colB.put(_User('u$i', 'B'));
         }
-        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
         expect(emissions, initial, reason: '1000 writes to B must not wake A');
 
         await sub.cancel();
@@ -204,16 +213,16 @@ void main() {
 
       var emissions = 0;
       final sub = col.watchAll().listen((_) => emissions++);
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => emissions >= 1);
 
       await col.put(_User('u1', 'A'));
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => emissions >= 2);
       final afterFirst = emissions;
       expect(afterFirst, greaterThan(0));
 
       await sub.cancel();
       await col.put(_User('u2', 'B'));
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(emissions, afterFirst, reason: 'no emission after cancel');
 
       await db.close();

@@ -8,6 +8,10 @@ void main() {
     final directory = await Directory.systemTemp.createTemp('gecko-readonly-');
     addTearDown(() => directory.delete(recursive: true));
     final path = '${directory.path}${Platform.pathSeparator}db.redb';
+    // A native read-only open requires an existing store: create it first.
+    final writer = await DatabaseImpl.open(path);
+    await writer.close();
+
     final db = await DatabaseImpl.open(
       path,
       config: const DatabaseConfig(readOnly: true),
@@ -20,8 +24,8 @@ void main() {
     );
 
     expect(db.isReadOnly, isTrue);
-    expect(
-      () => collection.put({'id': 'a', 'value': 1}),
+    await expectLater(
+      collection.put({'id': 'a', 'value': 1}),
       throwsA(
         isA<GeckoError>().having(
           (error) => error.type,
@@ -30,9 +34,12 @@ void main() {
         ),
       ),
     );
-    expect(() => collection.delete('a'), throwsA(isA<GeckoError>()));
-    expect(() => db.bulkWrite(const []), throwsA(isA<GeckoError>()));
-    expect(() => db.writeTxn((_) async {}), throwsA(isA<GeckoError>()));
+    await expectLater(collection.delete('a'), throwsA(isA<GeckoError>()));
+    await expectLater(db.bulkWrite(const []), throwsA(isA<GeckoError>()));
+    await expectLater(
+      db.writeTxn((_) async {}),
+      throwsA(isA<GeckoError>()),
+    );
     await db.close();
   });
 
