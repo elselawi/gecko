@@ -70,7 +70,6 @@ export 'src/backend/raw_backend.dart'
         RawEntry,
         RawBatch,
         keyNotFoundError;
-export 'src/backend/in_memory_backend.dart' show InMemoryBackend;
 export 'src/backend/native_raw_backend.dart'
     show NativeRawBackend, NativeRawSnapshot;
 export 'src/crypto/physical_encryption.dart'

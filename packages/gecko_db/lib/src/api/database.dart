@@ -34,7 +34,6 @@ typedef WriteCallback = FutureOr<void> Function(Transaction txn);
 class DatabaseConfig {
   const DatabaseConfig({
     this.readOnly = false,
-    this.inMemory = false,
     this.encryptionKey,
     this.encryptionKeyGeneration = 1,
     this.nativeLibraryPath,
@@ -51,15 +50,10 @@ class DatabaseConfig {
   /// Open for read-only access. Defaults to false.
   final bool readOnly;
 
-  /// Open an ephemeral in-memory database (tests, examples, dev). Defaults to
-  /// false — the production path is the native file backend. In-memory
-  /// databases are not persisted and cannot be physically encrypted.
-  final bool inMemory;
-
   /// Optional raw 32-byte AES-256-GCM key for native physical page
   /// encryption. Encryption is disabled when this is null. The application
   /// owns key storage; gecko_db does not accept custom crypto methods or key
-  /// providers. Web and in-memory encryption are unsupported.
+  /// providers. Web encryption is unsupported.
   final List<int>? encryptionKey;
 
   /// Key generation for [encryptionKey]. Freshly encrypted files use
@@ -118,16 +112,16 @@ typedef DatabaseOpener =
 abstract class Database {
   /// Opens (or creates) the database at [path].
   ///
-  /// The supported public entry point. By default this opens the native file
-  /// backend at [path]; pass `DatabaseConfig(inMemory: true)` for an ephemeral
-  /// in-memory database (tests/examples). Delegates to the concrete
-  /// implementation (imported here — Dart resolves circular imports fine, and
-  /// the public barrel already pulls the implementation's `dart:io`
-  /// dependencies).
+  /// The supported public entry point. This opens the native Rust/redb file
+  /// backend at [path] or the Web/Wasm OPFS file path. Tests should provide a
+  /// temporary file path rather than a separate storage backend. Delegates to
+  /// the concrete implementation (imported here — Dart resolves circular
+  /// imports fine, and the public barrel already pulls the implementation's
+  /// `dart:io` dependencies).
   static Future<Database> open(
     String path, {
     DatabaseConfig config = const DatabaseConfig(),
-  }) => DatabaseImpl.open(path, config: config, useInMemory: config.inMemory);
+  }) => DatabaseImpl.open(path, config: config);
 
   /// The filesystem path this database is tied to.
   String get path;

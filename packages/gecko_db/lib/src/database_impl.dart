@@ -12,7 +12,6 @@ import 'dart:math' as math;
 import 'package:path/path.dart' as path_util;
 
 import 'backend/byte_key.dart';
-import 'backend/in_memory_backend.dart';
 import 'backend/raw_backend.dart';
 import 'errors/errors.dart';
 import 'model/row_patch.dart';
@@ -42,9 +41,8 @@ import 'api/transaction.dart';
 
 /// Opens a [`Database`] metadata record key used to detect double-open.
 String _registryKey(String path) {
-  if (path.startsWith('mem://')) return path;
-  // On the web there is no filesystem: paths are logical OPFS names (or
-  // `:memory:`), and dart:io File/Platform are unavailable.
+  // On the web there is no filesystem: paths are logical OPFS names, and
+  // dart:io File/Platform are unavailable.
   if (isWeb) return path;
   final normalized = path_util.normalize(File(path).absolute.path);
   return Platform.isWindows ? normalized.toLowerCase() : normalized;
@@ -153,13 +151,11 @@ class DatabaseImpl implements Database {
   RelationshipManager get relationships => _relationships ??=
       RelationshipManager(_engine, indexLookup: (table) => _indexes[table]);
 
-  /// Opens a database. [useInMemory] selects the temporary reference backend;
-  /// otherwise the native Rust/redb file or Web/Wasm OPFS path is used.
-  /// Enforces the same-path single-open contract.
+  /// Opens a native Rust/redb file or Web/Wasm OPFS path. Enforces the
+  /// same-path single-open contract.
   static Future<DatabaseImpl> open(
     String path, {
     DatabaseConfig config = const DatabaseConfig(),
-    bool useInMemory = true,
   }) async {
     final key = _registryKey(path);
     if (_openDatabases.containsKey(key) || !_openingDatabases.add(key)) {
@@ -178,24 +174,13 @@ class DatabaseImpl implements Database {
       if (encryptionKey != null) {
         validateEncryptionKey(encryptionKey);
       }
-      if (useInMemory) {
-        if (encryptionKey != null) {
-          throw GeckoError(
-            GeckoErrorType.invalidOperation,
-            'Encryption requires the native file backend; in-memory databases '
-            'cannot be encrypted at rest',
-          );
-        }
-        backend = InMemoryBackend(isReadOnly: config.readOnly);
-      } else {
-        backend = await NativeRawBackend.open(
-          path,
-          readOnly: config.readOnly,
-          nativeLibraryPath: config.nativeLibraryPath,
-          encryptionKey: encryptionKey,
-          encryptionKeyGeneration: config.encryptionKeyGeneration,
-        );
-      }
+      backend = await NativeRawBackend.open(
+        path,
+        readOnly: config.readOnly,
+        nativeLibraryPath: config.nativeLibraryPath,
+        encryptionKey: encryptionKey,
+        encryptionKeyGeneration: config.encryptionKeyGeneration,
+      );
       db = DatabaseImpl._(
         path,
         RawEngine(
@@ -424,7 +409,6 @@ class DatabaseImpl implements Database {
     // (change log + sync state) and maintain secondary indexes, all inside
     // the SAME atomic redb transaction as the primary rows, with the
     // in-memory index applied only after the durable commit.
-    final pendingIndexMutations = <_TxnMutation>[];
     final lsn = await _engine.commitBatch(
       (lsn, snapshot) async {
         final ops = <RawOp>[];
@@ -450,10 +434,6 @@ class DatabaseImpl implements Database {
             previousVersion: previous,
             origin: ChangeOrigin.user,
           );
-          if (index != null && !_usesNativeDurableIndexes) {
-            ops.addAll(_durableIndexOps(txnMutation, index));
-            pendingIndexMutations.add(txnMutation);
-          }
           if (mutation.kind == ChangeKind.put) {
             ops.add(
               RawPut(
@@ -538,20 +518,6 @@ class DatabaseImpl implements Database {
           Change(table: mutation.table, key: mutation.key, kind: mutation.kind),
       ],
     );
-    // Only after the durable commit do we reflect the batch in the in-memory
-    // secondary index, so a failed commit can never leave the index ahead of
-    // (or behind) its primary table.
-    if (!_usesNativeDurableIndexes) {
-      for (final m in pendingIndexMutations) {
-        final index = _indexes[m.table];
-        if (index == null) continue;
-        if (m.kind == ChangeKind.delete) {
-          index.onDelete(m.recordId, m.previousVersion);
-        } else {
-          index.onPut(m.recordId, m.previousVersion, m.value);
-        }
-      }
-    }
     return BulkWriteResult(sequence: lsn, mutationCount: mutations.length);
   }
 
@@ -1137,13 +1103,6 @@ class _TxnImpl implements Transaction {
               _codec.encode(_recordToMap(record)),
             ),
           );
-          // Native durable secondary indexes are maintained by Rust in the
-          // same write transaction as the primary record. The in-memory
-          // backend retains the Dart reference implementation until M7.5.
-          final index = _db._indexes[mutation.table];
-          if (index != null && !_db._usesNativeDurableIndexes) {
-            ops.addAll(_durableIndexOps(mutation, index));
-          }
         }
         if (_db._changeLogMaxEntries > 0) {
           final logEntries = await snapshot.scanAll(geckoChangeLogTable);
@@ -1196,12 +1155,6 @@ class _TxnImpl implements Transaction {
         ];
       },
     );
-    // Only after the backend batch commits durably do we reflect it in the
-    // in-memory secondary index, so a failed commit can never leave the index
-    // ahead of (or behind) its primary table.
-    for (final mutation in _mutations) {
-      _applyIndexMutation(mutation);
-    }
     _committed = true;
   }
 
@@ -1226,17 +1179,6 @@ class _TxnImpl implements Transaction {
         GeckoErrorType.invalidOperation,
         'Transaction is already finished',
       );
-    }
-  }
-
-  void _applyIndexMutation(_TxnMutation mutation) {
-    if (_db._usesNativeDurableIndexes) return;
-    final index = _db._indexes[mutation.table];
-    if (index == null) return;
-    if (mutation.kind == ChangeKind.delete) {
-      index.onDelete(mutation.recordId, mutation.previousVersion);
-    } else {
-      index.onPut(mutation.recordId, mutation.previousVersion, mutation.value);
     }
   }
 

@@ -31,43 +31,23 @@ class _Decoded {
   final Map<Object?, Object?> row;
 }
 
-/// Immutable secondary index metadata used by the engine.
-class IndexDefinition {
-  const IndexDefinition({required this.name, required this.fields});
-  final String name;
-  final List<String> fields;
-
-  bool get isCompound => fields.length > 1;
-}
-
-/// A single in-memory secondary index bound to a collection, used by queries
-/// on that collection plus the write path that keeps it in sync.
+/// A collection index declaration and its transitional readiness state.
 class CollectionIndex {
-  CollectionIndex({
-    required List<String> fields,
-    Iterable<String>? prefixFields,
-  }) : secondary = SecondaryIndex(
-         fields: fields,
-         prefixFields: prefixFields ?? const [],
-       );
+  CollectionIndex({required List<String> fields, Iterable<String>? prefixFields})
+      : secondary = SecondaryIndex(
+          fields: fields,
+          prefixFields: prefixFields ?? const [],
+        ) {
+    _ready.complete();
+  }
 
   final SecondaryIndex secondary;
   final Completer<void> _ready = Completer<void>();
-
-  /// Completes once the index has been populated from the primary table at
-  /// collection-open. Queries await this before consulting the index so a
-  /// freshly-opened collection can never read a partially-built index.
   Future<void> get ready => _ready.future;
-
-  /// Marks the index fully populated.
+  bool get isReady => _ready.isCompleted;
   void markReady() {
     if (!_ready.isCompleted) _ready.complete();
   }
-
-  /// True if the index is ready for queries.
-  bool get isReady => _ready.isCompleted;
-
-  /// The primary decoded row key (the typed collection's record id).
   void onPut(Object? id, Object? previous, Object? row) {
     final oldMap = previous is Map
         ? Map<Object?, Object?>.from(previous)
@@ -78,8 +58,6 @@ class CollectionIndex {
     if (oldMap.isNotEmpty) secondary.remove(id, oldMap);
     secondary.insert(id, newMap);
   }
-
-  /// Removes [row] under [id] when a record is deleted.
   void onDelete(Object? id, Object? previous) {
     final oldMap = previous is Map
         ? Map<Object?, Object?>.from(previous)
@@ -106,7 +84,7 @@ class QueryImpl<T> implements Query<T> {
   final RawEngine _engine;
   final String _table;
   final Object? Function(T) toRow;
-  final T Function(Object?) fromRow;
+  final T Function(Object? row) fromRow;
   final CollectionIndex? _secondary;
 
   final List<Filter> _filters;
