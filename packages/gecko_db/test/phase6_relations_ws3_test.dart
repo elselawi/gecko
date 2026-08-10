@@ -236,7 +236,10 @@ void main() {
           await posts.put({'id': 'p2', 'authorId': 'a2'});
           final parent = await db.relationships.parent(rel, 'p1');
           expect(parent?['name'], 'A');
-          final grouped = await db.relationships.loadAllChildren(rel, ['a1', 'a2']);
+          final grouped = await db.relationships.loadAllChildren(rel, [
+            'a1',
+            'a2',
+          ]);
           expect(grouped['a1']!.map((row) => row['id']), ['p1']);
           expect(grouped['a2']!.map((row) => row['id']), ['p2']);
           await authors.put({'id': 'a1', 'name': 'A2'});

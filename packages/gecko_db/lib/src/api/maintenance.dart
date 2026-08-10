@@ -64,9 +64,9 @@ class StorageStats {
 ///
 /// Stages, in execution order:
 /// - `plan`        — building the [FilterGroup] and copying filters/sort.
-/// - `indexLookup` — consulting the in-memory [SecondaryIndex] for candidate
-///                   ids (0 for a full scan).
-/// - `backendRead` — snapshot open + `scanAll`/per-id `read` calls.
+/// - `indexLookup` — indexed-route preparation; Dart candidate lookup for the
+///                   in-memory backend, durable-bound planning on native/Web.
+/// - `backendRead` — snapshot open + native/in-memory backend reads.
 /// - `decode`      — [WireCodec.decode] of every scanned row's bytes.
 /// - `mapCopy`     — the defensive [_mapOf] copy of each decoded row.
 /// - `predicate`   — [FilterGroup.test] over the candidate set.

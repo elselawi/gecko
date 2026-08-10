@@ -192,8 +192,8 @@ class SecondaryIndex {
     for (final e in _byField.entries) e.key: e.value.length,
   };
 
-  /// Clears all index entries (used when rebuilding the index from the primary
-  /// table at open to eliminate drift).
+  /// Clears all index entries (used when repairing the reference index from
+  /// the primary table at open to eliminate drift).
   void clearForRebuild() {
     for (final map in _byField.values) {
       map.clear();

@@ -1,9 +1,8 @@
-/// Concrete [`Database`] implementation for Phase 2.
+/// Concrete [`Database`] implementation.
 ///
-/// Wires the [`RawEngine`] (and its in-memory backend by default) behind the
-/// public soft-contract. Native (`redb`) backing and the worker thread arrive
-/// in the same phase's later steps / the native phase; the interface here is
-/// backend-agnostic via [`RawBackend`].
+/// Wires the public API to the backend-agnostic [`RawEngine`]. Native and
+/// Web/Wasm databases use Rust/redb through the worker boundary; the temporary
+/// in-memory backend remains a semantic reference path until M7.5.
 library;
 
 import 'dart:async';
@@ -77,8 +76,8 @@ class DatabaseImpl implements Database {
   final _AsyncMutex _txnMutex = _AsyncMutex();
   final Map<String, CollectionIndex> _indexes = <String, CollectionIndex>{};
 
-  /// Tables whose index rebuild is currently in flight (so concurrent
-  /// `collection()` calls coalesce onto one rebuild per table).
+  /// Tables whose in-memory reference index repair is currently in flight
+  /// (so concurrent collection calls coalesce onto one repair per table).
   final Set<String> _rebuildingIndexes = <String>{};
   late final SyncHookApi _sync = _SyncHookImpl(this);
   late final ConflictApi _conflicts = _ConflictApiImpl(this);
@@ -154,9 +153,9 @@ class DatabaseImpl implements Database {
   RelationshipManager get relationships => _relationships ??=
       RelationshipManager(_engine, indexLookup: (table) => _indexes[table]);
 
-  /// Opens a database. When [useInMemory] is true (default for tests) a fresh
-  /// in-memory backend is used; otherwise a file-backed placeholder is
-  /// expected (native phase). Enforces the same-path single-open contract.
+  /// Opens a database. [useInMemory] selects the temporary reference backend;
+  /// otherwise the native Rust/redb file or Web/Wasm OPFS path is used.
+  /// Enforces the same-path single-open contract.
   static Future<DatabaseImpl> open(
     String path, {
     DatabaseConfig config = const DatabaseConfig(),
@@ -276,8 +275,8 @@ class DatabaseImpl implements Database {
           );
     if (index != null) {
       // M7.1: Rust receives the declaration and owns native durable-index
-      // maintenance; only the transitional in-memory backend rebuilds the
-      // Dart reference index.
+      // maintenance; only the transitional in-memory backend repairs its Dart
+      // reference index.
       if (_engine.backend case final DurableIndexRegistrar registrar) {
         registrar.registerDurableIndex(name, [
           ...index.secondary.fields,
@@ -299,7 +298,7 @@ class DatabaseImpl implements Database {
 
   /// Prepares [index] for queries. Native uses Rust as the durable index
   /// authority and repairs drift without materializing primary rows in Dart;
-  /// the in-memory backend keeps the transitional Dart reference rebuild.
+  /// the in-memory backend keeps the transitional Dart reference repair.
   Future<void> _prepareIndex(String name, CollectionIndex index) async {
     if (_engine.backend is NativeRawBackend) {
       await (_engine.backend as NativeRawBackend).repairIndex(
@@ -312,12 +311,12 @@ class DatabaseImpl implements Database {
     await _rebuildIndex(name, index);
   }
 
-  /// (Re)builds [index] from the current table contents at collection-open.
+  /// Repairs [index] from the current table contents at collection-open.
   /// This path is retained only for the transitional in-memory reference
   /// backend until M7.5 removes it.
   Future<void> _rebuildIndex(String name, CollectionIndex index) async {
     if (!_rebuildingIndexes.add(name)) {
-      // Another rebuild is in flight for this table; wait for it.
+      // Another repair is in flight for this table; wait for it.
       await index.ready;
       return;
     }

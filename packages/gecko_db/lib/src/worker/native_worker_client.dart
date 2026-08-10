@@ -513,7 +513,9 @@ class NativeWorkerClient {
       foreignKeyField,
       parentIds,
       indexTable,
-      [for (final range in indexRanges) <Object?>[range.$1, range.$2]],
+      [
+        for (final range in indexRanges) <Object?>[range.$1, range.$2],
+      ],
       predicateBytes,
     ]);
     return [
@@ -535,7 +537,9 @@ class NativeWorkerClient {
       field,
       wantedId,
     ]);
-    return [for (final bytes in (result as List)) List<int>.from(bytes as List)];
+    return [
+      for (final bytes in (result as List)) List<int>.from(bytes as List),
+    ];
   }
 
   /// M4: full-scan + predicate with an early LIMIT/OFFSET (snapshot-bound).
@@ -598,7 +602,9 @@ class NativeWorkerClient {
         snapshot,
         table,
         indexTable,
-        [for (final range in ranges) <Object?>[range.$1, range.$2]],
+        [
+          for (final range in ranges) <Object?>[range.$1, range.$2],
+        ],
         predicateBytes,
       ]),
     );
@@ -618,11 +624,15 @@ class NativeWorkerClient {
       snapshot,
       table,
       indexTable,
-      [for (final range in ranges) <Object?>[range.$1, range.$2]],
+      [
+        for (final range in ranges) <Object?>[range.$1, range.$2],
+      ],
       predicateBytes,
       field,
     ]);
-    return [for (final bytes in (result as List)) List<int>.from(bytes as List)];
+    return [
+      for (final bytes in (result as List)) List<int>.from(bytes as List),
+    ];
   }
 
   /// M4: index-served query with an early LIMIT/OFFSET (snapshot-bound).

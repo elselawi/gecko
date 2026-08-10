@@ -286,6 +286,21 @@ void main() {
           }).findAll()).skip(1).take(2).map((r) => r.id).toList();
           expect(gotI, expectedI);
           expect(iq.lastPlan, IndexPlan.secondaryIndex);
+          // Rust applies the complete predicate before the early window. Keep
+          // a non-indexed filter here to protect the Slice 5 removal of the
+          // duplicate Dart predicate evaluation.
+          final filteredIq = _coll(
+            db,
+            't',
+            indexFields: ['nick'],
+          ).where({'nick': 'g3'}).filter('age', 13).offset(0).limit(1);
+          expect(await filteredIq.findAll(), hasLength(1));
+          expect(
+            filteredIq.lastPlan,
+            db.engine.backend is NativeRawBackend
+                ? IndexPlan.secondaryIndex
+                : IndexPlan.fullScan,
+          );
           // limit 0 → empty on both.
           expect(await _coll(db, 't').where().limit(0).findAll(), isEmpty);
           await db.close();

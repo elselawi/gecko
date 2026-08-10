@@ -1053,7 +1053,7 @@ impl RedbWorker {
             index_table,
             ranges,
             predicate_bytes,
-            field,
+            field
         )
     }
 
@@ -1185,8 +1185,12 @@ impl RedbWorker {
         let transaction = self.snapshot_transaction(snapshot)?;
         let child = match transaction.open_table(table_definition(child_table)) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let Some(child_value) = child
             .get(child_key)
@@ -1202,8 +1206,12 @@ impl RedbWorker {
         let parent_key = child_bytes[start..end].to_vec();
         let parent = match transaction.open_table(table_definition(parent_table)) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let Some(parent_value) = parent
             .get(parent_key.as_slice())
@@ -1233,8 +1241,12 @@ impl RedbWorker {
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let user_table = match transaction.open_table(table_definition(child_table)) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut candidates = if index_ranges.is_empty() {
             user_table
@@ -1249,17 +1261,21 @@ impl RedbWorker {
         } else {
             let index_table = match transaction.open_table(table_definition(index_table)) {
                 Ok(t) => t,
-                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-                Err(error) => return Err(WorkerError::Storage(error.to_string())),
+                Err(redb::TableError::TableDoesNotExist(_)) => {
+                    return Ok(Vec::new());
+                }
+                Err(error) => {
+                    return Err(WorkerError::Storage(error.to_string()));
+                }
             };
             let mut union = BTreeSet::new();
             for (start, end) in index_ranges {
                 for entry in index_table
                     .range(start.as_slice()..=end.as_slice())
-                    .map_err(|error| WorkerError::Storage(error.to_string()))?
-                {
-                    let (_, value) = entry
-                        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? {
+                    let (_, value) = entry.map_err(|error|
+                        WorkerError::Storage(error.to_string())
+                    )?;
                     union.insert(value.value().to_vec());
                 }
             }
@@ -1311,8 +1327,12 @@ impl RedbWorker {
         let transaction = self.snapshot_transaction(snapshot)?;
         let table = match transaction.open_table(table_definition(join_table)) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::new();
         for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
@@ -2931,29 +2951,41 @@ mod tests {
                 OpKind::Put,
                 "authors",
                 Some(encode_test_string("a1")),
-                Some(encode_test_row(&[
-                    ("id", encode_test_string("a1")),
-                    ("name", encode_test_string("A")),
-                ])),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("id", encode_test_string("a1")),
+                            ("name", encode_test_string("A")),
+                        ]
+                    )
+                )
             ),
             op_with_table(
                 OpKind::Put,
                 "posts",
                 Some(encode_test_string("p1")),
-                Some(encode_test_row(&[
-                    ("id", encode_test_string("p1")),
-                    ("authorId", encode_test_string("a1")),
-                ])),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("id", encode_test_string("p1")),
+                            ("authorId", encode_test_string("a1")),
+                        ]
+                    )
+                )
             ),
             op_with_table(
                 OpKind::Put,
                 "posts",
                 Some(encode_test_string("p2")),
-                Some(encode_test_row(&[
-                    ("id", encode_test_string("p2")),
-                    ("authorId", encode_test_string("a1")),
-                ])),
-            ),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("id", encode_test_string("p2")),
+                            ("authorId", encode_test_string("a1")),
+                        ]
+                    )
+                )
+            )
         ];
         worker.apply_batch_with_indexes(&rows, &indexes).unwrap();
         let snapshot = worker.create_snapshot().unwrap();
@@ -2964,15 +2996,13 @@ mod tests {
                 "posts",
                 &encode_test_string("p1"),
                 "authors",
-                "authorId",
+                "authorId"
             )
             .unwrap()
             .unwrap();
         assert_eq!(parent.0, encode_test_string("a1"));
         assert_eq!(
-            crate::value_codec::decode_value(&parent.1)
-                .unwrap()
-                .find_field("name"),
+            crate::value_codec::decode_value(&parent.1).unwrap().find_field("name"),
             Some(&crate::value_codec::RowValue::String("A".into()))
         );
 
@@ -2980,7 +3010,7 @@ mod tests {
             "posts",
             "authorId",
             &encode_test_string("a1"),
-            &encode_test_string("p1"),
+            &encode_test_string("p1")
         );
         let record_id_bytes = encode_test_string("p1");
         let exact = exact_full[..exact_full.len() - record_id_bytes.len()].to_vec();
@@ -2995,7 +3025,7 @@ mod tests {
                 &[encode_test_string("a1")],
                 "__gecko_index",
                 &[(exact, exact_end)],
-                &crate::predicate::encode_predicate(&[]),
+                &crate::predicate::encode_predicate(&[])
             )
             .unwrap();
         assert_eq!(children.len(), 2);
@@ -3007,20 +3037,28 @@ mod tests {
                 OpKind::Put,
                 "__gecko_join_students_courses",
                 Some(vec![1]),
-                Some(encode_test_row(&[
-                    ("left", encode_test_string("s1")),
-                    ("right", encode_test_string("c1")),
-                ])),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("left", encode_test_string("s1")),
+                            ("right", encode_test_string("c1")),
+                        ]
+                    )
+                )
             ),
             op_with_table(
                 OpKind::Put,
                 "__gecko_join_students_courses",
                 Some(vec![2]),
-                Some(encode_test_row(&[
-                    ("left", encode_test_string("s1")),
-                    ("right", encode_test_string("c2")),
-                ])),
-            ),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("left", encode_test_string("s1")),
+                            ("right", encode_test_string("c2")),
+                        ]
+                    )
+                )
+            )
         ];
         worker.apply_batch(&join_rows).unwrap();
         let join_snapshot = worker.create_snapshot().unwrap();
@@ -3029,7 +3067,7 @@ mod tests {
                 join_snapshot,
                 "__gecko_join_students_courses",
                 "left",
-                &encode_test_string("s1"),
+                &encode_test_string("s1")
             )
             .unwrap();
         assert_eq!(join_ids, vec![encode_test_string("c1"), encode_test_string("c2")]);
@@ -3037,16 +3075,22 @@ mod tests {
 
         worker
             .apply_batch_with_indexes(
-                &[op_with_table(
-                    OpKind::Put,
-                    "authors",
-                    Some(encode_test_string("a1")),
-                    Some(encode_test_row(&[
-                        ("id", encode_test_string("a1")),
-                        ("name", encode_test_string("B")),
-                    ])),
-                )],
-                &indexes,
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "authors",
+                        Some(encode_test_string("a1")),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("id", encode_test_string("a1")),
+                                    ("name", encode_test_string("B")),
+                                ]
+                            )
+                        )
+                    ),
+                ],
+                &indexes
             )
             .unwrap();
         let old_parent = worker
@@ -3055,14 +3099,12 @@ mod tests {
                 "posts",
                 &encode_test_string("p1"),
                 "authors",
-                "authorId",
+                "authorId"
             )
             .unwrap()
             .unwrap();
         assert_eq!(
-            crate::value_codec::decode_value(&old_parent.1)
-                .unwrap()
-                .find_field("name"),
+            crate::value_codec::decode_value(&old_parent.1).unwrap().find_field("name"),
             Some(&crate::value_codec::RowValue::String("A".into()))
         );
         worker.drop_snapshot(snapshot);

@@ -471,7 +471,7 @@ void main() {
         await backend.applyBatch(ops);
         await backend.close();
 
-        // Reopen: rebuild detects drift and repairs it.
+        // Reopen: Rust repair detects drift and restores the durable index.
         final reopened = await openNative();
         try {
           final col2 = _coll(reopened, 't', indexFields: ['name']);

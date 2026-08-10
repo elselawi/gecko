@@ -7,6 +7,12 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7.1 Slice 5 — Thin-client deletion pass**: removed the redundant Dart
+  predicate recheck after Rust's windowed indexed query route and corrected
+  native/in-memory route and repair terminology. Public/raw/snapshot contracts,
+  model mapping, migrations, relationship policies, reactive lifecycle, and the
+  transitional in-memory reference engine remain intentionally retained until
+  M7.5. Recorded the baseline Dart LOC measurements in `plan.md`.
 - **M7.1 Slices 3–4 — Native relationships and route matrix**: `parent()`,
   `loadAllChildren()`, and many-to-many ID retrieval now use snapshot-bound Rust
   primitives on native/Web-Wasm, with Dart retaining relationship policy,

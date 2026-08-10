@@ -253,13 +253,7 @@ impl NativeWorker {
         predicate_bytes: Vec<u8>
     ) -> Result<u64, String> {
         self.worker
-            .snapshot_query_indexed_count(
-                snapshot,
-                &table,
-                &index_table,
-                &ranges,
-                &predicate_bytes,
-            )
+            .snapshot_query_indexed_count(snapshot, &table, &index_table, &ranges, &predicate_bytes)
             .map_err(encode_worker_error)
     }
 
@@ -281,7 +275,7 @@ impl NativeWorker {
                 &index_table,
                 &ranges,
                 &predicate_bytes,
-                &field,
+                &field
             )
             .map_err(encode_worker_error)
     }
@@ -519,7 +513,7 @@ impl NativeWorker {
                 &child_table,
                 &child_key,
                 &parent_table,
-                &foreign_key_field,
+                &foreign_key_field
             )
             .map_err(encode_worker_error)
     }
@@ -545,7 +539,7 @@ impl NativeWorker {
                 &parent_ids,
                 &index_table,
                 &index_ranges,
-                &predicate_bytes,
+                &predicate_bytes
             )
             .map_err(encode_worker_error)
     }

@@ -279,10 +279,15 @@ class QueryImpl<T> implements Query<T> {
   }) async* {
     if (t != null) t.start(_QueryStage.plan);
     if (t != null && idx != null) t.start(_QueryStage.indexLookup);
+    // Native routing uses collection metadata to produce durable Rust
+    // bounds; the transitional Dart index remains authoritative only for
+    // the in-memory reference backend.
     final nativeRanges = snap is NativeRawSnapshot
         ? _nativeIndexedRanges(idx)
         : null;
-    final candidateIds = snap is NativeRawSnapshot ? null : _indexCandidates(idx);
+    final candidateIds = snap is NativeRawSnapshot
+        ? null
+        : _indexCandidates(idx);
     if (t != null) {
       if (idx != null) t.stop(_QueryStage.indexLookup);
       t.stop(_QueryStage.plan);
@@ -341,7 +346,10 @@ class QueryImpl<T> implements Query<T> {
         }
         if (t != null) t.start(_QueryStage.predicate);
         for (final item in decoded) {
-          if (_group.test(item.row)) {
+          // The windowed Rust route already applied the complete predicate;
+          // the unwindowed primitive is only an index join and still needs
+          // the Dart predicate recheck.
+          if (windowed || _group.test(item.row)) {
             if (t != null) t.matched++;
             yield item;
           }

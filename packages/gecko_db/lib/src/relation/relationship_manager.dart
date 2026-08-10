@@ -210,7 +210,9 @@ class RelationshipManager {
           parentTable: relationship.parentCollection,
           foreignKeyField: fk,
         );
-        return entry == null ? null : _mapOf(_codec.decode(entry.value ?? const []));
+        return entry == null
+            ? null
+            : _mapOf(_codec.decode(entry.value ?? const []));
       }
       final raw = await snap.read(relationship.childCollection, childKey);
       if (raw == null) return null;

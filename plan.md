@@ -482,12 +482,21 @@ handoff metadata. No Rust query registry or reactive query registration was adde
 relationship/aggregate route tests pass. Change-feed/LSN ordering, migration callbacks, model mapping,
 relationship policies, and reactive lifecycle remain Dart-owned.
 
-**Slice 5 — Thin-client deletion pass ☐**
+**Slice 5 — Thin-client deletion pass ✅**
 
-After Slices 1–4 are proven, delete obsolete native Dart execution branches and comments, retain only the
-Dart public API/model mapping/migration callback/reactive layers, convert deleted tests into native/Web
-contract tests, and measure Dart LOC, native open latency, backend hops, rows transferred, memory, and
-query latency before/after.
+Completed the safe pre-M7.5 deletion pass. The windowed indexed native query no longer repeats a Rust-
+validated predicate in Dart. Stale native/in-memory route comments now describe the actual boundary, and
+relationship/index repair terminology is explicit. Public raw adapters, snapshot wrappers, model mapping,
+Dart migration callbacks, relationship policies/callbacks, reactive lifecycle, and the transitional
+in-memory reference engine were intentionally retained because deleting them would enter M7.5 or change
+public contracts.
+
+**Measurements:** 12,743 non-generated Dart source LOC; 7,374 LOC in native/query/relationship/raw/database
+integration areas; 395 LOC in the retained transitional in-memory/index reference areas. These are a
+baseline for M7.5 rather than a claim that all native-related Dart code is obsolete.
+
+**Proof:** the M4 indexed-window contract now includes an additional non-indexed predicate; full package,
+Rust, analysis, clippy, offline-lint, security-review, and traceability gates pass.
 
 **M7.1 done when:** all five slices have Rust tests and native/Web contract coverage; native durable index
 writes and repair have one Rust authority; no native Dart materialization remains for aggregates or the

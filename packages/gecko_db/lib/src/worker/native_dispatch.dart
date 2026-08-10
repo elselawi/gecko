@@ -242,9 +242,7 @@ Future<Object?> dispatchNativeWorker(
         ranges: [
           for (final range in (arguments[3] as List))
             (
-              Uint8List.fromList(
-                List<int>.from((range as List)[0] as List),
-              ),
+              Uint8List.fromList(List<int>.from((range as List)[0] as List)),
               Uint8List.fromList(List<int>.from(range[1] as List)),
             ),
         ],
@@ -261,9 +259,7 @@ Future<Object?> dispatchNativeWorker(
         ranges: [
           for (final range in (arguments[3] as List))
             (
-              Uint8List.fromList(
-                List<int>.from((range as List)[0] as List),
-              ),
+              Uint8List.fromList(List<int>.from((range as List)[0] as List)),
               Uint8List.fromList(List<int>.from(range[1] as List)),
             ),
         ],
