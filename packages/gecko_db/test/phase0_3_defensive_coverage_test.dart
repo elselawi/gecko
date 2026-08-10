@@ -34,10 +34,30 @@ class _DelayedBackend implements RawBackend {
   bool get isReadOnly => false;
 
   @override
-  Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops) async {
+  Future<ApplyBatchResult> applyBatch(RawBatch ops) async {
     await Future<void>.delayed(delay);
     return delegate.applyBatch(ops);
   }
+
+  @override
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) =>
+      delegate.registerLiveQuery(
+        table: table,
+        predicateBytes: predicateBytes,
+        sortBytes: sortBytes,
+        kind: kind,
+      );
+
+  @override
+  Future<void> unregisterLiveQuery(int id) => delegate.unregisterLiveQuery(id);
+
+  @override
+  Future<int> liveQueryCount() => delegate.liveQueryCount();
 
   @override
   Future<RawSnapshot> snapshot() => delegate.snapshot();

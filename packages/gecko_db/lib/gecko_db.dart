@@ -69,6 +69,10 @@ export 'src/backend/raw_backend.dart'
         RawClear,
         RawEntry,
         RawBatch,
+        RegistryDelta,
+        ApplyBatchResult,
+        LiveQueryRegistration,
+        LiveQueryKind,
         keyNotFoundError;
 export 'src/backend/native_raw_backend.dart'
     show NativeRawBackend, NativeRawSnapshot;

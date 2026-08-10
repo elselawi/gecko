@@ -59,6 +59,10 @@ class RawEngine {
   bool _disposed = false;
   final _WriteGate _writeGate;
   final ChangeBus _changeBus;
+  /// M8 (ADR-0030): per-registration deltas produced by the worker for each
+  /// committed batch, in commit order (same delivery order as [_changeBus]).
+  final StreamController<RegistryDelta> _liveDeltas =
+      StreamController<RegistryDelta>.broadcast(sync: true);
   bool _diagnosticsEnabled = false;
   int _scannedRows = 0;
   int _totalReads = 0;
@@ -76,6 +80,47 @@ class RawEngine {
 
   /// The change hub for this engine (Phase 4).
   ChangeBus get changes => _changeBus;
+
+  /// M8 (ADR-0030): stream of per-registration deltas for committed batches,
+  /// in commit order. Each delta carries the registration id it belongs to.
+  Stream<RegistryDelta> get liveDeltas => _liveDeltas.stream;
+
+  /// M8 (ADR-0030): registers a live query with the worker's reactive registry.
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) {
+    _assertUsable();
+    return _backend.registerLiveQuery(
+      table: table,
+      predicateBytes: predicateBytes,
+      sortBytes: sortBytes,
+      kind: kind,
+    );
+  }
+
+  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  Future<void> unregisterLiveQuery(int id) {
+    _assertUsable();
+    return _backend.unregisterLiveQuery(id);
+  }
+
+  /// Number of active live-query registrations (diagnostics).
+  Future<int> liveQueryCount() {
+    _assertUsable();
+    return _backend.liveQueryCount();
+  }
+
+  /// Applies [ops] atomically and forwards any M8 reactive-registry deltas the
+  /// worker produced to [liveDeltas] (one delta per touched registration).
+  Future<void> _applyBatchWithDeltas(List<RawOp> ops) async {
+    final result = await _backend.applyBatch(ops);
+    for (final delta in result.deltas) {
+      _liveDeltas.add(delta);
+    }
+  }
 
   /// The backend this engine wraps (exposed for the shared parametrized tests).
   RawBackend get backend => _backend;
@@ -209,7 +254,7 @@ class RawEngine {
         }
         final lsn = await _nextLsn(snapshot);
         try {
-          await _backend.applyBatch([RawPut(table, key, value), _lsnOp(lsn)]);
+          await _applyBatchWithDeltas([RawPut(table, key, value), _lsnOp(lsn)]);
         } catch (_) {
           _failedWrites++;
           rethrow;
@@ -237,7 +282,7 @@ class RawEngine {
         final existed = await snapshot.read(table, key) != null;
         final lsn = await _nextLsn(snapshot);
         try {
-          await _backend.applyBatch([RawDelete(table, key), _lsnOp(lsn)]);
+          await _applyBatchWithDeltas([RawDelete(table, key), _lsnOp(lsn)]);
         } catch (_) {
           if (_diagnosticsEnabled) _failedWrites++;
           rethrow;
@@ -261,7 +306,7 @@ class RawEngine {
       try {
         final lsn = await _nextLsn(snapshot);
         try {
-          await _backend.applyBatch([RawClear(table), _lsnOp(lsn)]);
+          await _applyBatchWithDeltas([RawClear(table), _lsnOp(lsn)]);
         } catch (_) {
           if (_diagnosticsEnabled) _failedWrites++;
           rethrow;
@@ -328,6 +373,7 @@ class RawEngine {
     await drain();
     await _backend.close();
     await _changeBus.close();
+    await _liveDeltas.close();
     _disposed = true;
   }
 
@@ -353,7 +399,7 @@ class RawEngine {
         final ops = await buildOps(lsn, snapshot);
         if (ops.isEmpty) return lsn - 1;
         try {
-          await _backend.applyBatch([...ops, _lsnOp(lsn)]);
+          await _applyBatchWithDeltas([...ops, _lsnOp(lsn)]);
         } catch (_) {
           if (_diagnosticsEnabled) _failedWrites++;
           rethrow;

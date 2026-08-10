@@ -31,6 +31,7 @@ _Rec _fromRow(Object? row) {
   final m = row as Map;
   return _Rec(m['id'] as String, m['group'] as String, m['n'] as int);
 }
+
 Object? _id(_Rec r) => r.id;
 
 Collection<_Rec> _coll(DatabaseImpl db, {List<String>? indexFields}) =>
@@ -42,7 +43,11 @@ Collection<_Rec> _coll(DatabaseImpl db, {List<String>? indexFields}) =>
       indexFields: indexFields,
     );
 
-Future<void> _seed(DatabaseImpl db, int count, {List<String>? indexFields}) async {
+Future<void> _seed(
+  DatabaseImpl db,
+  int count, {
+  List<String>? indexFields,
+}) async {
   final col = _coll(db, indexFields: indexFields);
   for (var i = 0; i < count; i++) {
     await col.put(_Rec('k$i', 'g${i % 3}', i));
@@ -85,11 +90,9 @@ void main() {
           scannedAfterInitial,
           reason: 'watchAll must not re-scan the collection per batch',
         );
-        expect(
-          last,
-          [for (final r in await _coll(db).getAll()) r.id],
-          reason: 'incremental order must match getAll() order',
-        );
+        expect(last, [
+          for (final r in await _coll(db).getAll()) r.id,
+        ], reason: 'incremental order must match getAll() order');
         await sub.cancel();
         await db.close();
       },
@@ -99,7 +102,9 @@ void main() {
       final db = await openNativeTestDatabase('m8-clear');
       await _seed(db, 30);
       final lengths = <int>[];
-      final sub = _coll(db).watchAll().listen((list) => lengths.add(list.length));
+      final sub = _coll(
+        db,
+      ).watchAll().listen((list) => lengths.add(list.length));
       await _waitFor(() => lengths.isNotEmpty);
       expect(lengths.first, 30);
       await db.engine.rawClear('items');
@@ -111,39 +116,40 @@ void main() {
   });
 
   group('M8 incremental watchAllDiff', () {
-    test('reports added, updated, and removed from incremental updates', () async {
-      final db = await openNativeTestDatabase('m8-diff');
-      await _seed(db, 20);
-      final diffs = <CollectionDiff<_Rec>>[];
-      final sub = _coll(db).watchAllDiff().listen(diffs.add);
-      await _waitFor(() => diffs.isNotEmpty);
-      expect(diffs.first.added, hasLength(20));
-      final scannedBefore = db.engine.scannedRows;
+    test(
+      'reports added, updated, and removed from incremental updates',
+      () async {
+        final db = await openNativeTestDatabase('m8-diff');
+        await _seed(db, 20);
+        final diffs = <CollectionDiff<_Rec>>[];
+        final sub = _coll(db).watchAllDiff().listen(diffs.add);
+        await _waitFor(() => diffs.isNotEmpty);
+        expect(diffs.first.added, hasLength(20));
+        final scannedBefore = db.engine.scannedRows;
 
-      await _coll(db).put(_Rec('k20', 'g2', 20)); // add
-      await _coll(db).put(_Rec('k1', 'g0', 101)); // update (changed value)
-      await _coll(db).delete('k2'); // remove
-      // Each batch yields its own diff; accumulate across all of them.
-      await _waitFor(
-        () => diffs.any(
-          (d) => d.removed.map((r) => r.id).contains('k2'),
-        ),
-      );
-      final added = [for (final d in diffs) ...d.added.map((r) => r.id)];
-      final updated = [for (final d in diffs) ...d.updated.map((r) => r.id)];
-      final removed = [for (final d in diffs) ...d.removed.map((r) => r.id)];
-      expect(added, contains('k20'));
-      expect(updated, contains('k1'));
-      expect(removed, contains('k2'));
-      expect(diffs.last.snapshot, hasLength(20));
-      expect(
-        db.engine.scannedRows,
-        scannedBefore,
-        reason: 'no per-batch rescans',
-      );
-      await sub.cancel();
-      await db.close();
-    });
+        await _coll(db).put(_Rec('k20', 'g2', 20)); // add
+        await _coll(db).put(_Rec('k1', 'g0', 101)); // update (changed value)
+        await _coll(db).delete('k2'); // remove
+        // Each batch yields its own diff; accumulate across all of them.
+        await _waitFor(
+          () => diffs.any((d) => d.removed.map((r) => r.id).contains('k2')),
+        );
+        final added = [for (final d in diffs) ...d.added.map((r) => r.id)];
+        final updated = [for (final d in diffs) ...d.updated.map((r) => r.id)];
+        final removed = [for (final d in diffs) ...d.removed.map((r) => r.id)];
+        expect(added, contains('k20'));
+        expect(updated, contains('k1'));
+        expect(removed, contains('k2'));
+        expect(diffs.last.snapshot, hasLength(20));
+        expect(
+          db.engine.scannedRows,
+          scannedBefore,
+          reason: 'no per-batch rescans',
+        );
+        await sub.cancel();
+        await db.close();
+      },
+    );
   });
 
   group('M8 incremental watch lifecycle', () {
@@ -219,11 +225,9 @@ void main() {
         expect(last, contains('k4'));
         expect(last, hasLength(201));
         // Parity with a fresh findAll().
-        expect(
-          last,
-          [for (final r in await q.findAll()) r.id],
-          reason: 'incremental filtered query must match findAll()',
-        );
+        expect(last, [
+          for (final r in await q.findAll()) r.id,
+        ], reason: 'incremental filtered query must match findAll()');
         expect(
           db.engine.scannedRows,
           scannedAfterInitial,
@@ -238,9 +242,10 @@ void main() {
       final db = await openNativeTestDatabase('m8-coalesce');
       await _seed(db, 10);
       final emissions = <int>[];
-      final sub = _coll(db).where({'group': 'g0'}).watch().listen(
-        (list) => emissions.add(list.length),
-      );
+      final sub = _coll(db)
+          .where({'group': 'g0'})
+          .watch()
+          .listen((list) => emissions.add(list.length));
       await _waitFor(() => emissions.isNotEmpty);
       final before = emissions.length;
       // One batch touching 5 rows in g0.
@@ -285,11 +290,9 @@ void main() {
       // SortSpec is ascending: k0 (n=-100) first, k40 (n=100) last.
       expect(last.first, 'k0');
       expect(last.last, 'k40');
-      expect(
-        last,
-        [for (final r in await q.findAll()) r.id],
-        reason: 'incremental sorted query must match findAll() order',
-      );
+      expect(last, [
+        for (final r in await q.findAll()) r.id,
+      ], reason: 'incremental sorted query must match findAll() order');
       await sub.cancel();
       await db.close();
     });

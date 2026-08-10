@@ -1,6 +1,7 @@
 /// VM stub for the web-worker client: Web Workers only exist on the web.
 library;
 
+import '../backend/raw_backend.dart';
 import '../native/generated/worker.dart' show StorageStats;
 
 /// Throws on the VM — the web-worker client is web-only (see the web
@@ -27,7 +28,18 @@ class WebWorkerClient {
     _unsupported();
   }
 
-  Future<int> applyBatch(List<int> encodedOps) async => _unsupported();
+  Future<List<RegistryDelta>> applyBatch(
+    List<int> encodedOps, {
+    List<List<Object?>> indexDefinitions = const [],
+  }) async => _unsupported();
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) async => _unsupported();
+  Future<void> unregisterLiveQuery(int id) async => _unsupported();
+  Future<int> liveQueryCount() async => _unsupported();
   Future<List<int>?> get({
     required String table,
     required List<int> key,

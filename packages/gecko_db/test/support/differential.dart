@@ -143,9 +143,10 @@ class DiffBackendBatch extends DiffStep {
 
   @override
   Future<Object?> run(RawEngine engine) async {
-    final affected = await engine.backend.applyBatch(ops);
+    final result = await engine.backend.applyBatch(ops);
     return [
-      for (final (table, key) in affected) <Object?>[table, _hex(key.bytes)],
+      for (final (table, key) in result.affected)
+        <Object?>[table, _hex(key.bytes)],
     ];
   }
 }

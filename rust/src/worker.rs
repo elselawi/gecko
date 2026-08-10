@@ -26,8 +26,16 @@ use crate::wire::{ Op, OpKind, WireError };
 
 const TABLE_PREFIX: &str = "__gecko_user_";
 
-type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
+pub(crate) type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
 pub type ByteEntry = (Vec<u8>, Vec<u8>);
+
+/// M8 (ADR-0030): the outcome of one committed batch — the worker sequence plus
+/// one [`crate::registry::RegistryDelta`] per touched live registration.
+#[derive(Debug, Clone)]
+pub struct ApplyBatchOutcome {
+    pub sequence: u64,
+    pub deltas: Vec<crate::registry::RegistryDelta>,
+}
 
 /// Storage-level size/health report (Workstream 5).
 #[derive(Debug, Clone)]
@@ -89,6 +97,8 @@ pub struct RedbWorker {
     /// time, even after later write transactions commit.
     snapshots: HashMap<u64, ReadTransaction>,
     next_snapshot_id: u64,
+    /// M8: live-query registry (ADR-0030). Non-durable; dies with the worker.
+    registry: crate::registry::LiveRegistry,
 }
 
 /// A candidate row held by the M4 top-K sort heap: the record key, the raw row
@@ -302,6 +312,7 @@ impl RedbWorker {
                 read_only,
                 snapshots: HashMap::new(),
                 next_snapshot_id: 0,
+                registry: crate::registry::LiveRegistry::new(),
             })
         }
     }
@@ -336,6 +347,7 @@ impl RedbWorker {
             read_only,
             snapshots: HashMap::new(),
             next_snapshot_id: 0,
+            registry: crate::registry::LiveRegistry::new(),
         })
     }
 
@@ -398,6 +410,7 @@ impl RedbWorker {
             read_only: false,
             snapshots: HashMap::new(),
             next_snapshot_id: 0,
+            registry: crate::registry::LiveRegistry::new(),
         })
     }
 
@@ -427,6 +440,27 @@ impl RedbWorker {
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)]
     ) -> Result<u64, WorkerError> {
+        self.apply_batch_reactive(operations, index_definitions)
+            .map(|result| result.sequence)
+    }
+
+    /// M8 (ADR-0030): applies a batch and also evaluates every touched live
+    /// registration, returning the worker sequence plus one
+    /// [`crate::registry::RegistryDelta`] per registration. The reactive
+    /// registry is updated in the same write transaction the batch commits in.
+    pub fn apply_batch_reactive(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)]
+    ) -> Result<ApplyBatchOutcome, WorkerError> {
+        self.apply_batch_impl(operations, index_definitions)
+    }
+
+    fn apply_batch_impl(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)]
+    ) -> Result<ApplyBatchOutcome, WorkerError> {
         if self.read_only {
             return Err(
                 WorkerError::InvalidOperation(
@@ -439,6 +473,11 @@ impl RedbWorker {
                 database.begin_write().map_err(|error| WorkerError::Storage(error.to_string()))?,
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
         };
+
+        // M8: collect the affected (table, key) pairs and wholesale-cleared
+        // tables so the reactive registry can re-evaluate them before commit.
+        let mut affected: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut cleared: Vec<String> = Vec::new();
 
         for operation in operations {
             match operation.kind {
@@ -477,6 +516,7 @@ impl RedbWorker {
                         Some(value),
                         index_definitions
                     )?;
+                    affected.push((operation.table.clone(), key.to_vec()));
                 }
                 OpKind::Delete => {
                     let key = operation.key
@@ -508,6 +548,7 @@ impl RedbWorker {
                         None,
                         index_definitions
                     )?;
+                    affected.push((operation.table.clone(), key.to_vec()));
                 }
                 OpKind::DeleteRange => {
                     let start = operation.start
@@ -556,6 +597,7 @@ impl RedbWorker {
                             None,
                             index_definitions
                         )?;
+                        affected.push((operation.table.clone(), key));
                     }
                 }
                 OpKind::Clear => {
@@ -596,6 +638,7 @@ impl RedbWorker {
                             index_definitions
                         )?;
                     }
+                    cleared.push(operation.table.clone());
                 }
                 OpKind::Get | OpKind::RangeScan => {
                     return Err(
@@ -607,9 +650,45 @@ impl RedbWorker {
             }
         }
 
+        // M8: re-evaluate every touched live registration in the same write
+        // transaction (the registry reads the just-applied state), then commit.
+        let deltas = self.registry.apply(&transaction, &affected, &cleared)?;
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         self.commit_sequence += 1;
-        Ok(self.commit_sequence)
+        Ok(ApplyBatchOutcome {
+            sequence: self.commit_sequence,
+            deltas,
+        })
+    }
+
+    /// M8 (ADR-0030): registers a live query with the worker and materializes
+    /// its initial result set from one consistent read transaction. Returns
+    /// `(registration id, initial snapshot in result order)`.
+    pub fn register_live_query(
+        &mut self,
+        table: &str,
+        predicate_bytes: &[u8],
+        sort_bytes: &[u8],
+        kind: u8
+    ) -> Result<(u64, Vec<ByteEntry>), WorkerError> {
+        // Validate the kind before registering (the registry itself treats all
+        // kinds uniformly; Dart decides no-op suppression from `unchanged`).
+        crate::registry::LiveQueryKind::from_u8(kind).ok_or_else(|| {
+            WorkerError::InvalidOperation(format!("unknown live-query kind {kind}"))
+        })?;
+        let transaction = self.begin_read()?;
+        self.registry
+            .register(&transaction, table, predicate_bytes, sort_bytes)
+    }
+
+    /// M8 (ADR-0030): removes a live-query registration (idempotent).
+    pub fn unregister_live_query(&mut self, id: u64) {
+        self.registry.unregister(id);
+    }
+
+    /// Number of active live-query registrations (diagnostics).
+    pub fn live_query_count(&self) -> usize {
+        self.registry.len()
     }
 
     /// Reads one key using a consistent read transaction.
@@ -2217,7 +2296,7 @@ fn map_open_error(error: DatabaseError, path: &str) -> WorkerError {
     }
 }
 
-fn table_definition(name: &str) -> BytesTable {
+pub(crate) fn table_definition(name: &str) -> BytesTable {
     let full_name = format!("{TABLE_PREFIX}{name}");
     TableDefinition::new(Box::leak(full_name.into_boxed_str()))
 }
@@ -3634,6 +3713,367 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    // --- M8: Rust-owned reactive registry (ADR-0030) ---
+
+    /// Seeds `items` with g0/g0/g1/g1 rows (ages 10/20/30/40).
+    fn seed_registry_fixture(label: &str) -> (std::path::PathBuf, RedbWorker) {
+        let path = temp_path(label);
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let rows = [
+            ("k0", "g0", 10i64),
+            ("k1", "g0", 20i64),
+            ("k2", "g1", 30i64),
+            ("k3", "g1", 40i64),
+        ];
+        for (k, g, age) in rows {
+            worker
+                .apply_batch(&[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(k.as_bytes().to_vec()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("g", encode_test_string(g)),
+                                ("age", encode_test_int64(age)),
+                            ]
+                        ),
+                    ),
+                )])
+                .unwrap();
+        }
+        (path, worker)
+    }
+
+    fn g0_predicate() -> Vec<u8> {
+        use crate::predicate::{ encode_predicate, Filter };
+        use crate::value_codec::RowValue;
+        encode_predicate(&[Filter::Equals {
+            field: "g".into(),
+            value: RowValue::String("g0".into()),
+        }])
+    }
+
+    fn age_ascending_sort() -> Vec<u8> {
+        use crate::sort_spec::{ encode_sort_specs, SortSpec };
+        encode_sort_specs(&[SortSpec { field: "age".into(), descending: false }])
+    }
+
+    /// `version(1) + count(0)` — an empty predicate/sort payload (matches
+    /// everything / no ordering), exactly as the Dart encoder serializes it.
+    fn no_filters() -> Vec<u8> {
+        vec![1, 0]
+    }
+
+    #[test]
+    fn live_registry_filtered_query_tracks_join_leave_update() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-query");
+        let (id, initial) = worker
+            .register_live_query("items", &g0_predicate(), &no_filters(), 2)
+            .unwrap();
+        assert_eq!(id, 0);
+        // Initial result set: k0, k1 (byte-key order).
+        assert_eq!(initial.len(), 2);
+        assert_eq!(initial[0].0, b"k0");
+        assert_eq!(initial[1].0, b"k1");
+
+        // k2 (g1) flips to g0 → joins; k1 (g0) flips to g1 → leaves; k0 (g0)
+        // keeps g0 but its age changes → updated.
+        let result = worker
+            .apply_batch_reactive(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k2".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(31)),
+                                ]
+                            )
+                        )
+                    ),
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k1".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g1")),
+                                    ("age", encode_test_int64(21)),
+                                ]
+                            )
+                        )
+                    ),
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k0".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(11)),
+                                ]
+                            )
+                        )
+                    ),
+                ],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(result.deltas.len(), 1);
+        let delta = &result.deltas[0];
+        assert_eq!(delta.id, id);
+        assert_eq!(delta.added, vec![(b"k2".to_vec(), encode_test_row(
+            &[("g", encode_test_string("g0")), ("age", encode_test_int64(31))]
+        ))]);
+        assert_eq!(delta.removed, vec![(b"k1".to_vec(), encode_test_row(
+            &[("g", encode_test_string("g0")), ("age", encode_test_int64(20))]
+        ))]);
+        assert_eq!(delta.updated, vec![(b"k0".to_vec(), encode_test_row(
+            &[("g", encode_test_string("g0")), ("age", encode_test_int64(11))]
+        ))]);
+        assert!(!delta.unchanged);
+        // Snapshot = k0 (updated), k2 (joined) in byte-key order.
+        assert_eq!(delta.snapshot.len(), 2);
+        assert_eq!(delta.snapshot[0].0, b"k0");
+        assert_eq!(delta.snapshot[1].0, b"k2");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_registry_watch_all_returns_full_snapshot_per_batch() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-watchall");
+        let (id, initial) = worker.register_live_query("items", &no_filters(), &no_filters(), 0).unwrap();
+        assert_eq!(initial.len(), 4);
+        // Byte-key order: k0..k3.
+        assert_eq!(
+            initial.iter().map(|e| e.0.clone()).collect::<Vec<_>>(),
+            vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]
+        );
+        let result = worker
+            .apply_batch_reactive(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k9".to_vec()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("g", encode_test_string("g0")),
+                                ("age", encode_test_int64(99)),
+                            ]
+                        )
+                    ),
+                )],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(result.deltas.len(), 1);
+        let delta = &result.deltas[0];
+        assert_eq!(delta.id, id);
+        assert_eq!(delta.added, vec![(b"k9".to_vec(), encode_test_row(
+            &[("g", encode_test_string("g0")), ("age", encode_test_int64(99))]
+        ))]);
+        assert_eq!(delta.snapshot.len(), 5);
+        assert_eq!(delta.snapshot[4].0, b"k9");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_registry_sorted_query_inserts_at_comparator_position() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-sorted");
+        let (id, initial) = worker
+            .register_live_query("items", &no_filters(), &age_ascending_sort(), 2)
+            .unwrap();
+        // Ascending age: k0(10), k1(20), k2(30), k3(40).
+        assert_eq!(
+            initial.iter().map(|e| e.0.clone()).collect::<Vec<_>>(),
+            vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]
+        );
+        // k0's age drops to 99 → moves to the end.
+        let result = worker
+            .apply_batch_reactive(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k0".to_vec()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("g", encode_test_string("g0")),
+                                ("age", encode_test_int64(99)),
+                            ]
+                        )
+                    ),
+                )],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(result.deltas.len(), 1);
+        let delta = &result.deltas[0];
+        assert_eq!(delta.id, id);
+        // Reordered snapshot: k1, k2, k3, k0.
+        assert_eq!(
+            delta.snapshot.iter().map(|e| e.0.clone()).collect::<Vec<_>>(),
+            vec![b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec(), b"k0".to_vec()]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_registry_whole_table_clear_resets_to_empty() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-clear");
+        let (id, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 1).unwrap();
+        let result = worker
+            .apply_batch_reactive(&[op_with_table(OpKind::Clear, "items", None, None)], &[])
+            .unwrap();
+        assert_eq!(result.deltas.len(), 1);
+        let delta = &result.deltas[0];
+        assert_eq!(delta.id, id);
+        // Both g0 rows leave with their previous values; snapshot is empty.
+        assert_eq!(delta.removed.len(), 2);
+        assert!(delta.snapshot.is_empty());
+        assert!(!delta.unchanged);
+        // A subsequent write sees an empty registry result set.
+        let result = worker
+            .apply_batch_reactive(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k5".to_vec()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("g", encode_test_string("g0")),
+                                ("age", encode_test_int64(5)),
+                            ]
+                        )
+                    ),
+                )],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(result.deltas[0].added.len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_registry_idempotent_write_is_unchanged() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-idempotent");
+        let (_, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 1).unwrap();
+        // Same value for k0 → nothing observable changes.
+        let result = worker
+            .apply_batch_reactive(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k0".to_vec()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("g", encode_test_string("g0")),
+                                ("age", encode_test_int64(10)),
+                            ]
+                        )
+                    ),
+                )],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(result.deltas.len(), 1);
+        assert!(result.deltas[0].unchanged);
+        assert!(result.deltas[0].added.is_empty());
+        assert!(result.deltas[0].updated.is_empty());
+        assert!(result.deltas[0].removed.is_empty());
+        // Snapshot still reflects the full matching set.
+        assert_eq!(result.deltas[0].snapshot.len(), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_registry_coalesces_a_batch_into_one_delta() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-coalesce");
+        let (id, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 2).unwrap();
+        // One batch touching 3 g0 rows → exactly one delta.
+        let result = worker
+            .apply_batch_reactive(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k0".to_vec()),
+                        Some(encode_test_row(&[("g", encode_test_string("g0")), ("age", encode_test_int64(1))]))
+                    ),
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k1".to_vec()),
+                        Some(encode_test_row(&[("g", encode_test_string("g0")), ("age", encode_test_int64(2))]))
+                    ),
+                ],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(result.deltas.len(), 1);
+        assert_eq!(result.deltas[0].id, id);
+        assert_eq!(result.deltas[0].updated.len(), 2);
+        // Registrations on an unrelated table are untouched.
+        worker
+            .apply_batch_reactive(
+                &[op_with_table(
+                    OpKind::Put,
+                    "other",
+                    Some(b"x".to_vec()),
+                    Some(encode_test_row(&[("g", encode_test_string("g0"))])),
+                )],
+                &[]
+            )
+            .unwrap();
+        let result = worker
+            .apply_batch_reactive(
+                &[op_with_table(OpKind::Put, "other", Some(b"y".to_vec()), Some(vec![1]))],
+                &[]
+            )
+            .unwrap();
+        assert!(result.deltas.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_registry_unregister_stops_deltas() {
+        let (path, mut worker) = seed_registry_fixture("m8-registry-unregister");
+        let (id, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 2).unwrap();
+        worker.unregister_live_query(id);
+        assert_eq!(worker.live_query_count(), 0);
+        let result = worker
+            .apply_batch_reactive(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k0".to_vec()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("g", encode_test_string("g0")),
+                                ("age", encode_test_int64(1)),
+                            ]
+                        )
+                    ),
+                )],
+                &[]
+            )
+            .unwrap();
+        assert!(result.deltas.is_empty());
+        // Unregister is idempotent.
+        worker.unregister_live_query(id);
         let _ = std::fs::remove_file(path);
     }
 }

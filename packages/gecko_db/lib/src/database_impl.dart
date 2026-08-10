@@ -19,8 +19,9 @@ import 'namespaces.dart';
 import 'backend/native_raw_backend.dart';
 import 'native/native_resolver.dart' show isWeb;
 import 'query/query_impl.dart';
+import 'query/predicate_codec.dart';
+import 'query/sort_spec_codec.dart';
 import 'raw/raw_engine.dart';
-import 'reactive/materialized_rows.dart';
 import 'relation/relationship_manager.dart';
 import 'wire/wire_codec.dart';
 import 'api/attachment.dart';
@@ -719,24 +720,65 @@ class _CollectionImpl<T> implements Collection<T> {
     return controller.stream;
   }
 
+  /// M8 (ADR-0030): the full-set diff stream is maintained by the worker's
+  /// reactive registry. Dart registers on listen, emits the initial snapshot,
+  /// and forwards worker deltas (suppressing no-op emissions) — no Dart-side
+  /// result-set computation.
   @override
   Stream<CollectionDiff<T>> watchAllDiff() {
     _db._assertOpen();
     late StreamController<CollectionDiff<T>> controller;
-    late StreamSubscription<ChangeSet> sub;
-    // M8: the materialized cache is populated once, then updated incrementally
-    // via point reads; diffs are computed from the incremental updates, never
-    // from a full re-scan of the collection.
-    final rows = MaterializedRows();
-    // Serialize async updates so emissions stay in change-feed order even when
-    // the native worker round-trip completes out of order.
-    var emitting = Future<void>.value();
+    late StreamSubscription<RegistryDelta> sub;
+    var registrationId = -1;
     controller = StreamController<CollectionDiff<T>>(
       onListen: () {
-        // Emit the current full list immediately (one-time population scan).
-        emitting = emitting.then((_) async {
-          await _populate(rows);
-          final initial = [for (final row in rows.toList()) _fromRow(row)];
+        // Subscribe to deltas BEFORE registering so no delta produced after
+        // registration completes can be missed (registration is async).
+        sub = _db.engine.liveDeltas.listen((delta) {
+          if (delta.id != registrationId) return;
+          if (delta.unchanged) return;
+          controller.add(
+            CollectionDiff<T>(
+              added: [
+                for (final entry in delta.added)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+              updated: [
+                for (final entry in delta.updated)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+              removed: [
+                for (final entry in delta.removed)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+              snapshot: [
+                for (final entry in delta.snapshot)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+            ),
+          );
+        });
+        unawaited(() async {
+          final registration = await _db.engine.registerLiveQuery(
+            table: name,
+            predicateBytes: encodePredicate(const [], codec: _codec),
+            sortBytes: encodeSortSpecs(const []),
+            kind: LiveQueryKind.watchAllDiff.value,
+          );
+          if (controller.isClosed) {
+            // Best-effort cleanup: the engine may already be closed (a
+            // cancel/close race), in which case the worker died with the
+            // registration and there is nothing to release.
+            try {
+              await _db.engine.unregisterLiveQuery(registration.id);
+            } catch (_) {}
+            return;
+          }
+          registrationId = registration.id;
+          final initial = [
+            for (final entry in registration.initial)
+              _fromRow(_codec.decode(entry.value ?? const [])),
+          ];
           controller.add(
             CollectionDiff<T>(
               added: initial,
@@ -745,159 +787,74 @@ class _CollectionImpl<T> implements Collection<T> {
               snapshot: initial,
             ),
           );
-        });
-        sub = _db.engine.changes.stream.listen((change) {
-          if (!change.changes.any((entry) => entry.table == name)) return;
-          emitting = emitting.then((_) async {
-            final diff = await _applyDiffChanges(rows, change);
-            if (diff != null) controller.add(diff);
-          });
-        });
+        }());
       },
-      onCancel: () async => sub.cancel(),
+      onCancel: () async {
+        await sub.cancel();
+        if (registrationId >= 0) {
+          try {
+            await _db.engine.unregisterLiveQuery(registrationId);
+          } catch (_) {
+            // Best-effort: the engine may already be closed.
+          }
+        }
+      },
     );
     return controller.stream;
   }
 
-  bool _sameMapped(T a, T b) {
-    final left = _toRow(a);
-    final right = _toRow(b);
-    return left.toString() == right.toString();
-  }
-
+  /// M8 (ADR-0030): the full-set stream is maintained by the worker's reactive
+  /// registry. Dart registers on listen, emits the initial snapshot, and
+  /// forwards worker deltas — no Dart-side result-set computation.
   @override
   Stream<List<T>> watchAll() {
     _db._assertOpen();
     late StreamController<List<T>> controller;
-    late StreamSubscription<ChangeSet> sub;
-    // M8: the materialized cache is populated once, then updated incrementally
-    // via point reads — never a full re-scan of the collection per batch.
-    final rows = MaterializedRows();
-    // Serialize async updates so emissions stay in change-feed order even when
-    // the native worker round-trip completes out of order.
-    var emitting = Future<void>.value();
+    late StreamSubscription<RegistryDelta> sub;
+    var registrationId = -1;
     controller = StreamController<List<T>>(
       onListen: () {
-        // Emit the current full list immediately (one-time population scan).
-        emitting = emitting.then((_) async {
-          await _populate(rows);
-          controller.add([for (final row in rows.toList()) _fromRow(row)]);
+        // Subscribe to deltas BEFORE registering so no delta produced after
+        // registration completes can be missed (registration is async).
+        sub = _db.engine.liveDeltas.listen((delta) {
+          if (delta.id != registrationId) return;
+          controller.add([
+            for (final entry in delta.snapshot)
+              _fromRow(_codec.decode(entry.value ?? const [])),
+          ]);
         });
-        sub = _db.engine.changes.stream.listen((ChangeSet change) {
-          if (change.changes.any((entry) => entry.table == name)) {
-            emitting = emitting.then((_) async {
-              await _applyChanges(rows, change);
-              controller.add([for (final row in rows.toList()) _fromRow(row)]);
-            });
+        unawaited(() async {
+          final registration = await _db.engine.registerLiveQuery(
+            table: name,
+            predicateBytes: encodePredicate(const [], codec: _codec),
+            sortBytes: encodeSortSpecs(const []),
+            kind: LiveQueryKind.watchAll.value,
+          );
+          if (controller.isClosed) {
+            try {
+              await _db.engine.unregisterLiveQuery(registration.id);
+            } catch (_) {}
+            return;
           }
-        });
+          registrationId = registration.id;
+          controller.add([
+            for (final entry in registration.initial)
+              _fromRow(_codec.decode(entry.value ?? const [])),
+          ]);
+        }());
       },
       onCancel: () async {
         await sub.cancel();
+        if (registrationId >= 0) {
+          try {
+            await _db.engine.unregisterLiveQuery(registrationId);
+          } catch (_) {
+            // Best-effort: the engine may already be closed.
+          }
+        }
       },
     );
     return controller.stream;
-  }
-
-  /// One-time full population of the materialized cache (the only full scan a
-  /// watch performs; later updates are point reads).
-  Future<void> _populate(MaterializedRows rows) async {
-    final entries = await _db.engine.rawScanAll(name);
-    for (final entry in entries) {
-      rows.put(entry.key, _codec.decode(entry.value ?? const []));
-    }
-  }
-
-  /// Applies the [change] batch to [rows] incrementally: the changed keys are
-  /// point-read in ONE batched call (all keys read under a single Rust read
-  /// transaction) and upserted/removed. Whole-table clears reset the cache.
-  Future<void> _applyChanges(MaterializedRows rows, ChangeSet change) async {
-    final changes = [
-      for (final c in change.changes)
-        if (c.table == name) c,
-    ];
-    if (changes.isEmpty) return;
-    if (changes.any((c) => c.key == null)) {
-      rows.clear();
-      return;
-    }
-    final byKey = {
-      for (final e
-          in await _db.engine.backend
-              .getMany(name, [for (final c in changes) _keyFor(c.key)]))
-        e.key: e.value,
-    };
-    for (final c in changes) {
-      final key = _keyFor(c.key);
-      final raw = byKey[key];
-      if (raw == null) {
-        rows.remove(key);
-      } else {
-        rows.put(key, _codec.decode(raw));
-      }
-    }
-  }
-
-  /// Applies [change] incrementally and returns the resulting [CollectionDiff],
-  /// or null when nothing observable changed.
-  Future<CollectionDiff<T>?> _applyDiffChanges(
-    MaterializedRows rows,
-    ChangeSet change,
-  ) async {
-    final changes = [
-      for (final c in change.changes)
-        if (c.table == name) c,
-    ];
-    if (changes.isEmpty) return null;
-    if (changes.any((c) => c.key == null)) {
-      // Whole-table clear.
-      final removed = [for (final row in rows.toList()) _fromRow(row)];
-      rows.clear();
-      if (removed.isEmpty) return null;
-      return CollectionDiff<T>(
-        added: const [],
-        updated: const [],
-        removed: removed,
-        snapshot: const [],
-      );
-    }
-    // All changed keys are point-read in ONE batched call under a single
-    // Rust read transaction (consistent batch read, one FRB hop).
-    final byKey = {
-      for (final e
-          in await _db.engine.backend
-              .getMany(name, [for (final c in changes) _keyFor(c.key)]))
-        e.key: e.value,
-    };
-    final added = <T>[];
-    final updated = <T>[];
-    final removed = <T>[];
-    for (final c in changes) {
-      final key = _keyFor(c.key);
-      final raw = byKey[key];
-      final wasPresent = rows.contains(key);
-      if (raw == null) {
-        if (wasPresent) {
-          removed.add(_fromRow(rows[key]));
-          rows.remove(key);
-        }
-      } else {
-        final newRow = _fromRow(_codec.decode(raw));
-        if (wasPresent) {
-          if (!_sameMapped(_fromRow(rows[key]), newRow)) updated.add(newRow);
-        } else {
-          added.add(newRow);
-        }
-        rows.put(key, _codec.decode(raw));
-      }
-    }
-    if (added.isEmpty && updated.isEmpty && removed.isEmpty) return null;
-    return CollectionDiff<T>(
-      added: added,
-      updated: updated,
-      removed: removed,
-      snapshot: [for (final row in rows.toList()) _fromRow(row)],
-    );
   }
 
   @override

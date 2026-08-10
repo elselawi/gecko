@@ -14,6 +14,7 @@ mod frb_generated;
 #[cfg(target_arch = "wasm32")]
 pub mod opfs;
 pub mod predicate;
+pub mod registry;
 pub mod sort_spec;
 pub mod value_codec;
 pub mod wire;

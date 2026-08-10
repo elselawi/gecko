@@ -7,19 +7,20 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- **M8 — Incremental reactivity** (ADR-0029): `watchAll()`, `watchAllDiff()`,
-  and `query.where(...).watch()` materialize their result sets once and then
-  update them incrementally per coalesced batch — each changed key is
-  point-read once under a single Rust read transaction (new one-hop
-  `RawBackend.getMany`) and re-tested, instead of re-running a full
-  collection scan per write. `scannedRows` stays flat under watch-only writes;
-  ordering parity with `getAll()`/`findAll()` (byte-key) and comparator order
-  for sorted queries is preserved; whole-table clears reset the caches;
-  unchanged-value diffs emit nothing; windowed (limit/offset) queries keep
-  documented full re-evaluation. New `MaterializedRows` cache helper and
-  `packages/gecko_db/test/m8_reactivity_test.dart` (8 tests); the done-when is
-  measured by `benchmark/m8_reactivity.dart` (update latency flat across a 5x
-  collection size with live filtered queries, `scannedRows == 0`).
+- **M8 — Rust-owned reactive registry** (ADR-0030): `watchAll()`, `watchAllDiff()`, and
+  `query.where(...).watch()` register with a **non-durable reactive registry in the Rust
+  worker**. The worker re-evaluates only the changed keys of each committed batch against each
+  registration's predicate (`predicate.rs`), maintains the materialized result sets (byte-key and
+  comparator order), computes per-registration deltas (added/updated/removed/snapshot, no-op
+  suppression), and returns them in the same `apply_batch` hop. Dart forwards deltas to `Stream`s
+  and renders through `fromRow` — **no Dart predicate evaluation, result-set maintenance, or diff
+  computation remains**. The provisional Dart implementation (ADR-0029 v1) was the lifecycle-lock
+  step; its invalidation code (`MaterializedRows`, `_applyChanges`, `_applyDiffChanges`,
+  `_applyQueryChanges`, sorted-list maintenance) is deleted. New public surface: single-hop
+  `RawBackend.getMany`, `registerLiveQuery`/`unregisterLiveQuery`, `ApplyBatchResult`,
+  `RegistryDelta`, `LiveQueryRegistration`, `LiveQueryKind`. `m8_reactivity_test.dart` (8 tests)
+  passes unchanged; the done-when is measured by `benchmark/m8_reactivity.dart` (update latency
+  flat across a 5x collection size with live filtered queries, `scannedRows == 0`).
 - **M7.5 — File-backed Rust engine consolidation complete**: the Dart
   `InMemoryBackend` and `SecondaryIndex` are deleted, and every supported store
   is Rust/redb (native file or OPFS file). `DatabaseConfig.inMemory`, the

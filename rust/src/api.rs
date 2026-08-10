@@ -31,6 +31,45 @@ fn encode_worker_error(error: WorkerError) -> String {
     envelope.encode()
 }
 
+/// M8 (ADR-0030): outcome of one committed batch — worker sequence plus one
+/// delta per touched live registration.
+#[derive(Debug, Clone)]
+pub struct ApplyBatchResult {
+    pub sequence: u64,
+    pub deltas: Vec<QueryDelta>,
+}
+
+/// M8: one per-registration delta produced by a committed batch.
+#[derive(Debug, Clone)]
+pub struct QueryDelta {
+    pub id: u64,
+    pub added: Vec<ByteEntry>,
+    pub updated: Vec<ByteEntry>,
+    pub removed: Vec<ByteEntry>,
+    pub snapshot: Vec<ByteEntry>,
+    pub unchanged: bool,
+}
+
+impl From<crate::registry::RegistryDelta> for QueryDelta {
+    fn from(value: crate::registry::RegistryDelta) -> Self {
+        Self {
+            id: value.id,
+            added: value.added,
+            updated: value.updated,
+            removed: value.removed,
+            snapshot: value.snapshot,
+            unchanged: value.unchanged,
+        }
+    }
+}
+
+/// M8: the result of registering a live query.
+#[derive(Debug, Clone)]
+pub struct RegisterLiveQueryResult {
+    pub id: u64,
+    pub initial: Vec<ByteEntry>,
+}
+
 pub struct NativeWorker {
     worker: RedbWorker,
 }
@@ -101,7 +140,7 @@ impl NativeWorker {
         &mut self,
         encoded_ops: Vec<u8>,
         index_definitions: Vec<(String, Vec<String>)>
-    ) -> Result<u64, String> {
+    ) -> Result<ApplyBatchResult, String> {
         let operations = crate::wire::Op
             ::decode_batch(&encoded_ops)
             .map_err(|error| {
@@ -109,9 +148,41 @@ impl NativeWorker {
                     ::new(crate::error::GeckoErrorType::InvalidOperation, error.to_string())
                     .encode()
             })?;
+        let result = self
+            .worker
+            .apply_batch_reactive(&operations, &index_definitions)
+            .map_err(encode_worker_error)?;
+        Ok(ApplyBatchResult {
+            sequence: result.sequence,
+            deltas: result.deltas.into_iter().map(QueryDelta::from).collect(),
+        })
+    }
+
+    /// M8 (ADR-0030): registers a live query with the worker's reactive
+    /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
+    /// the registration id and the initial result set in result order.
+    pub async fn register_live_query(
+        &mut self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        sort_bytes: Vec<u8>,
+        kind: u8
+    ) -> Result<RegisterLiveQueryResult, String> {
         self.worker
-            .apply_batch_with_indexes(&operations, &index_definitions)
+            .register_live_query(&table, &predicate_bytes, &sort_bytes, kind)
+            .map(|(id, initial)| RegisterLiveQueryResult { id, initial })
             .map_err(encode_worker_error)
+    }
+
+    /// M8 (ADR-0030): removes a live-query registration (idempotent).
+    pub async fn unregister_live_query(&mut self, id: u64) -> Result<(), String> {
+        self.worker.unregister_live_query(id);
+        Ok(())
+    }
+
+    /// Number of active live-query registrations (diagnostics).
+    pub async fn live_query_count(&self) -> Result<u64, String> {
+        Ok(self.worker.live_query_count() as u64)
     }
 
     pub async fn get(&self, table: String, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {

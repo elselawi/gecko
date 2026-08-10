@@ -1,10 +1,16 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0030 (M8 — Rust-owned reactive registry)
 date: 2026-08-10
 deciders: gecko_db maintainers
 ---
 
-# ADR-0029: M8 incremental reactivity
+> **Superseded.** ADR-0030 replaces this ADR's decision to compute reactivity in
+> Dart. This document remains as the record of the lifecycle-locking provisional
+> phase (commit `acb02c9`); the Dart invalidation code it describes was deleted
+> when the Rust registry landed.
+
+# ADR-0029: M8 incremental reactivity (provisional Dart phase)
 
 ## Context
 

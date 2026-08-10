@@ -18,7 +18,7 @@ export: src/api/sync_state.dart show: SyncState, SyncPhase
 export: src/api/transaction.dart show: Transaction
 export: src/backend/byte_key.dart show: ByteKey
 export: src/backend/native_raw_backend.dart show: NativeRawBackend, NativeRawSnapshot
-export: src/backend/raw_backend.dart show: RawBackend, RawSnapshot, RawOp, RawPut, RawDelete, RawDeleteRange, RawClear, RawEntry, RawBatch, keyNotFoundError
+export: src/backend/raw_backend.dart show: RawBackend, RawSnapshot, RawOp, RawPut, RawDelete, RawDeleteRange, RawClear, RawEntry, RawBatch, RegistryDelta, ApplyBatchResult, LiveQueryRegistration, LiveQueryKind, keyNotFoundError
 export: src/cache/lru_cache.dart show: LruCache
 export: src/crypto/physical_encryption.dart show: rotatePhysicalKey, validateEncryptionKey, initialPhysicalKeyGeneration
 export: src/database_impl.dart show: DatabaseImpl

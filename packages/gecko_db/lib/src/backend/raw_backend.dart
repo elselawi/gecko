@@ -97,6 +97,72 @@ abstract class DurableIndexRegistrar {
   void registerDurableIndex(String table, List<String> fields);
 }
 
+/// M8 (ADR-0030): one per-registration delta produced by a committed batch.
+/// All lists are ordered: [added], [updated], [removed] follow the batch's
+/// change order; [snapshot] is the full current result set in result order
+/// (byte-key order for unsorted registrations, comparator order for sorted).
+class RegistryDelta {
+  const RegistryDelta({
+    required this.id,
+    required this.added,
+    required this.updated,
+    required this.removed,
+    required this.snapshot,
+    required this.unchanged,
+  });
+
+  /// The registration id this delta belongs to.
+  final int id;
+
+  /// Rows that joined the result set this batch (key, value).
+  final List<RawEntry> added;
+
+  /// Rows whose value changed but that stayed in the result set.
+  final List<RawEntry> updated;
+
+  /// Rows that left the result set (key + previous value bytes).
+  final List<RawEntry> removed;
+
+  /// The full current result set in result order.
+  final List<RawEntry> snapshot;
+
+  /// True when nothing observable changed (idempotent writes); the
+  /// `watchAllDiff` stream suppresses no-op emissions.
+  final bool unchanged;
+}
+
+/// M8 (ADR-0030): the outcome of one committed batch at the raw layer — the
+/// affected (table, key) pairs plus one [RegistryDelta] per touched live
+/// registration.
+class ApplyBatchResult {
+  const ApplyBatchResult({required this.affected, required this.deltas});
+  final Set<(String, ByteKey)> affected;
+  final List<RegistryDelta> deltas;
+}
+
+/// M8 (ADR-0030): the kind of live result a registration maintains (mirrors
+/// `rust::registry::LiveQueryKind`).
+enum LiveQueryKind {
+  /// `collection.watchAll()` — full set, emits every relevant batch.
+  watchAll(0),
+  /// `collection.watchAllDiff()` — full set + per-batch diff; suppresses
+  /// emissions when nothing observable changed.
+  watchAllDiff(1),
+  /// `query.where(...).watch()` — filtered (optionally sorted) set.
+  query(2);
+
+  const LiveQueryKind(this.value);
+  final int value;
+}
+
+/// M8 (ADR-0030): a registered live query — its id plus the initial result
+/// set in result order.
+class LiveQueryRegistration {
+  const LiveQueryRegistration({required this.id, required this.initial});
+  final int id;
+  final List<RawEntry> initial;
+}
+
 /// The raw write/read engine contract. Exactly one writer may run at a time;
 /// reads use snapshots for MVCC isolation.
 abstract class RawBackend {
@@ -104,8 +170,26 @@ abstract class RawBackend {
   bool get isReadOnly;
 
   /// Applies [ops] atomically: either all take effect or none do (single
-  /// write transaction). Returns the set of affected (table, key) pairs.
-  Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops);
+  /// write transaction). Returns the affected (table, key) pairs plus any
+  /// M8 reactive-registry deltas produced by the batch.
+  Future<ApplyBatchResult> applyBatch(RawBatch ops);
+
+  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registry and materializes its initial result set. [kind] is 0 = watchAll,
+  /// 1 = watchAllDiff, 2 = query. [predicateBytes]/[sortBytes] are the encoded
+  /// predicate/sort payloads (empty predicate matches everything).
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  });
+
+  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  Future<void> unregisterLiveQuery(int id);
+
+  /// Number of active live-query registrations (diagnostics).
+  Future<int> liveQueryCount();
 
   /// Captures a consistent snapshot for reading.
   Future<RawSnapshot> snapshot();

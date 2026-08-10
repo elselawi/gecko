@@ -65,7 +65,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -2081684140;
+  int get rustContentHash => 1795941633;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -77,7 +77,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
-  Future<BigInt> crateApiNativeWorkerApplyBatch({
+  Future<ApplyBatchResult> crateApiNativeWorkerApplyBatch({
     required NativeWorker that,
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
@@ -114,6 +114,10 @@ abstract class RustLibApi extends BaseApi {
     required NativeWorker that,
     required String table,
     required List<Uint8List> keys,
+  });
+
+  Future<BigInt> crateApiNativeWorkerLiveQueryCount({
+    required NativeWorker that,
   });
 
   Future<NativeWorker> crateApiNativeWorkerOpen({
@@ -201,6 +205,14 @@ abstract class RustLibApi extends BaseApi {
     required String table,
     Uint8List? start,
     Uint8List? end,
+  });
+
+  Future<RegisterLiveQueryResult> crateApiNativeWorkerRegisterLiveQuery({
+    required NativeWorker that,
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
   });
 
   Future<void> crateApiNativeWorkerRekeyEncryptedFile({
@@ -384,6 +396,11 @@ abstract class RustLibApi extends BaseApi {
 
   Future<List<String>> crateApiNativeWorkerTables({required NativeWorker that});
 
+  Future<void> crateApiNativeWorkerUnregisterLiveQuery({
+    required NativeWorker that,
+    required BigInt id,
+  });
+
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_NativeWorker;
 
@@ -402,7 +419,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  Future<BigInt> crateApiNativeWorkerApplyBatch({
+  Future<ApplyBatchResult> crateApiNativeWorkerApplyBatch({
     required NativeWorker that,
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
@@ -428,7 +445,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_u_64,
+          decodeSuccessData: sse_decode_apply_batch_result,
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerApplyBatchConstMeta,
@@ -736,6 +753,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<BigInt> crateApiNativeWorkerLiveQueryCount({
+    required NativeWorker that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_64,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerLiveQueryCountConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerLiveQueryCountConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_live_query_count",
+        argNames: ["that"],
+      );
+
+  @override
   Future<NativeWorker> crateApiNativeWorkerOpen({
     required String path,
     required bool readOnly,
@@ -749,7 +802,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -786,7 +839,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -827,7 +880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -868,7 +921,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -910,7 +963,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 15,
             port: port_,
           );
         },
@@ -955,7 +1008,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -1000,7 +1053,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -1051,7 +1104,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -1124,7 +1177,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -1193,7 +1246,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -1243,7 +1296,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 21,
             port: port_,
           );
         },
@@ -1266,6 +1319,50 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<RegisterLiveQueryResult> crateApiNativeWorkerRegisterLiveQuery({
+    required NativeWorker that,
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_String(table, serializer);
+          sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_list_prim_u_8_loose(sortBytes, serializer);
+          sse_encode_u_8(kind, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_register_live_query_result,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerRegisterLiveQueryConstMeta,
+        argValues: [that, table, predicateBytes, sortBytes, kind],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerRegisterLiveQueryConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_register_live_query",
+        argNames: ["that", "table", "predicateBytes", "sortBytes", "kind"],
+      );
+
+  @override
   Future<void> crateApiNativeWorkerRekeyEncryptedFile({
     required String path,
     required List<int> oldKey,
@@ -1283,7 +1380,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 23,
             port: port_,
           );
         },
@@ -1323,7 +1420,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1365,7 +1462,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 25,
             port: port_,
           );
         },
@@ -1407,7 +1504,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1451,7 +1548,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1494,7 +1591,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1538,7 +1635,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1586,7 +1683,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1642,7 +1739,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1692,7 +1789,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1750,7 +1847,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1820,7 +1917,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1891,7 +1988,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1956,7 +2053,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2029,7 +2126,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 37,
             port: port_,
           );
         },
@@ -2090,7 +2187,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 38,
             port: port_,
           );
         },
@@ -2145,7 +2242,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 39,
             port: port_,
           );
         },
@@ -2209,7 +2306,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2256,7 +2353,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2307,7 +2404,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2343,7 +2440,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2360,6 +2457,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiNativeWorkerTablesConstMeta =>
       const TaskConstMeta(debugName: "NativeWorker_tables", argNames: ["that"]);
+
+  @override
+  Future<void> crateApiNativeWorkerUnregisterLiveQuery({
+    required NativeWorker that,
+    required BigInt id,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(id, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 44,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerUnregisterLiveQueryConstMeta,
+        argValues: [that, id],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerUnregisterLiveQueryConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_unregister_live_query",
+        argNames: ["that", "id"],
+      );
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_NativeWorker => wire
@@ -2412,6 +2547,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ApplyBatchResult dco_decode_apply_batch_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return ApplyBatchResult(
+      sequence: dco_decode_u_64(arr[0]),
+      deltas: dco_decode_list_query_delta(arr[1]),
+    );
+  }
+
+  @protected
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
@@ -2454,6 +2601,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
+  }
+
+  @protected
+  List<QueryDelta> dco_decode_list_query_delta(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_query_delta).toList();
   }
 
   @protected
@@ -2503,6 +2656,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  QueryDelta dco_decode_query_delta(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return QueryDelta(
+      id: dco_decode_u_64(arr[0]),
+      added: dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        arr[1],
+      ),
+      updated: dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        arr[2],
+      ),
+      removed: dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        arr[3],
+      ),
+      snapshot:
+          dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+            arr[4],
+          ),
+      unchanged: dco_decode_bool(arr[5]),
+    );
+  }
+
+  @protected
   (Uint8List, Uint8List)
   dco_decode_record_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -2524,6 +2702,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       throw Exception('Expected 2 elements, got ${arr.length}');
     }
     return (dco_decode_String(arr[0]), dco_decode_list_String(arr[1]));
+  }
+
+  @protected
+  RegisterLiveQueryResult dco_decode_register_live_query_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return RegisterLiveQueryResult(
+      id: dco_decode_u_64(arr[0]),
+      initial: dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        arr[1],
+      ),
+    );
   }
 
   @protected
@@ -2621,6 +2813,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ApplyBatchResult sse_decode_apply_batch_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_sequence = sse_decode_u_64(deserializer);
+    var var_deltas = sse_decode_list_query_delta(deserializer);
+    return ApplyBatchResult(sequence: var_sequence, deltas: var_deltas);
+  }
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8() != 0;
@@ -2681,6 +2881,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  List<QueryDelta> sse_decode_list_query_delta(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <QueryDelta>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_query_delta(deserializer));
+    }
+    return ans_;
   }
 
   @protected
@@ -2755,6 +2967,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  QueryDelta sse_decode_query_delta(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_u_64(deserializer);
+    var var_added =
+        sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+          deserializer,
+        );
+    var var_updated =
+        sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+          deserializer,
+        );
+    var var_removed =
+        sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+          deserializer,
+        );
+    var var_snapshot =
+        sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+          deserializer,
+        );
+    var var_unchanged = sse_decode_bool(deserializer);
+    return QueryDelta(
+      id: var_id,
+      added: var_added,
+      updated: var_updated,
+      removed: var_removed,
+      snapshot: var_snapshot,
+      unchanged: var_unchanged,
+    );
+  }
+
+  @protected
   (Uint8List, Uint8List)
   sse_decode_record_list_prim_u_8_strict_list_prim_u_8_strict(
     SseDeserializer deserializer,
@@ -2773,6 +3016,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_field0 = sse_decode_String(deserializer);
     var var_field1 = sse_decode_list_String(deserializer);
     return (var_field0, var_field1);
+  }
+
+  @protected
+  RegisterLiveQueryResult sse_decode_register_live_query_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_u_64(deserializer);
+    var var_initial =
+        sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+          deserializer,
+        );
+    return RegisterLiveQueryResult(id: var_id, initial: var_initial);
   }
 
   @protected
@@ -2880,6 +3136,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_apply_batch_result(
+    ApplyBatchResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.sequence, serializer);
+    sse_encode_list_query_delta(self.deltas, serializer);
+  }
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
@@ -2944,6 +3210,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     serializer.buffer.putUint8List(self);
+  }
+
+  @protected
+  void sse_encode_list_query_delta(
+    List<QueryDelta> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_query_delta(item, serializer);
+    }
   }
 
   @protected
@@ -3014,6 +3292,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_query_delta(QueryDelta self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.id, serializer);
+    sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self.added,
+      serializer,
+    );
+    sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self.updated,
+      serializer,
+    );
+    sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self.removed,
+      serializer,
+    );
+    sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self.snapshot,
+      serializer,
+    );
+    sse_encode_bool(self.unchanged, serializer);
+  }
+
+  @protected
   void sse_encode_record_list_prim_u_8_strict_list_prim_u_8_strict(
     (Uint8List, Uint8List) self,
     SseSerializer serializer,
@@ -3031,6 +3332,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.$1, serializer);
     sse_encode_list_String(self.$2, serializer);
+  }
+
+  @protected
+  void sse_encode_register_live_query_result(
+    RegisterLiveQueryResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.id, serializer);
+    sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self.initial,
+      serializer,
+    );
   }
 
   @protected
@@ -3092,7 +3406,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
         RustLib.instance.api.rust_arc_decrement_strong_count_NativeWorkerPtr,
   );
 
-  Future<BigInt> applyBatch({
+  Future<ApplyBatchResult> applyBatch({
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
   }) => RustLib.instance.api.crateApiNativeWorkerApplyBatch(
@@ -3148,6 +3462,10 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     table: table,
     keys: keys,
   );
+
+  /// Number of active live-query registrations (diagnostics).
+  Future<BigInt> liveQueryCount() =>
+      RustLib.instance.api.crateApiNativeWorkerLiveQueryCount(that: this);
 
   /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
   /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
@@ -3305,6 +3623,22 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     table: table,
     start: start,
     end: end,
+  );
+
+  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
+  /// the registration id and the initial result set in result order.
+  Future<RegisterLiveQueryResult> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) => RustLib.instance.api.crateApiNativeWorkerRegisterLiveQuery(
+    that: this,
+    table: table,
+    predicateBytes: predicateBytes,
+    sortBytes: sortBytes,
+    kind: kind,
   );
 
   /// Phase 2 native query fast path: range-scans the durable index table
@@ -3610,4 +3944,8 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
 
   Future<List<String>> tables() =>
       RustLib.instance.api.crateApiNativeWorkerTables(that: this);
+
+  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  Future<void> unregisterLiveQuery({required BigInt id}) => RustLib.instance.api
+      .crateApiNativeWorkerUnregisterLiveQuery(that: this, id: id);
 }

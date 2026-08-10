@@ -21,7 +21,7 @@ Future<Object?> dispatchNativeWorker(
 ) async {
   switch (operation) {
     case 'applyBatch':
-      return (await worker.applyBatch(
+      final result = await worker.applyBatch(
         encodedOps: List<int>.from(arguments[0] as List),
         indexDefinitions: [
           for (final definition
@@ -30,7 +30,32 @@ Future<Object?> dispatchNativeWorker(
                   : const <Object?>[]))
             _decodeIndexDefinition(definition),
         ],
-      )).toString();
+      );
+      return <String, Object?>{
+        'sequence': result.sequence.toString(),
+        'deltas': [
+          for (final delta in result.deltas) _encodeDelta(delta),
+        ],
+      };
+    case 'registerLiveQuery':
+      final result = await worker.registerLiveQuery(
+        table: arguments[0] as String,
+        predicateBytes: List<int>.from(arguments[1] as List),
+        sortBytes: List<int>.from(arguments[2] as List),
+        kind: arguments[3] as int,
+      );
+      return <String, Object?>{
+        'id': result.id.toString(),
+        'initial': [
+          for (final pair in result.initial)
+            <Object?>[pair.$1.toList(), pair.$2.toList()],
+        ],
+      };
+    case 'unregisterLiveQuery':
+      await worker.unregisterLiveQuery(id: _asBigInt(arguments[0]));
+      return null;
+    case 'liveQueryCount':
+      return (await worker.liveQueryCount()).toString();
     case 'repairIndex':
       await worker.repairIndex(
         table: arguments[0] as String,
@@ -368,3 +393,22 @@ BigInt _asBigInt(Object? value) {
   if (value is String) return BigInt.parse(value);
   return BigInt.from(value as int);
 }
+
+/// Encodes a generated `QueryDelta` as a plain, JSON-encodable map so it can
+/// travel over the isolate/web boundary unchanged.
+Map<String, Object?> _encodeDelta(QueryDelta delta) => <String, Object?>{
+  'id': delta.id.toString(),
+  'added': [
+    for (final pair in delta.added) <Object?>[pair.$1.toList(), pair.$2.toList()],
+  ],
+  'updated': [
+    for (final pair in delta.updated) <Object?>[pair.$1.toList(), pair.$2.toList()],
+  ],
+  'removed': [
+    for (final pair in delta.removed) <Object?>[pair.$1.toList(), pair.$2.toList()],
+  ],
+  'snapshot': [
+    for (final pair in delta.snapshot) <Object?>[pair.$1.toList(), pair.$2.toList()],
+  ],
+  'unchanged': delta.unchanged,
+};

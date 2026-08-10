@@ -8,10 +8,11 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'worker.dart';
 
 // These functions are ignored because they are not marked as `pub`: `_worker_error_type`, `encode_worker_error`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>>
 abstract class NativeWorker implements RustOpaqueInterface {
-  Future<BigInt> applyBatch({
+  Future<ApplyBatchResult> applyBatch({
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
   });
@@ -48,6 +49,9 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String table,
     required List<Uint8List> keys,
   });
+
+  /// Number of active live-query registrations (diagnostics).
+  Future<BigInt> liveQueryCount();
 
   /// Opens a database. Async so the web (wasm) build dispatches through the
   /// async runtime instead of FRB's sync WorkerPool (see ADR-0013).
@@ -172,6 +176,16 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String table,
     Uint8List? start,
     Uint8List? end,
+  });
+
+  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
+  /// the registration id and the initial result set in result order.
+  Future<RegisterLiveQueryResult> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
   });
 
   /// Atomically re-encrypts a *closed* encrypted database file from
@@ -367,4 +381,86 @@ abstract class NativeWorker implements RustOpaqueInterface {
   Future<StorageStats> storageStats();
 
   Future<List<String>> tables();
+
+  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  Future<void> unregisterLiveQuery({required BigInt id});
+}
+
+/// M8 (ADR-0030): outcome of one committed batch — worker sequence plus one
+/// delta per touched live registration.
+class ApplyBatchResult {
+  final BigInt sequence;
+  final List<QueryDelta> deltas;
+
+  const ApplyBatchResult({required this.sequence, required this.deltas});
+
+  @override
+  int get hashCode => sequence.hashCode ^ deltas.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ApplyBatchResult &&
+          runtimeType == other.runtimeType &&
+          sequence == other.sequence &&
+          deltas == other.deltas;
+}
+
+/// M8: one per-registration delta produced by a committed batch.
+class QueryDelta {
+  final BigInt id;
+  final List<(Uint8List, Uint8List)> added;
+  final List<(Uint8List, Uint8List)> updated;
+  final List<(Uint8List, Uint8List)> removed;
+  final List<(Uint8List, Uint8List)> snapshot;
+  final bool unchanged;
+
+  const QueryDelta({
+    required this.id,
+    required this.added,
+    required this.updated,
+    required this.removed,
+    required this.snapshot,
+    required this.unchanged,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      added.hashCode ^
+      updated.hashCode ^
+      removed.hashCode ^
+      snapshot.hashCode ^
+      unchanged.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is QueryDelta &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          added == other.added &&
+          updated == other.updated &&
+          removed == other.removed &&
+          snapshot == other.snapshot &&
+          unchanged == other.unchanged;
+}
+
+/// M8: the result of registering a live query.
+class RegisterLiveQueryResult {
+  final BigInt id;
+  final List<(Uint8List, Uint8List)> initial;
+
+  const RegisterLiveQueryResult({required this.id, required this.initial});
+
+  @override
+  int get hashCode => id.hashCode ^ initial.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RegisterLiveQueryResult &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          initial == other.initial;
 }

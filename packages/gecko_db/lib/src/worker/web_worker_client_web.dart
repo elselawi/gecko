@@ -9,6 +9,8 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 
+import '../backend/byte_key.dart';
+import '../backend/raw_backend.dart';
 import '../native/generated/worker.dart' show StorageStats;
 import 'web_worker_protocol.dart';
 
@@ -170,12 +172,66 @@ class WebWorkerClient {
     return int.parse(value.toString());
   }
 
-  Future<int> applyBatch(
+  /// M8 (ADR-0030): applies a batch and returns the reactive-registry deltas
+  /// the worker produced for it (empty when no live registration was touched).
+  Future<List<RegistryDelta>> applyBatch(
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
-  }) async => _asInt(
-    await _request('applyBatch', <Object?>[encodedOps, indexDefinitions]),
-  );
+  }) async {
+    final result =
+        await _request('applyBatch', <Object?>[encodedOps, indexDefinitions])
+            as Map;
+    return [
+      for (final delta in (result['deltas'] as List))
+        RegistryDelta(
+          id: int.parse((delta as Map)['id'] as String),
+          added: _decodeEntries(delta['added'] as List),
+          updated: _decodeEntries(delta['updated'] as List),
+          removed: _decodeEntries(delta['removed'] as List),
+          snapshot: _decodeEntries(delta['snapshot'] as List),
+          unchanged: delta['unchanged'] as bool,
+        ),
+    ];
+  }
+
+  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registry, returning the registration id and initial result set.
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) async {
+    final result =
+        await _request(
+          'registerLiveQuery',
+          <Object?>[table, predicateBytes, sortBytes, kind],
+        ) as Map;
+    return LiveQueryRegistration(
+      id: int.parse(result['id'] as String),
+      initial: _decodeEntries(result['initial'] as List),
+    );
+  }
+
+  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  Future<void> unregisterLiveQuery(int id) async {
+    await _request('unregisterLiveQuery', <Object?>[id.toString()]);
+  }
+
+  /// Number of active live-query registrations (diagnostics).
+  Future<int> liveQueryCount() async {
+    final result = await _request('liveQueryCount', const <Object?>[]);
+    return int.parse(result as String);
+  }
+
+  /// Decodes a wire `[[keyBytes, valueBytes], ...]` list into [RawEntry]s.
+  List<RawEntry> _decodeEntries(Object? raw) => [
+    for (final pair in (raw as List))
+      RawEntry(
+        ByteKey(List<int>.from((pair as List)[0] as List)),
+        List<int>.from(pair[1] as List),
+      ),
+  ];
 
   Future<List<int>?> get({
     required String table,

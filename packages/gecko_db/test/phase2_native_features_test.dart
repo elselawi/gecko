@@ -287,9 +287,29 @@ class _ThrowingBatchBackend implements RawBackend {
   bool get isReadOnly => _delegate.isReadOnly;
 
   @override
-  Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops) async {
+  Future<ApplyBatchResult> applyBatch(RawBatch ops) async {
     throw const GeckoError(GeckoErrorType.invalidOperation, 'boom');
   }
+
+  @override
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) =>
+      _delegate.registerLiveQuery(
+        table: table,
+        predicateBytes: predicateBytes,
+        sortBytes: sortBytes,
+        kind: kind,
+      );
+
+  @override
+  Future<void> unregisterLiveQuery(int id) => _delegate.unregisterLiveQuery(id);
+
+  @override
+  Future<int> liveQueryCount() => _delegate.liveQueryCount();
 
   @override
   Future<RawSnapshot> snapshot() => _delegate.snapshot();

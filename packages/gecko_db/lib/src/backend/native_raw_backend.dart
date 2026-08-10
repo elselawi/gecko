@@ -129,7 +129,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
   }
 
   @override
-  Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops) async {
+  Future<ApplyBatchResult> applyBatch(RawBatch ops) async {
     final wireOps = <Op>[for (final op in ops) _toWireOp(op)];
     // Delete-range ops must report every key they actually remove so the
     // affected-set contract matches the in-memory backend exactly. The engine
@@ -157,25 +157,68 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       }
     }
     try {
-      await _worker.applyBatch(
+      final deltas = await _worker.applyBatch(
         Op.encodeBatch(wireOps),
         indexDefinitions: [
           for (final entry in _durableIndexes.entries) (entry.key, entry.value),
         ],
       );
+      return ApplyBatchResult(
+        affected: {
+          for (final op in ops)
+            switch (op) {
+              RawPut(:final table, :final key) => (table, key),
+              RawDelete(:final table, :final key) => (table, key),
+              RawDeleteRange(:final table, :final start) => (table, start),
+              RawClear(:final table) => (table, ByteKey(const [])),
+            },
+          ...preRemoved,
+        },
+        deltas: deltas,
+      );
     } catch (error) {
       throw mapNativeError(error);
     }
-    return {
-      for (final op in ops)
-        switch (op) {
-          RawPut(:final table, :final key) => (table, key),
-          RawDelete(:final table, :final key) => (table, key),
-          RawDeleteRange(:final table, :final start) => (table, start),
-          RawClear(:final table) => (table, ByteKey(const [])),
-        },
-      ...preRemoved,
-    };
+  }
+
+  /// M8 (ADR-0030): registers a live query with the worker's reactive registry.
+  @override
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) async {
+    try {
+      return await _worker.registerLiveQuery(
+        table: table,
+        predicateBytes: predicateBytes,
+        sortBytes: sortBytes,
+        kind: kind,
+      );
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  @override
+  Future<void> unregisterLiveQuery(int id) async {
+    try {
+      await _worker.unregisterLiveQuery(id);
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// Number of active live-query registrations (diagnostics).
+  @override
+  Future<int> liveQueryCount() async {
+    try {
+      return await _worker.liveQueryCount();
+    } catch (error) {
+      throw mapNativeError(error);
+    }
   }
 
   @override

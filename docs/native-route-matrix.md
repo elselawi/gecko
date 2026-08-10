@@ -37,9 +37,13 @@ OPFS route.
   a safety net in addition to deterministic disposal.
 - Change-feed ordering and LSN assignment remain in `RawEngine`/Dart. Native
   write batches already carry indexed declarations for Rust maintenance.
-- The M8 handoff is limited to changed row keys, indexed-field declarations,
-  and batch metadata. No query registration, persistent query state, or Rust
-  reactive lifecycle is added here.
+- **M8 (ADR-0030)**: live watches (`watchAll`, `watchAllDiff`, unbounded
+  `query.watch`) register with a non-durable reactive registry in the worker.
+  `apply_batch` returns one `RegistryDelta` per touched registration; Dart
+  forwards deltas to `Stream`s and renders through `fromRow`. No Dart predicate
+  evaluation, result-set maintenance, or diff computation remains. The single
+  `database.watchAll()` global feed and `watch(id)` still use the Dart change
+  bus.
 
 ## Typed errors and parity
 

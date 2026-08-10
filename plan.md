@@ -46,14 +46,31 @@ There are two execution paths. **Native (VM):** caller isolate → `Isolate.spaw
 (`packages/gecko_db/lib/src/worker/native_worker_client.dart`) → FRB → Rust `RedbWorker` (owns
 `redb::Database`). **Web:** Dart `WebWorkerClient` → Dedicated Worker
 (`packages/gecko_db/web/gecko_db_worker.dart`) → JSON protocol
-(`lib/src/worker/web_worker_protocol.dart`) → FRB → wasm. Queries historically ran in **Dart**
-(`lib/src/query/query_impl.dart`): every row decoded into a Dart map, copied, predicated in Dart.
-**Milestones 1–2 (done)** moved the hot query path into Rust: indexed equality traverses the durable
-`__gecko_index` table in one FRB hop (`RedbWorker::query_indexed`), and unindexed scans push the
-predicate to Rust (`RedbWorker::query_filtered` + `value_codec.rs` + `predicate.rs`). Dart now acts as
-a client for the read/query path on the native backend. The Dart in-memory backend is retained only as
-a transitional reference implementation until M7.5; the final supported paths are Rust-owned native
-files and Rust/Wasm OPFS files.
+(`lib/src/worker/web_worker_protocol.dart`) → FRB → wasm. **All supported stores are Rust/redb
+(native file or Web OPFS file); there is no Dart storage engine.** Milestones 1–2 moved the hot query
+path into Rust (indexed equality traverses the durable `__gecko_index` table in one FRB hop;
+unindexed scans push the predicate to Rust via `predicate.rs`). The thin-client rule below is the
+permanent contract: **Dart authors and orchestrates; Rust computes.** M7.5 removed the last Dart
+backend; **M8–M11 finish thinning Dart** so that storage, query, reactive, engine, and relationship
+computation all execute in Rust.
+
+**Thin-client rule (applies to every open milestone).** Dart is a *thin client* over Rust. What may
+live in Dart:
+
+- the public API surface (`Database`/`Collection`/`Query`/`Transaction`/`Change`/`Stream`s);
+- query **authoring** — `Filter`/`FilterGroup`, the `Query` builder (`where`/`range`/`prefix`/`sort`/
+  `limit`/`offset`), `SortSpec` — the input DSL that `encodePredicate`/`encodeSortSpecs` serialize;
+- model mapping (`toRow`/`fromRow`, `RowSchema` validation) and consumer-facing convenience methods;
+- user-supplied callbacks and policies (migrations, sync, relationship delete behavior, conflicts);
+- transport/lifecycle plumbing (streams, subscriptions, worker clients, FRB wrappers, typed errors).
+
+What must execute in Rust: storage, MVCC, snapshots, indexes and repair, **predicate evaluation**,
+**sort ordering**, aggregates, change tracking, **reactive result-set maintenance and diff
+computation**, attachment/blob dedup, sync aggregation, compaction, and encryption.
+
+A milestone that adds Dart logic must justify why it cannot run in Rust. LOC is not the metric;
+**executed logic is** — any computation that runs in Dart without a Rust-owned primitive is drift.
+This rule is the acceptance test for M8–M11.
 
 ---
 
@@ -109,7 +126,7 @@ All ✅. The table names the subsystem + key proof; consult the named ADR/test f
 | Phase | What | Key ADRs / proof |
 |---|---|---|
 | 0 | Foundations: public API shape, `Op` wire format, error taxonomy, coverage gate, traceability | ADR-0001 manual mappers; ADR-0002 wire v1; ADR-0004 error envelope; `tool/api_snapshot.dart`, `tool/coverage_gate.dart` |
-| 1 | Zero-setup cross-platform distribution: federated plugins, native resolver, OPFS web worker | ADR-0012 artifact matrix, ADR-0013 web glue; iOS explicitly CI-pending (see M9) |
+| 1 | Zero-setup cross-platform distribution: federated plugins, native resolver, OPFS web worker | ADR-0012 artifact matrix, ADR-0013 web glue; iOS explicitly CI-pending (see M12) |
 | 2 | Core engine: Rust `redb` worker, single-writer, MVCC, historical in-memory backend, crash recovery | ADR-0003 worker isolate, ADR-0005 client+finalizer, ADR-0006 MVCC snapshots; `phase2_*` tests; M7.5 removes the Dart backend before release |
 | 3 | Codegen-free typed modeling: `RowSchema`, `toRow`/`fromRow`, patch, auto-ids, Tier 1 API | `phase3_integration_test.dart`, `row_schema_test.dart` |
 | 4 | Reactivity: `watch(id)` / `watchAll()` / `database.watchAll()` streams | `watch_test.dart` |
@@ -140,7 +157,7 @@ All ✅ except two explicitly-deferred items (noted ☐).
 - **WS6** ✅ API/docs/examples/compat (`docs/api.md`, `migration-from-hive.md`, `policies.md`,
   `compatibility.md`, traceability checker).
 - **WS7** Cross-platform matrix: Windows x64 + 4 Android ABIs + web ✅ built/bundled; Linux/macOS CI
-  jobs ✅; **iOS ☐ CI-pending** (needs FRB iOS plugin scaffold — carried into M9).
+  jobs ✅; **iOS ☐ CI-pending** (needs FRB iOS plugin scaffold — carried into M12).
 - **WS8** ✅ Reliability/security/perf qualification: randomized (4 seeds × 120 steps; long 24×800),
   crash-injection, parallel, differential, large-data (100k+), soak, perf baselines, security review.
   494+ package + 32 tool tests; 95% line / 100% branch coverage gate.
@@ -179,13 +196,14 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6.5 done; M7 core done; M7.1 next;
-> M7.5 follows; M8–M10 open). Each milestone has a goal, concrete steps, a "done when" check, and —
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6.5 done; M7 core done; M7.1 done;
+> M7.5 done; M8 done; M9–M13 open). Each milestone has a goal, concrete steps, a "done when" check, and —
 > where it moves Dart→Rust — an ROI note and the Rust tests + Dart deletions it requires.
 >
-> **Ordering.** M3 gates M4–M7 (read-path completion must finish before sort/limit/migration cleanup
-> build on it). M7 must establish the native execution boundary before M8 changes reactivity semantics.
-> **M9 can start immediately in parallel** with anything.
+> **Ordering.** M3 gates M4–M7. M7 established the native execution boundary; **M8 built the
+> Rust-owned reactive registry** (the provisional Dart-side invalidation is superseded and deleted).
+> M9–M11 strip the remaining Dart-side computation (query → engine → relationships). **M12 can start
+> immediately in parallel** with anything.
 
 ### M3 — Read-path completion + `getMany` (projection & batch reads)  ✅ done (ADR-0018)
 
@@ -573,46 +591,120 @@ The exact count is recorded after implementation.
 no public in-memory mode or Dart storage engine remains; Web OPFS persistence and smoke tests pass; all
 native/Web parity, lifecycle, file-cleanup, encryption, API, coverage, FRB, Rust, and release gates pass.
 
-### M8 — Incremental reactivity  ✅
+### M8 — Incremental reactivity: Rust-owned reactive registry  ✅
 
-**Goal:** a write updates only the live result sets it can affect (not a full re-evaluation).
+**Goal:** a write updates only the live result sets it can affect, with the reactive computation
+**owned by Rust** — Dart is a thin forwarding client. Same done-when as the provisional Dart phase (the
+update cost does not grow with the size of the watched collections), with result-set maintenance,
+predicate re-evaluation, sort-position, and diff computation all executing in the worker.
+
+**Context — the provisional Dart phase is superseded.** A Dart implementation landed first
+(ADR-0029 v1, commit `acb02c9`) and was the lifecycle-locking step: it pinned the reactive contract
+(coalescing, ordering, cancellation, backpressure, replay), produced the done-when benchmark
+(`benchmark/m8_reactivity.dart`) and the single-hop `RawBackend.getMany` primitive, and its behavioral
+tests (`m8_reactivity_test.dart`) pin the observable contract. Those behavioral tests and the
+benchmark pass unchanged against the Rust registry; the Dart invalidation code is deleted.
+
+**Status (complete, ADR-0030):**
+- ✅ **Rust registry** (`rust/src/registry.rs`): non-durable `LiveRegistry` in the worker; registration
+  = (id, table, predicate bytes, sort spec, kind). `apply_batch_reactive` collects affected keys +
+  cleared tables, re-evaluates each touched registration in the same write transaction, and returns
+  one `RegistryDelta` (added/updated/removed/snapshot/unchanged) per registration — no Dart predicate
+  evaluation or result-set maintenance remains.
+- ✅ **Lifecycle wired**: Dart `StreamController.onListen`/`onCancel` call
+  `registerLiveQuery`/`unregisterLiveQuery`; deltas forward over `RawEngine.liveDeltas` at the same
+  point as the change feed (same order); coalescing, ordering, cancellation, backpressure, replay
+  unchanged. Subscribe-before-register + closed-controller guards make the async registration race-safe.
+- ✅ **Dart invalidation deleted**: `MaterializedRows`, `_applyChanges`, `_applyDiffChanges`,
+  `_applyQueryChanges`, `_upsertSorted`/`_lowerBound`/`_indexOfKey`, and the Dart diff computation are
+  removed. Dart maps worker deltas through `fromRow` only.
+- ✅ **Public surface (additive)**: `RawBackend.getMany` (single hop), `registerLiveQuery`,
+  `unregisterLiveQuery`, `liveQueryCount`; `ApplyBatchResult`, `RegistryDelta`,
+  `LiveQueryRegistration`, `LiveQueryKind`; API snapshot regenerated (export-line-only change).
+- ✅ **Rust tests**: 7 registry tests (register/unregister, join/leave/update, whole-table clear,
+  sorted comparator insertion, idempotent-write suppression, batch coalescing, unrelated-table
+  isolation) — 63 Rust unit tests total, clippy clean.
+- ✅ **Gates**: `dart analyze` clean; 481 package tests (incl. `m8_reactivity_test.dart` 8/8 and the
+  encrypted/compaction/reopen soak); coverage 95.0% line / 100% branch; tool tests 32; API contract
+  gate; offline lint; traceability 12; security review (4 pre-existing advisories); FRB bindings in
+  sync; bundled native artifact rebuilt.
+- ✅ **Done-when measured** by `benchmark/m8_reactivity.dart`: with 6 live filtered queries and a
+  single-row write, update latency is flat across a 5x collection size (10k vs 50k: p50 ratio ~1.0x,
+  avg ~1.0x) and `scannedRows == 0` — no full re-evaluation, computation in Rust.
+- ⚠️ `tool/perf_gate.dart` remains blocked by environmental machine load (see the M7.5 note); the M8
+  `watch` workload does strictly fewer native ops than the prior full re-evaluation.
+
+### M9 — Query-execution thinning (Dart executes no query semantics)  ☐
+
+**Goal:** after M8, `query_impl.dart` (~1000 LOC) contains no query *semantics* — it is routing,
+orchestration, and model mapping. Today it still executes predicate and sort logic in Dart, which
+
+**Goal:** after M8, `query_impl.dart` (~1000 LOC) contains no query *semantics* — it is routing,
+orchestration, and model mapping. Today it still executes predicate and sort logic in Dart, which
+violates the thin-client rule.
 
 **Steps:**
-1. Consume M7's documented change metadata handoff (changed row keys, indexed fields, and batch
-   metadata); do not assume a Rust query registry exists.
-2. Define query registration, identity, lifecycle, cancellation, backpressure, replay, and snapshot
-   semantics before moving invalidation computation.
-3. Compute which indexes/queries are affected and update only those result sets (start in Dart; move
-   pure candidate computation to Rust only after the lifecycle contract is locked).
-4. Preserve the coalesced single-event-per-batch behavior; only the per-query work changes.
+1. **Unbounded sorted queries sort in Rust.** `_scanWith` currently calls
+   `decoded.sort(_compareDecoded)` (`compareRows`) in Dart for unbounded sorted queries; route *every*
+   sorted query through the Rust `query_sorted` / `query_indexed_ordered` primitives (today only
+   windowed sorts use them) and delete the Dart execution comparator.
+2. **Remove the Dart predicate recheck.** The unwindowed indexed-eq path re-tests
+   `_group.test(item.row)` in Dart; make the native primitives apply the complete predicate in Rust
+   (as the windowed route already does) and delete the Dart re-test.
+3. **Audit every `FilterGroup.test` / `_compareDecoded` call site.** `Filter`/`FilterGroup`/`SortSpec`
+   remain as the public authoring DSL that `encodePredicate`/`encodeSortSpecs` serialize — never as
+   execution.
 
-**Done when:** with N live filtered queries and a single-row write, the update cost does not grow with
-the size of the watched collections.
+**Rust tests required:** sorted-no-limit parity with the documented comparator order; indexed-eq plus a
+secondary predicate; plan attribution (`IndexPlan`) unchanged.
 
-**Status (accepted, ADR-0029):**
-- ✅ ADR-0029 `docs/adr/0029-m8-incremental-reactivity.md` records the incremental design.
-- ✅ `MaterializedRows` (byte-key-ordered `SplayTreeMap` cache) added under
-  `packages/gecko_db/lib/src/reactive/`.
-- ✅ `watchAll()` / `watchAllDiff()` populate once (`rawScanAll`) then apply each coalesced batch via
-  ONE batched point read (`RawBackend.getMany`, added for M8 — a single Rust read transaction, one
-  FRB hop) and re-emit; whole-table clears reset the cache; unchanged-value diffs emit nothing.
-- ✅ `query.where(...).watch()` materializes once, then re-tests only the changed keys against the
-  filter and updates the byte-key cache; sorted queries keep a comparator-ordered list with
-  binary-search insert. Windowed (limit/offset) queries keep full re-evaluation (documented).
-- ✅ Coalescing, ordering (byte-key parity with `getAll()`/`findAll()`), cancellation, and clear
-  handling covered by `packages/gecko_db/test/m8_reactivity_test.dart` (8 tests).
-- ✅ Done-when measured by `benchmark/m8_reactivity.dart`: with 6 live filtered queries and a
-  single-row write, update latency is flat across a 5x collection size (10k vs 50k: p50 ratio
-  ~1.0x, avg ratio ~1.0x) and `scannedRows` stays 0 — no full re-evaluation.
-- ✅ Gates: `dart analyze` clean; 481 package tests; coverage 95.0% line / 100% branch; API contract
-  gate (no public contract changes); tool tests 32; offline lint; traceability 12; security review
-  (4 pre-existing advisories); Rust 56 tests + clippy clean; bindings in sync.
-- ⚠️ `tool/perf_gate.dart` is currently blocked by environmental machine load (all workloads —
-  including untouched query paths — regress ~1.5–2x while this machine runs the editor + browser);
-  re-run on an idle machine. The M8 `watch` workload performs strictly fewer native ops than the
-  prior full re-evaluation (1 point-read batch vs 1 full scan per write).
+**Done when:** no Dart execution path evaluates a predicate or orders rows; all query semantics
+(predicate, sort, window, aggregate) execute in Rust; parity tests pass.
 
-### M9 — Mechanical completion (can run in parallel with M3–M8)  ☐
+### M10 — Engine-logic thinning (`database_impl.dart` audit)  ☐
+
+**Goal:** `database_impl.dart` (2825 LOC) is orchestration, policy, model mapping, and transport —
+not storage or aggregation computation.
+
+**Steps:**
+1. **Change-log pruning in Rust.** The pending-sync change log is pruned today by a Dart
+   `rawScanAll(geckoChangeLogTable)` per commit; move retention (count/age) pruning into the Rust
+   commit path.
+2. **Attachment/blob dedup in Rust.** Attachment scanning and blob reference-counting currently read
+   `geckoAttachmentTable` in Dart; move dedup/orphan computation into Rust, keeping the attachment
+   metadata API in Dart.
+3. **Sync-state aggregation in Rust.** Pending-change aggregation and idempotency handling move to
+   Rust primitives; Dart keeps the small sync API and policy hooks.
+4. **Audit the remainder.** Transaction orchestration, migration orchestration, conflict handling,
+   cursor paging state — keep orchestration and user callbacks in Dart; move any remaining storage or
+   aggregation computation to Rust primitives.
+
+**Rust tests required:** pruning retention under large logs; attachment dedup + orphan cleanup;
+sync-state aggregation; migration batch/snapshot semantics.
+
+**Done when:** `database_impl.dart` executes no storage or aggregation computation — only
+orchestration, policy, model mapping, and transport; lifecycle + parity tests pass.
+
+### M11 — Relationship-execution thinning  ☐
+
+**Goal:** `relationship_manager.dart` (715 LOC) holds declarations, policies, and model mapping only;
+all candidate retrieval/traversal executes in Rust.
+
+**Steps:**
+1. **Audit remaining Dart-side relationship computation.** M7.1 Slice 3 already moved `parent()`,
+   `loadAllChildren()`, `rightIds()`/`leftIds()` to Rust; find any remaining Dart candidate
+   computation, traversal, or delete-policy execution that Rust can own.
+2. **Move FK candidate retrieval/traversal to Rust** snapshot-bound primitives where it still runs in
+   Dart.
+3. Keep in Dart: relationship declarations, delete behaviors, policy decisions, model mapping, and the
+   reactive stream lifecycle.
+
+**Rust tests required:** the full relationship matrix (indexed/unindexed children, many-to-many,
+missing FK, delete policies) with plan/parity assertions.
+
+**Done when:** no Dart relationship computation remains; Dart holds declarations and policies only.
+
+### M12 — Mechanical completion (can run in parallel with M3–M11)  ☐
 
 1. Stand up the full six-platform matrix against the single shared integration suite; **bring iOS CI up**
    (the one ☐ from WS7).
@@ -622,7 +714,7 @@ the size of the watched collections.
 4. Complete the 12-criteria traceability table + a script asserting every listed test exists/passes.
 5. Automate dependency, Rust, and license audits in CI.
 
-### M10 — Release hygiene  ☐
+### M13 — Release hygiene  ☐
 
 1. Lock native-artifact distribution: remove the runtime network-download fallback for release builds
    (air-gapped environments, macOS Gatekeeper), keeping static bundling + explicit local paths.
@@ -641,10 +733,11 @@ documented.
 - The §0 design principles (single writer, always batched, coverage gate, file-format contract) apply
   unchanged.
 - **M3 gates M4–M7** (read-path completion must finish before sort/limit/migration cleanup build on it).
-  **M7 gates the M8 invalidation handoff**; M8 owns query registration and reactive lifecycle semantics.
-  **M9 can start immediately in parallel.**
-- Every Dart→Rust move (M7) lands with Rust unit tests first; Dart code is deleted only after the Rust
-  path is green and parity tests pass.
+  **M7 gates the M8 reactive registry** (the native execution boundary must exist first). **M8–M11 are
+  the Dart-thinning sequence** (registry ✅ → query → engine → relationships); each lands with Rust tests
+  first, then deletes the Dart it replaces. **M12 can start immediately in parallel.**
+- Every Dart→Rust move (M7, M8–M11) lands with Rust unit tests first; Dart code is deleted only after
+  the Rust path is green and parity tests pass.
 - FRB codegen: after changing `rust/src/api.rs`, run
   `flutter_rust_bridge_codegen generate --config-file frb.yaml`, then
   `dart run tool/build_artifacts.dart build windows-x64 --out=build/native` + `bundle --from=build/native`
@@ -677,7 +770,7 @@ Before publishing a production release, require all answers below to be "yes":
 - [ ] Public API snapshot reviewed; all changes have ADR/release-note coverage.
 - [ ] File format, wire protocol, native artifact, and package compatibility matrix is current.
 - [ ] Generated bindings are reproducible and committed/packaged correctly.
-- [ ] Every supported platform has a checksum-verified artifact + clean consumer fixture (iOS = M9).
+- [ ] Every supported platform has a checksum-verified artifact + clean consumer fixture (iOS = M12).
 - [ ] Dart and Rust analyzers, tests, coverage, and lint gates pass.
 - [ ] Shared file-backed contract suite passes (native files ↔ Web/OPFS); no Dart in-memory backend remains.
 - [ ] Crash-recovery and reopen drills pass at fixed seeds.
@@ -743,7 +836,7 @@ GECKO_LONG_TEST=1 dart test packages/gecko_db/test/phase14_*_ws8_test.dart
 | Concern | Path |
 |---|---|
 | Public API | `packages/gecko_db/lib/gecko_db.dart` (barrel + `show:` exports) |
-| Query engine (Dart) | `packages/gecko_db/lib/src/query/query_impl.dart` |
+| Query client (Dart routing) / engine (Rust) | `query_impl.dart` (client) ↔ `rust/src/worker.rs` |
 | Predicate wire codec (Dart→Rust) | `packages/gecko_db/lib/src/query/predicate_codec.dart` |
 | Durable-index eq bounds | `packages/gecko_db/lib/src/query/durable_index_bounds.dart` |
 | Native backend | `packages/gecko_db/lib/src/backend/native_raw_backend.dart` |
