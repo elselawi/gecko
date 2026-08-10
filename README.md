@@ -35,7 +35,7 @@ roadmap and staged migration plan.
 | Phase | What | State |
 |-------|------|-------|
 | 0 | Foundations & contracts (API, error taxonomy, wire format, ADRs, coverage gate) | ✅ |
-| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; **web engine live-validated** (OPFS persistence in a Worker, ADR-0013); iOS explicitly CI-pending |
+| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS release-matrix jobs (manual trigger); **web engine live-validated** (OPFS persistence in a Worker, ADR-0013); iOS explicitly release-pending |
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ✅ Rust/redb native file backend (M7.5: no Dart storage engine) |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
@@ -323,7 +323,7 @@ plan.md                   The full, versioned roadmap
 | Package / wire / file format | `0.0.1` / `1` / `1` (redb 4.1.0) |
 | Native build id | `0.0.1+rust` |
 | Dart SDK | `^3.10.8` |
-| Platforms | Windows ✅ · Android ✅ (4 ABIs) · Web ✅ (wasm engine + OPFS, live-validated) · Linux/macOS ⬜ CI jobs written · iOS ⬜ explicitly CI-pending |
+| Platforms | Windows ✅ · Android ✅ (4 ABIs) · Web ✅ (wasm engine + OPFS, live-validated) · Linux/macOS ⬜ release-matrix jobs (manual trigger) · iOS ⬜ explicitly release-pending |
 
 See [docs/compatibility.md](docs/compatibility.md) for the full table and
 rules. Forward reads are supported; a newer incompatible file fails with a
@@ -354,7 +354,8 @@ verified by `dart run tool/traceability_check.dart`:
 ## Performance, reliability & security qualification
 
 Workstream 8 + Phase 13 add a self-contained qualification suite (all run from
-the repo root; long modes via `GECKO_LONG_TEST=1`, nightly in CI):
+the repo root; long modes via `GECKO_LONG_TEST=1`, via
+`dart run tool/release_checklist.dart --long`):
 
 | Area | Command / file | What it proves |
 |---|---|---|

@@ -8,7 +8,7 @@
 // record scale.
 //
 // The seed set is fixed so a regression reproduces; set `GECKO_LONG_TEST=1`
-// (nightly) to sweep more seeds and more steps per seed.
+// (release checklist --long) to sweep more seeds and more steps per seed.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';

@@ -18,7 +18,7 @@
 // (secret literals, key logging). Run from the repo root:
 //   dart run tool/security_review.dart
 //
-// CI runs this in the dart-quality job; it must stay green for every push.
+// The release checklist runs this before every release; it must stay green.
 import 'dart:io';
 
 import 'package:path/path.dart' as p;

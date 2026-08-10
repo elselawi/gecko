@@ -20,7 +20,8 @@ or `flutter pub add gecko_db` and it works everywhere.
 ## 0. Design Principles (apply to everything below)
 
 1. **No consumer-facing Rust, FFI, or build steps.** All FRB codegen and native compilation happens once,
-   in the `gecko-db` repo's own CI, producing prebuilt artifacts. Consumers never run `cargo`,
+   in the repo's **release-only CI workflow** (manual trigger) or the maintainer's manual build,
+   producing prebuilt artifacts. Consumers never run `cargo`,
    `flutter_rust_bridge_codegen`, or `build_runner`.
 2. **No reflection-based or annotation+codegen modeling.** Models are plain Dart classes with a small,
    hand-written mapping function pair (`toRow`/`fromRow`). Normal Dart code, not a generation step.
@@ -31,8 +32,9 @@ or `flutter pub add gecko_db` and it works everywhere.
    long-lived worker owning the `redb::Database` handle. Dart never holds a transaction handle across an
    FFI/message boundary — a full batch of operations crosses in one call and is applied in one
    `WriteTransaction`.
-5. **Coverage gate.** CI enforces line+branch coverage ≥ 95% for the Dart package (`dart test --coverage`,
-   `format_coverage`, `tool/coverage_gate.dart`) and a Rust gate (`cargo llvm-cov`/`grcov`). Most
+5. **Coverage gate.** The release checklist enforces line+branch coverage ≥ 95% for the Dart package
+   (`dart test --coverage`, `format_coverage`, `tool/coverage_gate.dart`) and a Rust gate
+   (`cargo llvm-cov`/`grcov`). Most
    invariants, crash tests, and performance logic live in Rust, so a Dart-only gate would not protect
    the engine.
 6. **Everything is a file-format contract.** A database is a sequence of `(commit LSN → byte ranges,
@@ -105,12 +107,14 @@ references them; where older text conflicts, the contract wins.
 | Package | Type | Purpose |
 |---|---|---|
 | `gecko_db` | Pure Dart | Public API: `Database`, `Collection`, `Query`, `Transaction`, `Change`, `SyncState`. Platform-agnostic. |
-| `gecko_db_rust` (rust/) | Rust (unpublished) | `redb` wrapper: worker, indexing, change tracking, encryption, query fast path. Compiled only in CI. |
+| `gecko_db_rust` (rust/) | Rust (unpublished) | `redb` wrapper: worker, indexing, change tracking, encryption, query fast path. Compiled by the release-only CI workflow (manual trigger) / maintainer manual build. |
 | `gecko_db_android` / `_ios` / `_macos` / `_windows` / `_linux` | Flutter federated plugins | Bundle prebuilt native library (artifact matrix in `tool/build_artifacts.dart`). |
 | `gecko_db_web` | Federated plugin + wasm asset | Bundles the compiled wasm engine + OPFS Web Worker glue. |
 
 Bundled artifacts live under `packages/gecko_db/lib/native/{windows,android,web}/…`. The Windows x64 DLL
-is built + bundled in-repo; other platforms are built in CI (`.github/workflows/release-matrix.yml`).
+is built + bundled in-repo; other platforms are built by the release-only CI workflow
+(`.github/workflows/release-matrix.yml`, manual trigger) so non-Windows/Apple targets are produced and
+verified on hardware the maintainer does not own.
 
 ---
 
@@ -126,7 +130,7 @@ All ✅. The table names the subsystem + key proof; consult the named ADR/test f
 | Phase | What | Key ADRs / proof |
 |---|---|---|
 | 0 | Foundations: public API shape, `Op` wire format, error taxonomy, coverage gate, traceability | ADR-0001 manual mappers; ADR-0002 wire v1; ADR-0004 error envelope; `tool/api_snapshot.dart`, `tool/coverage_gate.dart` |
-| 1 | Zero-setup cross-platform distribution: federated plugins, native resolver, OPFS web worker | ADR-0012 artifact matrix, ADR-0013 web glue; iOS explicitly CI-pending (see M12) |
+| 1 | Zero-setup cross-platform distribution: federated plugins, native resolver, OPFS web worker | ADR-0012 artifact matrix, ADR-0013 web glue; iOS release job pending FRB iOS plugin scaffold (see M12) |
 | 2 | Core engine: Rust `redb` worker, single-writer, MVCC, historical in-memory backend, crash recovery | ADR-0003 worker isolate, ADR-0005 client+finalizer, ADR-0006 MVCC snapshots; `phase2_*` tests; M7.5 removes the Dart backend before release |
 | 3 | Codegen-free typed modeling: `RowSchema`, `toRow`/`fromRow`, patch, auto-ids, Tier 1 API | `phase3_integration_test.dart`, `row_schema_test.dart` |
 | 4 | Reactivity: `watch(id)` / `watchAll()` / `database.watchAll()` streams | `watch_test.dart` |
@@ -156,8 +160,9 @@ All ✅ except two explicitly-deferred items (noted ☐).
   counters, `QueryStageTimings`).
 - **WS6** ✅ API/docs/examples/compat (`docs/api.md`, `migration-from-hive.md`, `policies.md`,
   `compatibility.md`, traceability checker).
-- **WS7** Cross-platform matrix: Windows x64 + 4 Android ABIs + web ✅ built/bundled; Linux/macOS CI
-  jobs ✅; **iOS ☐ CI-pending** (needs FRB iOS plugin scaffold — carried into M12).
+- **WS7** Cross-platform matrix: Windows x64 + 4 Android ABIs + web ✅ built/bundled; Linux/macOS
+  release-matrix jobs ✅ (execute on manual trigger); **iOS ☐ release job pending** (needs FRB iOS
+  plugin scaffold — carried into M12).
 - **WS8** ✅ Reliability/security/perf qualification: randomized (4 seeds × 120 steps; long 24×800),
   crash-injection, parallel, differential, large-data (100k+), soak, perf baselines, security review.
   494+ package + 32 tool tests; 95% line / 100% branch coverage gate.
@@ -577,7 +582,7 @@ is wired into collection creation.
    native coverage tests.
 10. ✅ **Run release gates.** Full native tests, Rust tests, API/traceability, security, offline lint,
     coverage, artifact/binding, differential, crash/reopen, transaction, migration, relationship,
-    encryption, and cleanup gates pass (web smoke CI updated for the OPFS suites).
+    encryption, and cleanup gates pass (web smoke suites updated for the OPFS path).
 
 **What remains in Dart:** public API, query authoring, model mapping, migration callbacks, reactive
 stream lifecycle, relationship declarations/policies, typed errors, and Web Worker/client integration.
@@ -757,13 +762,28 @@ missing FK, delete policies) with plan/parity assertions.
 
 ### M12 — Mechanical completion (can run in parallel with M3–M11)  ☐
 
-1. Stand up the full six-platform matrix against the single shared integration suite; **bring iOS CI up**
-   (the one ☐ from WS7).
-2. Extend the comparative benchmark (`benchmark/comparative.dart`) with Isar, Drift, and SQLite
-   (sqflite / sqlite3) under identical fixtures (currently Hive CE + Sembast).
-3. Build a doc-test harness that extracts every documented snippet and runs it in CI.
-4. Complete the 12-criteria traceability table + a script asserting every listed test exists/passes.
-5. Automate dependency, Rust, and license audits in CI.
+1. **Release-only CI** (the ONLY CI — adopted decision). One workflow,
+   `.github/workflows/release-matrix.yml`, triggered **manually**
+   (`workflow_dispatch`), builds + verifies the native artifact per platform
+   (Windows, Linux, macOS x64/arm64, Android 4 ABIs, Web/OPFS), runs the
+   consumer fixture + shared conformance suite, and uploads artifacts. CI
+   exists for exactly two things the maintainer cannot do locally: **Apple
+   hardware** (macOS runners) and **per-platform artifact proof**. It runs no
+   quality gates and nothing on push/PR. **iOS remains ☐** until the FRB iOS
+   plugin scaffold lands; add an iOS job here when it does.
+2. **Single-command local release checklist** — `tool/release_checklist.dart`
+   runs every quality gate locally (analyze, full tests, tool tests, coverage
+   gate, offline lint, security review, traceability, API snapshot + contract
+   gate, check-bindings, Rust check/test/clippy; `--long` adds the WS8 heavy
+   suite, `--perf` the strict perf gate, `--rust-coverage` the Rust coverage
+   gate). The release owner runs it before every release; a release only ships
+   when it is green.
+3. Extend the comparative benchmark (`benchmark/comparative.dart`) with Isar,
+   Drift, and SQLite (sqflite / sqlite3) under identical fixtures (currently
+   Hive CE + Sembast).
+4. **Local doc-test harness** (extract every documented snippet and run it) and
+   **local audits** (dependency `dart pub outdated`, `cargo audit`, license
+   review) as checklist steps — not CI jobs.
 
 ### M13 — Release hygiene  ☐
 
@@ -833,7 +853,8 @@ Before publishing a production release, require all answers below to be "yes":
 - [ ] Security, dependency, license, and artifact audits pass.
 - [ ] Changelog, migration notes, rollback plan, support policy, and disclosure contact are published.
 
-The release owner attaches CI run URLs, artifact manifest, coverage reports, benchmark report,
+The release owner attaches the release-workflow run URL(s), the local release-checklist output
+(`dart run tool/release_checklist.dart`), artifact manifest, coverage reports, benchmark report,
 crash-drill seeds/results, compatibility matrix, and traceability report. If an item is intentionally
 not supported, label it unsupported rather than silently shipping a partial guarantee.
 
@@ -843,7 +864,15 @@ not supported, label it unsupported rather than silently shipping a partial guar
 # Bootstrap
 dart pub get
 
-# Dart quality (must be clean before + after every change)
+# RELEASE CHECKLIST (M12): the one command that runs every quality gate.
+# CI is release-only (manual artifact matrix); nothing runs on push/PR.
+dart run tool/release_checklist.dart                 # all required gates
+dart run tool/release_checklist.dart --long          # + WS8 heavy suite
+dart run tool/release_checklist.dart --perf          # + strict perf gate
+dart run tool/release_checklist.dart --rust-coverage # + Rust coverage gate
+dart run tool/release_checklist.dart --list          # print the step list
+
+# Dart quality (also run individually during development)
 dart analyze
 dart test packages/gecko_db/test --reporter=compact            # ~35-50s, full suite
 dart test packages/gecko_db/test --concurrency=8                # concurrency check
@@ -854,7 +883,7 @@ dart run coverage:format_coverage --lcov --check-ignore \
 dart run tool/coverage_gate.dart packages/gecko_db/coverage/lcov.info
 
 # Rust quality
-cd rust && cargo fmt --check && cargo check --all-targets && cargo test && \
+cd rust && cargo check --all-targets && cargo test && \
   cargo clippy --all-targets --all-features -- -D warnings
 
 # Generated bindings (run after changing rust/src/api.rs)
@@ -863,13 +892,13 @@ dart run tool/build_artifacts.dart build windows-x64 --out=build/native
 dart run tool/build_artifacts.dart bundle --from=build/native
 dart run tool/build_artifacts.dart check-bindings    # clean-tree only
 
-# Other gates
-dart test tool
+# Other gates (note: `dart test tool` alone does not work — enumerate files)
+dart test tool/*_test.dart
 dart run tool/offline_lint.dart
 dart run tool/security_review.dart
 dart run tool/traceability_check.dart
 dart run tool/api_snapshot.dart tool/api_snapshot.txt   # commit if public API changes
-dart run tool/perf_gate.dart            # strict local; CI uses --tolerance (mem is noisy on Windows)
+dart run tool/perf_gate.dart            # strict local gate (mem is noisy on Windows)
 
 # Benchmarks (advisory breakdown harnesses; not perf_gate inputs)
 dart run benchmark/bench.dart [--native|--mem|--json]
@@ -877,9 +906,14 @@ dart run benchmark/boundary.dart [--json]          # M1 layer breakdown
 dart run benchmark/query_profile.dart              # M1/M2 per-stage split
 dart run benchmark/comparative.dart [--json]       # Hive CE + Sembast
 
-# Long/scale modes (nightly CI job ws8-long-suite)
+# Long/scale modes (pre-release; via release checklist --long)
 GECKO_LONG_TEST=1 dart test packages/gecko_db/test/phase14_*_ws8_test.dart
 # phase14_crash_injection spawns OS processes — don't run parallel with heavy tests
+
+# Release artifacts (manual trigger — GitHub → Actions → release-matrix)
+# The workflow builds+verifies+uploads each platform artifact on macOS runners
+# (Apple hardware) and others; bundle the uploaded artifacts into
+# packages/gecko_db/lib/native/ and publish.
 ```
 
 ## Appendix D — Key file map

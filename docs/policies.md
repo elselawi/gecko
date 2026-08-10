@@ -26,7 +26,7 @@ Dart/native handshake).
   migration note in `CHANGELOG.md`.
 - Deprecated APIs are removed only in the next MAJOR, and only after having
   been deprecated for at least one MINOR release cycle.
-- Public-API changes are ADR-gated: the CI contract gate
+- Public-API changes are ADR-gated: the contract gate
   (`tool/workstream0_contract_test.dart` + `tool/api_snapshot.txt`) fails when
   the public snapshot changes without an accompanying ADR or intentional
   version bump.
@@ -78,5 +78,7 @@ a hostile OS with access to process memory.
   added / changed / deprecated / removed / fixed, with links to the relevant
   ADRs.
 - Releases follow the dependency order in `plan.md` (the Production Completion
-  Runbook); a release only ships when the CI gates (analysis, tests, coverage,
-  Rust gates, bindings, doc examples, traceability) are green.
+  Runbook); a release only ships when the local release-checklist gates
+  (analysis, tests, coverage, Rust gates, bindings, doc examples, traceability)
+  are green (`dart run tool/release_checklist.dart`). CI is release-only: it
+  builds + verifies platform artifacts on manual trigger and runs no gates.

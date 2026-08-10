@@ -10,8 +10,8 @@
 //      behavior must be deterministic; wall-clock dependence is asserted to
 //      be absent via the injected clock seam.
 //
-// It is a static lint over test sources, run in CI (not a runtime check).
-// Run from the repo root:
+// It is a static lint over test sources, run by the release checklist
+// (not a runtime check). Run from the repo root:
 //   dart run tool/offline_lint.dart
 import 'dart:io';
 
@@ -38,8 +38,8 @@ Future<void> main(List<String> args) async {
   final root = Directory.current.path;
   final findings = <_Finding>[];
 
-  // Test sources: packages/*/test, tool/**/*_test.dart, examples (they run in
-  // CI as doc-tests), and benchmark/** (runs in CI as a sanity gate).
+  // Test sources: packages/*/test, tool/**/*_test.dart, examples (they run as
+  // doc-tests), and benchmark/** (runs as a sanity gate).
   final dirs = <String>['packages/gecko_db/test', 'tool', 'examples'];
   for (final dir in dirs) {
     final abs = p.join(root, dir);

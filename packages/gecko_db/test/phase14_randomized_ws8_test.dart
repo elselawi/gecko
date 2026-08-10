@@ -8,8 +8,8 @@
 // results, and a watch event count that equals the number of writes.
 //
 // The seed is fixed so any regression reproduces exactly. Set
-// `GECKO_LONG_TEST=1` (CI nightly / long runs) to scale up the number of
-// seeds and steps; the short CI run is a fast smoke over a subset.
+// `GECKO_LONG_TEST=1` (release checklist --long) to scale up the number of
+// seeds and steps; the short run is a fast smoke over a subset.
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';

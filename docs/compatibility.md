@@ -24,18 +24,18 @@ side enforces these through the compatibility handshake
 
 | Platform | Architecture | Native artifact | Status |
 |---|---|---|---|
-| Windows | x64 | `gecko_db_rust.dll` | ✅ built + verified (bundled in `lib/native/windows/x64/`; CI job `release-matrix` windows-x64) |
-| Linux | x64 | `libgecko_db_rust.so` | ⬜ CI job written (`release-matrix` linux-x64); needs a Linux runner to execute |
-| macOS | x64 / arm64 | `libgecko_db_rust.dylib` | ⬜ CI jobs written (`release-matrix` macos); need macOS runners to execute |
-| Android | arm64-v8a, armeabi-v7a, x86, x86_64 | `gecko_db_rust.so` | ✅ all 4 ABIs built + verified locally and bundled (`lib/native/android/*/`); CI job `release-matrix` android |
-| iOS | device + simulator | FRB iOS plugin artifact | ⬜ **explicitly CI-pending** — requires the FRB iOS plugin scaffold (Xcode); marked unsupported until it lands |
-| Web | wasm32 | `gecko_db_rust.js` + `gecko_db_rust_bg.wasm` | ✅ **FRB web glue + OPFS persistence implemented and live-validated** (ADR-0013): every web database is an OPFS file opened from inside a Web Worker (there is no in-memory or `:memory:` mode). Glue bundled in `lib/native/web/wasm32/`; reference worker pattern in `tool/web_smoke/opfs_worker.dart`. CI job: chromium + CDP smoke driver (see `tool/web_smoke/README.md`) |
+| Windows | x64 | `gecko_db_rust.dll` | ✅ built + verified (bundled in `lib/native/windows/x64/`; release workflow `release-matrix` windows-x64) |
+| Linux | x64 | `libgecko_db_rust.so` | ⬜ release-matrix job written (`release-matrix` linux-x64); executes on a Linux runner when the workflow is triggered manually |
+| macOS | x64 / arm64 | `libgecko_db_rust.dylib` | ⬜ release-matrix jobs written (`release-matrix` macos); execute on macOS runners (Apple hardware) when the workflow is triggered manually |
+| Android | arm64-v8a, armeabi-v7a, x86, x86_64 | `gecko_db_rust.so` | ✅ all 4 ABIs built + verified locally and bundled (`lib/native/android/*/`); release workflow `release-matrix` android |
+| iOS | device + simulator | FRB iOS plugin artifact | ⬜ **explicitly release-pending** — requires the FRB iOS plugin scaffold (Xcode) + a macOS runner; marked unsupported until it lands |
+| Web | wasm32 | `gecko_db_rust.js` + `gecko_db_rust_bg.wasm` | ✅ **FRB web glue + OPFS persistence implemented and live-validated** (ADR-0013): every web database is an OPFS file opened from inside a Web Worker (there is no in-memory or `:memory:` mode). Glue bundled in `lib/native/web/wasm32/`; reference worker pattern in `tool/web_smoke/opfs_worker.dart`. Release workflow job: chromium + CDP smoke driver (see `tool/web_smoke/README.md`) |
 | Pure Dart CLI/server | desktop | — | ✅ no artifact needed |
 
 > **Release gate:** a release is blocked if any target is skipped without being
-> explicitly marked above. iOS is explicitly marked CI-pending (not silently
-> skipped). Web is implemented and validated; the CI job runs on GitHub
-> runners once the release matrix executes.
+> explicitly marked above. iOS is explicitly marked release-pending (not silently
+> skipped). Web is implemented and validated; its release-matrix job runs on GitHub
+> runners when the workflow is triggered manually.
 
 ## Compatibility rules
 

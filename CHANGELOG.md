@@ -7,6 +7,18 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **M12 — Release-only CI + local release checklist**: the always-on quality
+  CI (`ci.yml`) is removed. The only CI left is `release-matrix.yml`, which is
+  now triggered **manually** (`workflow_dispatch`) and exists for exactly what
+  the maintainer cannot do locally — building + verifying platform artifacts
+  on GitHub's macOS runners (Apple hardware) and proving each artifact runs
+  its consumer fixture + conformance suite. All quality gates now run locally
+  in one command: `dart run tool/release_checklist.dart` (analyze, full tests,
+  tool tests, coverage gate, offline lint, security review, traceability, API
+  snapshot + contract gate, `check-bindings`, Rust check/test/clippy; `--long`
+  adds the WS8 heavy suite, `--perf` the strict perf gate, `--rust-coverage`
+  the Rust coverage gate). Docs and plan wording updated to the release-only
+  model; iOS remains release-pending (needs the FRB iOS plugin scaffold).
 - **M11 — Relationship-execution thinning**: `relationship_manager.dart` holds only declarations,
   delete-behavior policy, model mapping, and the reactive stream lifecycle — no candidate
   retrieval/classification. (1) `snapshot_relationship_children` now returns `GroupedChildEntries`

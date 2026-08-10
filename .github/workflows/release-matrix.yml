@@ -1,4 +1,10 @@
-# Workstream 7: cross-platform release matrix.
+# Workstream 7 / M12: RELEASE-ONLY CI — the only CI in the repo.
+#
+# This workflow exists for exactly two things the maintainer cannot do
+# locally: (a) run builds on Apple hardware (macOS runners, and iOS once the
+# FRB plugin scaffold lands), and (b) prove each platform artifact builds,
+# verifies, and runs the consumer fixture + shared conformance suite before it
+# is bundled into the package and published.
 #
 # For every supported target this workflow:
 #   1. builds the native artifact from a pinned Rust toolchain,
@@ -9,8 +15,13 @@
 #   6. runs the shared conformance suite,
 #   7. uploads artifacts + logs for the release.
 #
-# Targets explicitly marked "CI-pending" in docs/compatibility.md (iOS device
-# builds) are intentionally not given jobs here until the supporting
+# It is triggered MANUALLY (workflow_dispatch) — there is no CI on push/PR.
+# Every quality gate (analyze, tests, coverage, lint, contract, bindings,
+# audits) is a LOCAL step: run `dart run tool/release_checklist.dart` before
+# triggering this workflow.
+#
+# Targets explicitly marked "release-pending" in docs/compatibility.md (iOS
+# device builds) are intentionally not given jobs here until the supporting
 # sub-project lands — a release is blocked unless every target is either built
 # or explicitly marked unsupported. Web (FRB glue + OPFS) is implemented and
 # exercised by the `web` job below (wasm build + glue + headless Chromium
@@ -19,9 +30,6 @@
 name: release-matrix
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 env:
@@ -196,7 +204,7 @@ jobs:
           path: build/native/
 
   # iOS device builds require the FRB iOS plugin scaffold (Xcode) and are
-  # explicitly marked "CI-pending" in docs/compatibility.md — a release is
+  # explicitly marked "release-pending" in docs/compatibility.md — a release is
   # blocked until they are either built here or remain explicitly marked
   # unsupported. Web (FRB glue + OPFS) is fully implemented (ADR-0013) and is
   # exercised by the smoke step above; in-memory `Database.open` also works on

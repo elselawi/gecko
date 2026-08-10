@@ -2,7 +2,7 @@
 name = "gecko_db_rust"
 version = "0.0.1"
 edition = "2021"
-description = "Redb-backed engine for gecko_db. Not published; compiled only in CI."
+description = "Redb-backed engine for gecko_db. Not published; compiled by the release-only CI workflow (manual trigger) or the maintainer's manual build."
 publish = false
 
 [lib]

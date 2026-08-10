@@ -16,8 +16,9 @@
 // Notes:
 //   * Requires the release native artifact (cd rust && cargo build --release).
 //   * Bench numbers are hardware/JIT dependent; the gate is a rough
-//     regression check, not a precision instrument. CI uses a generous
-//     tolerance; --update is for intentional, reviewed performance changes.
+//     regression check, not a precision instrument. The release checklist
+//     runs the strict gate locally; --update is for intentional, reviewed
+//     performance changes.
 //   * A workload missing from the baseline is always a failure (the baseline
 //     must cover every workload the harness emits).
 

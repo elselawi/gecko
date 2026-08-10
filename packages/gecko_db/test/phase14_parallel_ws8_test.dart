@@ -8,7 +8,7 @@
 //   * every native instance persists exactly its own rows across a reopen.
 //
 // Together with the runner's `--concurrency=N`, this exercises the worker
-// isolate pool under contention (see tool/README + ci.yml).
+// isolate pool under contention (see tool/release_checklist.dart --long).
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
