@@ -28,7 +28,13 @@ import 'dart:io';
 
 /// One step of the release checklist.
 class GateStep {
-  const GateStep(this.label, this.command, {this.workingDirectory, this.env});
+  const GateStep(
+    this.label,
+    this.command, {
+    this.workingDirectory,
+    this.env,
+    this.setup,
+  });
 
   /// Human-readable label printed before the step runs.
   final String label;
@@ -42,6 +48,10 @@ class GateStep {
 
   /// Optional environment overrides (e.g. GECKO_LONG_TEST=1).
   final Map<String, String>? env;
+
+  /// Optional async setup that runs before the command — e.g. clearing stale
+  /// coverage output that would otherwise be merged into this run.
+  final Future<void> Function()? setup;
 }
 
 /// The repo root, resolved by walking up from the current working directory
@@ -172,6 +182,16 @@ List<GateStep> buildSteps({
           '--coverage=packages/gecko_db/coverage',
         ],
         workingDirectory: root,
+        // `dart test --coverage` appends per-isolate JSON and format_coverage
+        // merges EVERY file in the dir — stale output from earlier runs would
+        // dilute the gate. Start clean every time.
+        setup: () async {
+          final covDir = Directory('$root/packages/gecko_db/coverage');
+          if (covDir.existsSync()) {
+            await covDir.delete(recursive: true);
+          }
+          await covDir.create(recursive: true);
+        },
       ),
       GateStep(
         'Coverage → lcov',
@@ -260,6 +280,14 @@ List<GateStep> buildSteps({
 }
 
 Future<int> _runStep(GateStep step) async {
+  if (step.setup != null) {
+    try {
+      await step.setup!();
+    } catch (error) {
+      stderr.writeln('    setup failed: $error');
+      return 1;
+    }
+  }
   final result = await Process.run(
     step.command.first,
     step.command.skip(1).toList(),
