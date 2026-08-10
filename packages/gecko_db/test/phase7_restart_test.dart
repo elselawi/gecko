@@ -34,6 +34,9 @@ class _FailingBackend implements RawBackend {
   @override
   Future<RawSnapshot> snapshot() => _inner.snapshot();
   @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) =>
+      _inner.getMany(table, keys);
+  @override
   Future<bool> tableExists(String table) => _inner.tableExists(table);
   @override
   Future<List<String>> tables() => _inner.tables();

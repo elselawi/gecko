@@ -573,7 +573,7 @@ The exact count is recorded after implementation.
 no public in-memory mode or Dart storage engine remains; Web OPFS persistence and smoke tests pass; all
 native/Web parity, lifecycle, file-cleanup, encryption, API, coverage, FRB, Rust, and release gates pass.
 
-### M8 — Incremental reactivity  ☐
+### M8 — Incremental reactivity  ✅
 
 **Goal:** a write updates only the live result sets it can affect (not a full re-evaluation).
 
@@ -588,6 +588,29 @@ native/Web parity, lifecycle, file-cleanup, encryption, API, coverage, FRB, Rust
 
 **Done when:** with N live filtered queries and a single-row write, the update cost does not grow with
 the size of the watched collections.
+
+**Status (accepted, ADR-0029):**
+- ✅ ADR-0029 `docs/adr/0029-m8-incremental-reactivity.md` records the incremental design.
+- ✅ `MaterializedRows` (byte-key-ordered `SplayTreeMap` cache) added under
+  `packages/gecko_db/lib/src/reactive/`.
+- ✅ `watchAll()` / `watchAllDiff()` populate once (`rawScanAll`) then apply each coalesced batch via
+  ONE batched point read (`RawBackend.getMany`, added for M8 — a single Rust read transaction, one
+  FRB hop) and re-emit; whole-table clears reset the cache; unchanged-value diffs emit nothing.
+- ✅ `query.where(...).watch()` materializes once, then re-tests only the changed keys against the
+  filter and updates the byte-key cache; sorted queries keep a comparator-ordered list with
+  binary-search insert. Windowed (limit/offset) queries keep full re-evaluation (documented).
+- ✅ Coalescing, ordering (byte-key parity with `getAll()`/`findAll()`), cancellation, and clear
+  handling covered by `packages/gecko_db/test/m8_reactivity_test.dart` (8 tests).
+- ✅ Done-when measured by `benchmark/m8_reactivity.dart`: with 6 live filtered queries and a
+  single-row write, update latency is flat across a 5x collection size (10k vs 50k: p50 ratio
+  ~1.0x, avg ratio ~1.0x) and `scannedRows` stays 0 — no full re-evaluation.
+- ✅ Gates: `dart analyze` clean; 481 package tests; coverage 95.0% line / 100% branch; API contract
+  gate (no public contract changes); tool tests 32; offline lint; traceability 12; security review
+  (4 pre-existing advisories); Rust 56 tests + clippy clean; bindings in sync.
+- ⚠️ `tool/perf_gate.dart` is currently blocked by environmental machine load (all workloads —
+  including untouched query paths — regress ~1.5–2x while this machine runs the editor + browser);
+  re-run on an idle machine. The M8 `watch` workload performs strictly fewer native ops than the
+  prior full re-evaluation (1 point-read batch vs 1 full scan per write).
 
 ### M9 — Mechanical completion (can run in parallel with M3–M8)  ☐
 

@@ -295,6 +295,10 @@ class _ThrowingBatchBackend implements RawBackend {
   Future<RawSnapshot> snapshot() => _delegate.snapshot();
 
   @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) =>
+      _delegate.getMany(table, keys);
+
+  @override
   Future<bool> tableExists(String table) => _delegate.tableExists(table);
 
   @override

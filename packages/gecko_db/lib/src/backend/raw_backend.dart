@@ -110,6 +110,14 @@ abstract class RawBackend {
   /// Captures a consistent snapshot for reading.
   Future<RawSnapshot> snapshot();
 
+  /// M8: batched point-read without an explicit snapshot handle. Reads all
+  /// [keys] in [table] under ONE consistent read transaction, returning
+  /// `(key, value)` pairs for keys that exist in input order; absent keys are
+  /// omitted. On the native backend this is a single boundary crossing (one
+  /// Rust read transaction), so the incremental watch path can apply a change
+  /// batch at one FRB hop instead of create-snapshot + read + drop-snapshot.
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys);
+
   /// Whether a table exists (used to distinguish missing-table reads).
   Future<bool> tableExists(String table);
 

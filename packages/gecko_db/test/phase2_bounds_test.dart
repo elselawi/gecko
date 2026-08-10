@@ -95,6 +95,10 @@ class _DelayedBackend implements RawBackend {
   Future<RawSnapshot> snapshot() => delegate.snapshot();
 
   @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) =>
+      delegate.getMany(table, keys);
+
+  @override
   Future<bool> tableExists(String table) => delegate.tableExists(table);
 
   @override

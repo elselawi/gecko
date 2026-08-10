@@ -189,6 +189,23 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     );
   }
 
+  /// M8: single-hop batched point-read — all [keys] are read under ONE Rust
+  /// read transaction (consistent batch read) with a single FRB boundary
+  /// crossing and no snapshot create/drop. See [RawBackend.getMany].
+  @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) async {
+    if (keys.isEmpty) return const [];
+    try {
+      final pairs = await _worker.getMany(
+        table: table,
+        keys: [for (final k in keys) k.bytes],
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
   /// M7: verifies and atomically repairs the durable index entries for [table]
   /// from the primary rows in Rust. Native queries do not rebuild a Dart index.
   Future<void> repairIndex({

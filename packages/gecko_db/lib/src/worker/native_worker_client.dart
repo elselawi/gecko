@@ -299,6 +299,21 @@ class NativeWorkerClient {
     ];
   }
 
+  /// M8: batched point-read (no explicit snapshot handle) — fetches N keys in
+  /// ONE read transaction, returning `(key, row)` pairs for keys that exist.
+  /// Absent keys are omitted; a missing table is an empty result. Used by the
+  /// incremental watch path to keep per-batch update cost at a single FRB hop.
+  Future<List<(List<int>, List<int>)>> getMany({
+    required String table,
+    required List<List<int>> keys,
+  }) async {
+    final result = await _request('getMany', <Object?>[table, keys]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   Future<List<(List<int>, List<int>)>> rangeScan({
     required String table,
     List<int>? start,

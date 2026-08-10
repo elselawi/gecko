@@ -16,6 +16,7 @@ import '../backend/native_raw_backend.dart' show NativeRawSnapshot;
 import '../backend/raw_backend.dart';
 import '../errors/errors.dart';
 import '../raw/raw_engine.dart';
+import '../reactive/materialized_rows.dart';
 import '../wire/wire_codec.dart';
 import 'durable_index_bounds.dart';
 import 'filter.dart';
@@ -730,23 +731,149 @@ class QueryImpl<T> implements Query<T> {
 
   /// Reactive filtered query: re-emits the matching list whenever a change in
   /// this collection might affect membership.
+  ///
+  /// M8: unbounded queries update incrementally — each changed key is point
+  /// read once per batch and re-tested against the filter, so the update cost
+  /// does not grow with the watched collection size. Windowed queries
+  /// (limit/offset) re-evaluate because a window can reorder under a write.
   @override
   Stream<List<T>> watch() {
     late StreamController<List<T>> controller;
     late StreamSubscription<ChangeSet> sub;
+    final incremental = _limit == null && (_offset ?? 0) == 0;
     controller = StreamController<List<T>>(
-      onListen: () async {
-        // Emit current snapshot immediately.
-        unawaited(findAll().then(controller.add));
-        sub = _engine.changes.stream.listen((ChangeSet changeSet) {
-          if (changeSet.changes.any((Change c) => c.table == _table)) {
-            unawaited(_decodeSnapshot().then(controller.add));
+      onListen: () {
+        if (!incremental) {
+          // Emit current snapshot immediately (full re-evaluation per change).
+          unawaited(findAll().then(controller.add));
+          sub = _engine.changes.stream.listen((ChangeSet changeSet) {
+            if (changeSet.changes.any((Change c) => c.table == _table)) {
+              unawaited(_decodeSnapshot().then(controller.add));
+            }
+          });
+          return;
+        }
+        final sorted = _sort.isNotEmpty;
+        // Byte-key-ordered matching cache; sorted queries additionally keep a
+        // comparator-ordered list.
+        final matching = MaterializedRows();
+        final sortedRows = <_Decoded>[];
+        // Serialize async updates so emissions stay in change-feed order even
+        // when the native worker round-trip completes out of order.
+        var emitting = Future<void>.value();
+        emitting = emitting.then((_) async {
+          // One-time full materialization (the only full evaluation a watch
+          // performs).
+          final initial = await _collect();
+          for (final d in initial) {
+            matching.put(d.key, d.row);
+            if (sorted) sortedRows.add(d);
           }
+          controller.add([for (final d in initial) fromRow(d.row)]);
+        });
+        sub = _engine.changes.stream.listen((ChangeSet changeSet) {
+          if (!changeSet.changes.any((Change c) => c.table == _table)) return;
+          emitting = emitting.then((_) async {
+            await _applyQueryChanges(matching, sortedRows, changeSet, sorted);
+            final out = sorted
+                ? [for (final d in sortedRows) fromRow(d.row)]
+                : [for (final row in matching.toList()) fromRow(row)];
+            controller.add(out);
+          });
         });
       },
       onCancel: () => sub.cancel(),
     );
     return controller.stream;
+  }
+
+  /// Applies [changeSet] to the query's materialized matching set: each
+  /// changed key in the watched table is point-read once from one consistent
+  /// snapshot and re-tested against the filter. Whole-table clears reset the
+  /// cache. [sortedRows] (when the query is sorted) is maintained in
+  /// comparator order alongside the byte-key cache.
+  Future<void> _applyQueryChanges(
+    MaterializedRows matching,
+    List<_Decoded> sortedRows,
+    ChangeSet changeSet,
+    bool sorted,
+  ) async {
+    final changes = [
+      for (final c in changeSet.changes)
+        if (c.table == _table) c,
+    ];
+    if (changes.isEmpty) return;
+    if (changes.any((c) => c.key == null)) {
+      matching.clear();
+      sortedRows.clear();
+      return;
+    }
+    final keys = [
+      for (final c in changes) ByteKey(_codec.encode(c.key)),
+    ];
+    // All changed keys are point-read in ONE batched call under a single
+    // Rust read transaction (consistent batch read, one FRB hop).
+    final byKey = {
+      for (final e in await _engine.backend.getMany(_table, keys)) e.key: e.value,
+    };
+    for (final c in changes) {
+      final key = ByteKey(_codec.encode(c.key));
+      final raw = byKey[key];
+      final row = raw == null ? null : _mapOf(_codec.decode(raw));
+      final matches = row != null && _group.test(row);
+      final wasMatching = matching.contains(key);
+      if (matches) {
+        matching.put(key, row);
+        if (sorted) _upsertSorted(sortedRows, key, row, wasMatching);
+      } else if (wasMatching) {
+        matching.remove(key);
+        if (sorted) _removeSorted(sortedRows, key);
+      }
+    }
+  }
+
+  /// Inserts or replaces [row] at [key] in the comparator-ordered [list].
+  void _upsertSorted(
+    List<_Decoded> list,
+    ByteKey key,
+    Map<Object?, Object?> row,
+    bool wasPresent,
+  ) {
+    final item = _Decoded(key, row);
+    if (wasPresent) {
+      final old = _indexOfKey(list, key);
+      if (old >= 0) list.removeAt(old);
+    }
+    final at = _lowerBound(list, item);
+    list.insert(at, item);
+  }
+
+  /// Removes [key] from the comparator-ordered [list].
+  void _removeSorted(List<_Decoded> list, ByteKey key) {
+    final at = _indexOfKey(list, key);
+    if (at >= 0) list.removeAt(at);
+  }
+
+  int _indexOfKey(List<_Decoded> list, ByteKey key) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key == key) return i;
+    }
+    return -1;
+  }
+
+  /// First index at which [item] would sort (using [_compareDecoded]).
+  int _lowerBound(List<_Decoded> list, _Decoded item) {
+    var lo = 0;
+    var hi = list.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (_compareDecoded(list[mid], item) < 0) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
   }
 
   Future<List<T>> _decodeSnapshot() async {

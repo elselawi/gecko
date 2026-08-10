@@ -7,6 +7,19 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M8 — Incremental reactivity** (ADR-0029): `watchAll()`, `watchAllDiff()`,
+  and `query.where(...).watch()` materialize their result sets once and then
+  update them incrementally per coalesced batch — each changed key is
+  point-read once under a single Rust read transaction (new one-hop
+  `RawBackend.getMany`) and re-tested, instead of re-running a full
+  collection scan per write. `scannedRows` stays flat under watch-only writes;
+  ordering parity with `getAll()`/`findAll()` (byte-key) and comparator order
+  for sorted queries is preserved; whole-table clears reset the caches;
+  unchanged-value diffs emit nothing; windowed (limit/offset) queries keep
+  documented full re-evaluation. New `MaterializedRows` cache helper and
+  `packages/gecko_db/test/m8_reactivity_test.dart` (8 tests); the done-when is
+  measured by `benchmark/m8_reactivity.dart` (update latency flat across a 5x
+  collection size with live filtered queries, `scannedRows == 0`).
 - **M7.5 — File-backed Rust engine consolidation complete**: the Dart
   `InMemoryBackend` and `SecondaryIndex` are deleted, and every supported store
   is Rust/redb (native file or OPFS file). `DatabaseConfig.inMemory`, the

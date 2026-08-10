@@ -56,6 +56,17 @@ Future<Object?> dispatchNativeWorker(
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
       ];
+    case 'getMany':
+      final pairs = await worker.getMany(
+        table: arguments[0] as String,
+        keys: [
+          for (final k in (arguments[1] as List))
+            Uint8List.fromList(List<int>.from(k as List)),
+        ],
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
     case 'rangeScan':
       final pairs = await worker.rangeScan(
         table: arguments[0] as String,
