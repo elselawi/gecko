@@ -29,6 +29,17 @@ const TABLE_PREFIX: &str = "__gecko_user_";
 pub(crate) type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
 pub type ByteEntry = (Vec<u8>, Vec<u8>);
 
+/// M11: one group of child rows sharing the same foreign-key value (parent
+/// id). The worker classifies matching child rows by FK so Dart receives
+/// pre-grouped candidates instead of re-decoding each row's FK field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupedChildEntries {
+    /// The encoded foreign-key value (the parent id bytes).
+    pub parent_id: Vec<u8>,
+    /// Child rows in row-key order whose FK equals [parent_id].
+    pub entries: Vec<ByteEntry>,
+}
+
 /// M8 (ADR-0030): the outcome of one committed batch — the worker sequence plus
 /// one [`crate::registry::RegistryDelta`] per touched live registration.
 #[derive(Debug, Clone)]
@@ -1351,9 +1362,11 @@ impl RedbWorker {
         Ok(Some((parent_key, parent_value.value().to_vec())))
     }
 
-    /// M7.1: returns child rows whose foreign key matches any requested
-    /// parent ID. Indexed callers supply durable index ranges; unindexed
-    /// callers supply the complete predicate and Rust evaluates it here.
+    /// M7.1/M11: returns child rows whose foreign key matches any requested
+    /// parent ID, **grouped by FK value in Rust**. Indexed callers supply
+    /// durable index ranges; unindexed callers supply the complete predicate
+    /// and Rust evaluates it here. Grouping removes the Dart-side re-decode
+    /// and classification of every candidate row.
     #[allow(clippy::too_many_arguments)]
     pub fn snapshot_relationship_children(
         &self,
@@ -1364,7 +1377,7 @@ impl RedbWorker {
         index_table: &str,
         index_ranges: &[(Vec<u8>, Vec<u8>)],
         predicate_bytes: &[u8]
-    ) -> Result<Vec<ByteEntry>, WorkerError> {
+    ) -> Result<Vec<GroupedChildEntries>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
@@ -1431,18 +1444,35 @@ impl RedbWorker {
             }
             candidates = matching;
         }
-        let mut result = Vec::new();
+        // Group matching rows by their encoded FK value. The BTreeMap keeps
+        // groups in FK-byte order and rows within a group in row-key order
+        // (candidates is a sorted BTreeSet), matching the order Dart's eager
+        // loader previously preserved when it bucketed rows itself.
+        let mut groups: BTreeMap<Vec<u8>, Vec<ByteEntry>> = BTreeMap::new();
         for row_key in candidates {
             let Some(value) = user_table
                 .get(row_key.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
-            if predicate.test_bytes(value.value()) {
-                result.push((row_key, value.value().to_vec()));
+            let row_bytes = value.value();
+            if !predicate.test_bytes(row_bytes) {
+                continue;
             }
+            let Some((start, end)) = crate::value_codec
+                ::find_field_range(row_bytes, foreign_key_field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                continue;
+            };
+            groups
+                .entry(row_bytes[start..end].to_vec())
+                .or_default()
+                .push((row_key, row_bytes.to_vec()));
         }
-        Ok(result)
+        Ok(groups
+            .into_iter()
+            .map(|(parent_id, entries)| GroupedChildEntries { parent_id, entries })
+            .collect())
     }
 
     /// M7.1: returns join IDs from a reserved many-to-many table while the
@@ -3253,9 +3283,12 @@ mod tests {
                 &crate::predicate::encode_predicate(&[])
             )
             .unwrap();
-        assert_eq!(children.len(), 2);
-        assert_eq!(children[0].0, encode_test_string("p1"));
-        assert_eq!(children[1].0, encode_test_string("p2"));
+        // M11: grouped return — one group per FK value, rows in row-key order.
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].parent_id, encode_test_string("a1"));
+        assert_eq!(children[0].entries.len(), 2);
+        assert_eq!(children[0].entries[0].0, encode_test_string("p1"));
+        assert_eq!(children[0].entries[1].0, encode_test_string("p2"));
 
         let join_rows = vec![
             op_with_table(
@@ -3332,6 +3365,144 @@ mod tests {
             crate::value_codec::decode_value(&old_parent.1).unwrap().find_field("name"),
             Some(&crate::value_codec::RowValue::String("A".into()))
         );
+        worker.drop_snapshot(snapshot);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn relationship_children_group_by_fk_in_rust() {
+        let path = temp_path("relationship-children-group");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = vec![("posts".into(), vec!["authorId".into()])];
+        let rows = vec![
+            op_with_table(
+                OpKind::Put,
+                "authors",
+                Some(encode_test_string("a1")),
+                Some(encode_test_row(&[("id", encode_test_string("a1"))])),
+            ),
+            op_with_table(
+                OpKind::Put,
+                "authors",
+                Some(encode_test_string("a2")),
+                Some(encode_test_row(&[("id", encode_test_string("a2"))])),
+            ),
+            op_with_table(
+                OpKind::Put,
+                "posts",
+                Some(encode_test_string("p1")),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("id", encode_test_string("p1")),
+                            ("authorId", encode_test_string("a1")),
+                        ]
+                    )
+                )
+            ),
+            op_with_table(
+                OpKind::Put,
+                "posts",
+                Some(encode_test_string("p2")),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("id", encode_test_string("p2")),
+                            ("authorId", encode_test_string("a1")),
+                        ]
+                    )
+                )
+            ),
+            op_with_table(
+                OpKind::Put,
+                "posts",
+                Some(encode_test_string("p3")),
+                Some(
+                    encode_test_row(
+                        &[
+                            ("id", encode_test_string("p3")),
+                            ("authorId", encode_test_string("a2")),
+                        ]
+                    )
+                )
+            ),
+            // Missing FK row must never join any group.
+            op_with_table(
+                OpKind::Put,
+                "posts",
+                Some(encode_test_string("p4")),
+                Some(encode_test_row(&[("id", encode_test_string("p4"))])),
+            ),
+        ];
+        worker.apply_batch_with_indexes(&rows, &indexes).unwrap();
+        let snapshot = worker.create_snapshot().unwrap();
+
+        let exact_a1 = index_key(
+            "posts",
+            "authorId",
+            &encode_test_string("a1"),
+            &encode_test_string("p1")
+        );
+        let record_id_a1 = encode_test_string("p1");
+        let start_a1 = exact_a1[..exact_a1.len() - record_id_a1.len()].to_vec();
+        let mut end_a1 = start_a1.clone();
+        let last_a1 = end_a1.pop().unwrap();
+        end_a1.push(last_a1 + 1);
+
+        let exact_a2 = index_key(
+            "posts",
+            "authorId",
+            &encode_test_string("a2"),
+            &encode_test_string("p3")
+        );
+        let record_id_a2 = encode_test_string("p3");
+        let start_a2 = exact_a2[..exact_a2.len() - record_id_a2.len()].to_vec();
+        let mut end_a2 = start_a2.clone();
+        let last_a2 = end_a2.pop().unwrap();
+        end_a2.push(last_a2 + 1);
+
+        // Indexed path, two parent ids: one group per parent, rows in row-key
+        // order, groups in FK-byte order.
+        let groups = worker
+            .snapshot_relationship_children(
+                snapshot,
+                "posts",
+                "authorId",
+                &[encode_test_string("a1"), encode_test_string("a2")],
+                "__gecko_index",
+                &[(start_a1, end_a1), (start_a2, end_a2)],
+                &crate::predicate::encode_predicate(&[])
+            )
+            .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].parent_id, encode_test_string("a1"));
+        assert_eq!(groups[0].entries.len(), 2);
+        assert_eq!(groups[0].entries[0].0, encode_test_string("p1"));
+        assert_eq!(groups[0].entries[1].0, encode_test_string("p2"));
+        assert_eq!(groups[1].parent_id, encode_test_string("a2"));
+        assert_eq!(groups[1].entries.len(), 1);
+        assert_eq!(groups[1].entries[0].0, encode_test_string("p3"));
+
+        // Unindexed path (predicate-driven): grouping classifies by FK in
+        // Rust; the row without an FK field is excluded.
+        let all = worker
+            .snapshot_relationship_children(
+                snapshot,
+                "posts",
+                "authorId",
+                &[],
+                "__gecko_index",
+                &[],
+                &crate::predicate::encode_predicate(&[])
+            )
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].parent_id, encode_test_string("a1"));
+        assert_eq!(all[0].entries.len(), 2);
+        assert_eq!(all[1].parent_id, encode_test_string("a2"));
+        assert_eq!(all[1].entries.len(), 1);
+        assert_eq!(all[1].entries[0].0, encode_test_string("p3"));
+
         worker.drop_snapshot(snapshot);
         let _ = std::fs::remove_file(path);
     }

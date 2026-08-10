@@ -716,7 +716,7 @@ sync-state aggregation; migration batch/snapshot semantics.
 **Done when:** `database_impl.dart` executes no storage or aggregation computation — only
 orchestration, policy, model mapping, and transport; lifecycle + parity tests pass.
 
-### M11 — Relationship-execution thinning  ☐
+### M11 — Relationship-execution thinning  ✅
 
 **Goal:** `relationship_manager.dart` (715 LOC) holds declarations, policies, and model mapping only;
 all candidate retrieval/traversal executes in Rust.
@@ -729,6 +729,26 @@ all candidate retrieval/traversal executes in Rust.
    Dart.
 3. Keep in Dart: relationship declarations, delete behaviors, policy decisions, model mapping, and the
    reactive stream lifecycle.
+
+**Status:**
+- ✅ **Grouping in Rust.** `snapshot_relationship_children` now returns `GroupedChildEntries`
+  (child rows grouped by FK value in the worker, one group per parent id, rows in row-key order).
+  `loadAllChildren` no longer re-decodes every candidate row to bucket it — Rust classifies, Dart
+  maps groups to the requested parent buckets. Rust test
+  `relationship_children_group_by_fk_in_rust` (indexed multi-parent + unindexed paths; missing-FK
+  rows excluded).
+- ✅ **Indexed `children()` predicate in Rust.** The indexed FK path now routes through
+  `query_indexed_limited` with the FK predicate, replacing the Dart `row[fk] == parentId`
+  re-verification (which previously filtered prefix-collision rows like `a1` vs `a1x`).
+- ✅ **Join cleanup in Rust.** `joinCleanupOps` evaluates the side+id predicate in Rust
+  (`query_filtered` on the join table) instead of `scanAll` + decode + filter in Dart; Dart only
+  deletes the returned keys.
+- ✅ Keep in Dart: relationship declarations, delete behaviors/policy decisions (restrict/setNull/
+  cascade/applicationControlled), `RowAccessors` model mapping, reactive `watch*` stream lifecycle.
+- ✅ Validation: 483 Dart tests + 66 Rust tests; coverage 95.0% line / 100% branch; API contract
+  gate (no public contract change — `GroupedChildren` is internal); tool tests 32; offline lint;
+  traceability 12; security review (4 pre-existing advisories); FRB bindings regenerated; bundled
+  native artifact rebuilt. `dart analyze` clean; clippy clean.
 
 **Rust tests required:** the full relationship matrix (indexed/unindexed children, many-to-many,
 missing FK, delete policies) with plan/parity assertions.
@@ -765,7 +785,7 @@ documented.
   unchanged.
 - **M3 gates M4–M7** (read-path completion must finish before sort/limit/migration cleanup build on it).
   **M7 gates the M8 reactive registry** (the native execution boundary must exist first). **M8–M11 are
-  the Dart-thinning sequence** (registry ✅ → query ✅ → engine ✅ → relationships ☐); each lands with
+  the Dart-thinning sequence** (registry ✅ → query ✅ → engine ✅ → relationships ✅); each lands with
   Rust tests first, then deletes the Dart it replaces. **M12 can start immediately in parallel.**
 - Every Dart→Rust move (M7, M8–M11) lands with Rust unit tests first; Dart code is deleted only after
   the Rust path is green and parity tests pass.

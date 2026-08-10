@@ -605,8 +605,10 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M7.1: snapshot-bound child retrieval using Rust FK matching.
-  Future<List<RawEntry>> relationshipChildren({
+  /// M7.1/M11: snapshot-bound child retrieval using Rust FK matching. The
+  /// worker classifies matching rows by FK and returns them grouped by parent
+  /// id, so Dart never re-decodes every candidate row to bucket it.
+  Future<List<GroupedChildren>> relationshipChildren({
     required String childTable,
     required String foreignKeyField,
     required List<ByteKey> parentIds,
@@ -615,7 +617,7 @@ class NativeRawSnapshot implements RawSnapshot {
     String indexTable = geckoIndexTable,
   }) async {
     try {
-      final pairs = await _worker.snapshotRelationshipChildren(
+      final groups = await _worker.snapshotRelationshipChildren(
         snapshot: _snapshotId,
         childTable: childTable,
         foreignKeyField: foreignKeyField,
@@ -626,7 +628,16 @@ class NativeRawSnapshot implements RawSnapshot {
         ],
         predicateBytes: predicateBytes,
       );
-      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+      return [
+        for (final group in groups)
+          GroupedChildren(
+            parentId: ByteKey(group.$1),
+            entries: [
+              for (final pair in group.$2)
+                RawEntry(ByteKey(pair.$1), pair.$2),
+            ],
+          ),
+      ];
     } catch (error) {
       throw mapNativeError(error);
     }

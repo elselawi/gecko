@@ -2910,6 +2910,18 @@ impl SseDecode for bool {
     }
 }
 
+impl SseDecode for crate::worker::GroupedChildEntries {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_parentId = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_entries = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(deserializer);
+        return crate::worker::GroupedChildEntries {
+            parent_id: var_parentId,
+            entries: var_entries,
+        };
+    }
+}
+
 impl SseDecode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2917,6 +2929,20 @@ impl SseDecode for Vec<String> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::worker::GroupedChildEntries> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::worker::GroupedChildEntries>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -3348,6 +3374,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::ApplyBatchResult>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::worker::GroupedChildEntries {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.parent_id.into_into_dart().into_dart(),
+            self.entries.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::worker::GroupedChildEntries
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::worker::GroupedChildEntries>
+    for crate::worker::GroupedChildEntries
+{
+    fn into_into_dart(self) -> crate::worker::GroupedChildEntries {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::QueryDelta {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -3450,12 +3497,30 @@ impl SseEncode for bool {
     }
 }
 
+impl SseEncode for crate::worker::GroupedChildEntries {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.parent_id, serializer);
+        <Vec<(Vec<u8>, Vec<u8>)>>::sse_encode(self.entries, serializer);
+    }
+}
+
 impl SseEncode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <String>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::worker::GroupedChildEntries> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::worker::GroupedChildEntries>::sse_encode(item, serializer);
         }
     }
 }

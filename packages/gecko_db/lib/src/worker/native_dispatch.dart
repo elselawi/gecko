@@ -214,7 +214,7 @@ Future<Object?> dispatchNativeWorker(
           ? null
           : <Object?>[pair.$1.toList(), pair.$2.toList()];
     case 'snapshotRelationshipChildren':
-      final pairs = await worker.snapshotRelationshipChildren(
+      final groups = await worker.snapshotRelationshipChildren(
         snapshot: _asBigInt(arguments[0]),
         childTable: arguments[1] as String,
         foreignKeyField: arguments[2] as String,
@@ -235,7 +235,14 @@ Future<Object?> dispatchNativeWorker(
         ),
       );
       return [
-        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final group in groups)
+          <Object?>[
+            group.parentId.toList(),
+            [
+              for (final pair in group.entries)
+                <Object?>[pair.$1.toList(), pair.$2.toList()],
+            ],
+          ],
       ];
     case 'snapshotRelationshipJoinIds':
       final ids = await worker.snapshotRelationshipJoinIds(

@@ -4,7 +4,7 @@
 //! generated Dart bindings do not need to hold Rust transaction handles.
 
 use crate::compatibility::CompatibilityHandshake;
-use crate::worker::{ ByteEntry, RedbWorker, StorageStats, WorkerError };
+use crate::worker::{ ByteEntry, GroupedChildEntries, RedbWorker, StorageStats, WorkerError };
 
 const NATIVE_BUILD_ID: &str = concat!(env!("CARGO_PKG_VERSION"), "+rust");
 
@@ -601,8 +601,10 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M7.1: snapshot-bound child retrieval using durable index ranges or a
-    /// pushed FK predicate.
+    /// M7.1/M11: snapshot-bound child retrieval using durable index ranges or
+    /// a pushed FK predicate. Rust classifies matching child rows by FK and
+    /// returns them **grouped by parent id**, so Dart never re-decodes every
+    /// candidate row to bucket it.
     #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_relationship_children(
         &self,
@@ -613,7 +615,7 @@ impl NativeWorker {
         index_table: String,
         index_ranges: Vec<(Vec<u8>, Vec<u8>)>,
         predicate_bytes: Vec<u8>
-    ) -> Result<Vec<ByteEntry>, String> {
+    ) -> Result<Vec<GroupedChildEntries>, String> {
         self.worker
             .snapshot_relationship_children(
                 snapshot,

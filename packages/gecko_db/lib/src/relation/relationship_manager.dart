@@ -133,25 +133,29 @@ class RelationshipManager {
   ) async {
     final index = _indexLookup?.call(r.childCollection);
     if (index != null && index.fields.contains(fk)) {
-      // Native relationship lookup streams the durable index in Rust;
-      // Dart retains only the declaration metadata.
+      // Native indexed relationship lookup: the durable index narrows the
+      // candidate set and Rust applies the FK predicate on those candidates
+      // (the same primitive query execution uses). Dart decodes only the rows
+      // the predicate accepted — no Dart-side re-verification remains.
       final (start, end) = eqBounds(
         r.childCollection,
         fk,
         parentId,
         codec: _codec,
       );
-      final entries = await snap.queryIndexed(
+      final entries = await snap.queryIndexedLimited(
         table: r.childCollection,
         start: ByteKey(start),
         end: ByteKey(end),
+        predicateBytes: encodePredicate(
+          [Filter.eq(fk, parentId)],
+          codec: _codec,
+        ),
       );
-      final rows = <Map<Object?, Object?>>[];
-      for (final entry in entries) {
-        final row = _mapOf(_codec.decode(entry.value ?? const []));
-        if (row[fk] == parentId) rows.add(row);
-      }
-      return rows;
+      return [
+        for (final entry in entries)
+          _mapOf(_codec.decode(entry.value ?? const [])),
+      ];
     }
     // Native unindexed relationship lookup evaluates the predicate in Rust,
     // transferring only matching child rows to Dart.
@@ -215,17 +219,23 @@ class RelationshipManager {
           ranges.add((ByteKey(start), ByteKey(end)));
         }
       }
-      final entries = await snap.relationshipChildren(
+      final groups = await snap.relationshipChildren(
         childTable: relationship.childCollection,
         foreignKeyField: fk,
         parentIds: [for (final id in parentIds) _byteOf(id)],
         indexRanges: ranges,
         predicateBytes: encodePredicate(const [], codec: _codec),
       );
-      for (final entry in entries) {
-        final row = _mapOf(_codec.decode(entry.value ?? const []));
-        final pid = row[fk];
-        if (pid != null && wanted.contains(pid)) out[pid]!.add(row);
+      // Rust already classified every returned row by FK; Dart only routes
+      // each group's entries to the matching parent bucket (model mapping).
+      for (final group in groups) {
+        final pid = _codec.decode(group.parentId.bytes);
+        if (pid != null && wanted.contains(pid)) {
+          out[pid]!.addAll([
+            for (final entry in group.entries)
+              _mapOf(_codec.decode(entry.value ?? const [])),
+          ]);
+        }
       }
       return out;
     } finally {
@@ -341,16 +351,19 @@ class RelationshipManager {
     final snap = snapshot ?? await _engine.backend.snapshot();
     final owned = snapshot == null;
     try {
-      final entries = await snap.scanAll(table);
-      final ops = <RawOp>[];
-      for (final entry in entries) {
-        final join = _mapOf(_codec.decode(entry.value ?? const []));
-        if ((isLeft && join['left'] == id) ||
-            (!isLeft && join['right'] == id)) {
-          ops.add(RawDelete(table, entry.key));
-        }
-      }
-      return ops;
+      // The engine is always native; the commitBatch/engine snapshot is a
+      // NativeRawSnapshot at runtime. Rust evaluates the side+id predicate,
+      // transferring only the matching join rows (Dart no longer scans and
+      // decodes the whole join table to find dangling references).
+      final field = isLeft ? 'left' : 'right';
+      final entries = await (snap as NativeRawSnapshot).queryFiltered(
+        table: table,
+        predicateBytes: encodePredicate(
+          [Filter.eq(field, id)],
+          codec: _codec,
+        ),
+      );
+      return [for (final entry in entries) RawDelete(table, entry.key)];
     } finally {
       if (owned) await snap.dispose();
     }

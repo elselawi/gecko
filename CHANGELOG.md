@@ -7,6 +7,16 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **M11 — Relationship-execution thinning**: `relationship_manager.dart` holds only declarations,
+  delete-behavior policy, model mapping, and the reactive stream lifecycle — no candidate
+  retrieval/classification. (1) `snapshot_relationship_children` now returns `GroupedChildEntries`
+  (child rows grouped by FK value in the Rust worker); `loadAllChildren` no longer re-decodes every
+  candidate row to bucket it. (2) The indexed `children()` path applies the FK predicate on
+  index-narrowed candidates in Rust (`query_indexed_limited`), replacing the Dart
+  `row[fk] == parentId` re-verification (prefix collisions like `a1` vs `a1x` are filtered by the
+  Rust predicate). (3) `joinCleanupOps` evaluates the side+id predicate in Rust instead of
+  scanning/decoding the whole join table. Delete behaviors (restrict/setNull/cascade/
+  applicationControlled), `RowAccessors` mapping, and `watch*` streams remain Dart-owned.
 - **M9 — Query-execution thinning**: Dart no longer executes any query semantics. Every sorted
   query — windowed and unbounded — routes through the Rust `query_sorted` / `query_indexed_ordered`
   primitives via `_nativeOrderedCollect`; the Dart execution comparator `_compareDecoded` and the

@@ -18,9 +18,10 @@ OPFS route.
 | Unindexed `distinct()` | Rust field-byte extraction; Dart decode/dedup | One snapshot | Matching field bytes |
 | Indexed `distinct()` | Rust durable-index candidate field extraction; Dart decode/dedup | One snapshot | Matching field bytes |
 | Relationship `parent()` | Rust child FK extraction + parent point read | One snapshot | Parent row only |
-| Relationship `children()` | Rust durable-index lookup or FK predicate push | One snapshot | Matching child rows |
-| `loadAllChildren()` | Rust union of indexed FK ranges or Rust FK matching | One snapshot | Matching child rows |
+| Relationship `children()` | Rust durable-index lookup **+ FK predicate on candidates** or FK predicate push | One snapshot | Matching child rows |
+| `loadAllChildren()` | Rust union of indexed FK ranges or Rust FK matching, **grouped by FK in Rust** | One snapshot | Matching child rows (pre-grouped) |
 | Many-to-many IDs | Rust snapshot join scan/filter | One snapshot | Matching encoded IDs |
+| Join cleanup (delete) | Rust FK predicate on join table; Dart deletes returned keys | One snapshot | Matching join row keys |
 | Relationship delete policy | Dart policy, callbacks, change-feed events; Rust atomic batch | One write transaction | No query rows beyond policy inputs |
 | Raw inclusive scan | Worker snapshot range scan | Caller snapshot | Requested rows |
 | Raw exclusive scan | Dart compatibility filtering over snapshot result | Caller snapshot | Requested rows |
@@ -44,6 +45,13 @@ OPFS route.
   evaluation, result-set maintenance, or diff computation remains. The single
   `database.watchAll()` global feed and `watch(id)` still use the Dart change
   bus.
+- **M11**: relationship candidate retrieval/classification fully moved to
+  Rust. `snapshot_relationship_children` returns `GroupedChildEntries` (rows
+  grouped by FK in the worker); the indexed `children()` path applies the FK
+  predicate on index-narrowed candidates (`query_indexed_limited`); join
+  cleanup filters the join table with a Rust-evaluated FK predicate. Dart
+  retains only relationship declarations, delete-behavior policy, model
+  mapping, and the reactive stream lifecycle.
 
 ## Typed errors and parity
 

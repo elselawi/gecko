@@ -54,6 +54,19 @@ class RawEntry {
   final List<int>? value;
 }
 
+/// M11: child rows sharing one foreign-key value (parent id), grouped in the
+/// Rust worker. The worker classifies candidates by FK so Dart only decodes
+/// the rows that already belong to the requested parents.
+class GroupedChildren {
+  const GroupedChildren({required this.parentId, required this.entries});
+
+  /// The encoded FK value (the parent id bytes).
+  final ByteKey parentId;
+
+  /// Child rows in row-key order whose FK equals [parentId].
+  final List<RawEntry> entries;
+}
+
 /// A snapshot handle for consistent reads.
 ///
 /// Readers capture a snapshot (MVCC), observe a single consistent view, and

@@ -365,7 +365,7 @@ abstract class RustLibApi extends BaseApi {
     Uint8List? end,
   });
 
-  Future<List<(Uint8List, Uint8List)>>
+  Future<List<GroupedChildEntries>>
   crateApiNativeWorkerSnapshotRelationshipChildren({
     required NativeWorker that,
     required BigInt snapshot,
@@ -2259,7 +2259,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<List<(Uint8List, Uint8List)>>
+  Future<List<GroupedChildEntries>>
   crateApiNativeWorkerSnapshotRelationshipChildren({
     required NativeWorker that,
     required BigInt snapshot,
@@ -2296,8 +2296,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeSuccessData: sse_decode_list_grouped_child_entries,
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerSnapshotRelationshipChildrenConstMeta,
@@ -2629,9 +2628,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  GroupedChildEntries dco_decode_grouped_child_entries(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return GroupedChildEntries(
+      parentId: dco_decode_list_prim_u_8_strict(arr[0]),
+      entries: dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        arr[1],
+      ),
+    );
+  }
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
+  }
+
+  @protected
+  List<GroupedChildEntries> dco_decode_list_grouped_child_entries(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_grouped_child_entries)
+        .toList();
   }
 
   @protected
@@ -2893,6 +2914,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  GroupedChildEntries sse_decode_grouped_child_entries(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_parentId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_entries =
+        sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+          deserializer,
+        );
+    return GroupedChildEntries(parentId: var_parentId, entries: var_entries);
+  }
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -2900,6 +2934,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <String>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<GroupedChildEntries> sse_decode_list_grouped_child_entries(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <GroupedChildEntries>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_grouped_child_entries(deserializer));
     }
     return ans_;
   }
@@ -3219,11 +3267,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_grouped_child_entries(
+    GroupedChildEntries self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.parentId, serializer);
+    sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self.entries,
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_grouped_child_entries(
+    List<GroupedChildEntries> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_grouped_child_entries(item, serializer);
     }
   }
 
@@ -3943,9 +4016,11 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     end: end,
   );
 
-  /// M7.1: snapshot-bound child retrieval using durable index ranges or a
-  /// pushed FK predicate.
-  Future<List<(Uint8List, Uint8List)>> snapshotRelationshipChildren({
+  /// M7.1/M11: snapshot-bound child retrieval using durable index ranges or
+  /// a pushed FK predicate. Rust classifies matching child rows by FK and
+  /// returns them **grouped by parent id**, so Dart never re-decodes every
+  /// candidate row to bucket it.
+  Future<List<GroupedChildEntries>> snapshotRelationshipChildren({
     required BigInt snapshot,
     required String childTable,
     required String foreignKeyField,

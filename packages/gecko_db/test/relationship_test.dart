@@ -72,6 +72,45 @@ void main() {
       expect(parent!['name'], 'A');
       await db.close();
     });
+
+    test(
+      'indexed children exclude prefix-collision FK values (Rust predicate)',
+      () async {
+        final db = await _open('lookup-prefix');
+        final r = db.relationships;
+        r.registerAccessors(
+          'posts',
+          RowAccessors(
+            childIdOf: (row) => row['id'],
+            parentIdOf: (row) => row['authorId'],
+          ),
+        );
+        const rel = Relationship(
+          name: 'author_posts',
+          parentCollection: 'authors',
+          childCollection: 'posts',
+          type: RelationshipType.oneToMany,
+          foreignKeyField: 'authorId',
+        );
+        r.declare(rel);
+        // Index the FK field so the indexed relationship path runs; M11 the
+        // FK predicate executes in Rust on the index-narrowed candidates.
+        final posts = db.collection<Map<String, Object?>>(
+          'posts',
+          toRow: (m) => m,
+          fromRow: (m) => Map<String, Object?>.from(m as Map),
+          id: (m) => m['id'],
+          indexFields: ['authorId'],
+        );
+        await posts.put({'id': 'p1', 'authorId': 'a1'});
+        // 'a1x' shares the durable-index prefix with 'a1' but is a different
+        // FK value — the Rust predicate (not a Dart re-check) must exclude it.
+        await posts.put({'id': 'p2', 'authorId': 'a1x'});
+        final children = await r.children(rel, 'a1');
+        expect(children.map((c) => c['id']).toList(), ['p1']);
+        await db.close();
+      },
+    );
   });
 
   group('delete behaviors', () {
@@ -614,6 +653,46 @@ void main() {
       expect(result['a1']!.first['id'], 'p0');
       await db.close();
     });
+
+    test(
+      'loadAllChildren keeps empty buckets and excludes missing-FK rows',
+      () async {
+        final db = await _open('eager-edge');
+        final r = db.relationships;
+        r.registerAccessors(
+          'posts',
+          RowAccessors(
+            childIdOf: (row) => row['id'],
+            parentIdOf: (row) => row['authorId'],
+          ),
+        );
+        const rel = Relationship(
+          name: 'author_posts',
+          parentCollection: 'authors',
+          childCollection: 'posts',
+          foreignKeyField: 'authorId',
+        );
+        r.declare(rel);
+        final posts = db.collection<Map<String, Object?>>(
+          'posts',
+          toRow: (m) => m,
+          fromRow: (m) => Map<String, Object?>.from(m as Map),
+          id: (m) => m['id'],
+        );
+        await posts.put({'id': 'p1', 'authorId': 'a1'});
+        // A child with no FK must never land in any bucket (M11: Rust skips
+        // rows without the FK field when grouping).
+        await posts.put({'id': 'p2'});
+        final result = await r.loadAllChildren(
+          rel,
+          ['a1', 'a2'], // a2 has no children at all → stays an empty list
+        );
+        expect(result['a1'], hasLength(1));
+        expect(result['a1']!.single['id'], 'p1');
+        expect(result['a2'], isEmpty);
+        await db.close();
+      },
+    );
   });
 
   group('many-to-many join semantics', () {

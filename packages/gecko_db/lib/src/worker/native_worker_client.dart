@@ -578,8 +578,11 @@ class NativeWorkerClient {
     return (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List));
   }
 
-  /// M7.1: snapshot-bound child retrieval with Rust-side FK matching.
-  Future<List<(List<int>, List<int>)>> snapshotRelationshipChildren({
+  /// M7.1/M11: snapshot-bound child retrieval with Rust-side FK matching and
+  /// grouping. Returns `(parentIdBytes, entries)` groups; the worker already
+  /// classified each row by its FK value.
+  Future<List<(List<int>, List<(List<int>, List<int>)>)>>
+  snapshotRelationshipChildren({
     required int snapshot,
     required String childTable,
     required String foreignKeyField,
@@ -600,8 +603,17 @@ class NativeWorkerClient {
       predicateBytes,
     ]);
     return [
-      for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+      for (final group in (result as List))
+        (
+          List<int>.from((group as List)[0] as List),
+          [
+            for (final pair in (group[1] as List))
+              (
+                List<int>.from((pair as List)[0] as List),
+                List<int>.from(pair[1] as List),
+              ),
+          ],
+        ),
     ];
   }
 

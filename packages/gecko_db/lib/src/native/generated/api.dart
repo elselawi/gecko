@@ -353,9 +353,11 @@ abstract class NativeWorker implements RustOpaqueInterface {
     Uint8List? end,
   });
 
-  /// M7.1: snapshot-bound child retrieval using durable index ranges or a
-  /// pushed FK predicate.
-  Future<List<(Uint8List, Uint8List)>> snapshotRelationshipChildren({
+  /// M7.1/M11: snapshot-bound child retrieval using durable index ranges or
+  /// a pushed FK predicate. Rust classifies matching child rows by FK and
+  /// returns them **grouped by parent id**, so Dart never re-decodes every
+  /// candidate row to bucket it.
+  Future<List<GroupedChildEntries>> snapshotRelationshipChildren({
     required BigInt snapshot,
     required String childTable,
     required String foreignKeyField,
