@@ -3,7 +3,7 @@
 // These tests close the branch/line gaps introduced by the maintenance and
 // diagnostics surfaces: maintenance toStrings, raw-key validation,
 // recovery from a failed compaction, read-only marker handling, preserved
-// conflict round-trips with a resolution, and secondary-index edge paths.
+// conflict round-trips with a resolution, and M7.5 native query coverage.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
