@@ -7,6 +7,14 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **M12 — Comparative benchmark extended to six backends**: `benchmark/comparative.dart`
+  now races gecko_db against **Hive CE, Sembast, SQLite, Isar, and Drift**
+  under identical fixtures (single/bulk insert, hot/cold read, update, delete,
+  scan, equality query), all passing the same integrity checks. SQLite and
+  Drift use `package:sqlite3` 3.x (native library via Dart native assets);
+  Isar uses the maintained `isar_community` fork (downloads its core binary on
+  first run, cached and gitignored); Isar/Drift schemas are generated with
+  `dart run build_runner build --force-jit` and committed.
 - **M12 — Release-only CI + local release checklist**: the always-on quality
   CI (`ci.yml`) is removed. The only CI left is `release-matrix.yml`, which is
   now triggered **manually** (`workflow_dispatch`) and exists for exactly what

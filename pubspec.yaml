@@ -8,7 +8,10 @@ version: 0.0.0
 
 dependencies:
   crypto: ^3.0.3
+  drift: ^2.34.3
+  isar_community: ^3.3.2
   path: ^1.9.0
+  sqlite3: ^3.5.1
 
 dev_dependencies:
   test: ^1.24.0
@@ -17,6 +20,9 @@ dev_dependencies:
   # Phase 13 comparative benchmark targets (VM-only, dev tooling).
   hive_ce: ^2.19.3
   sembast: ">=3.8.0 <3.8.7"
+  drift_dev: ^2.34.0
+  build_runner: ^2.15.1
+  isar_community_generator: ^3.3.2
 
 environment:
   sdk: ^3.10.8

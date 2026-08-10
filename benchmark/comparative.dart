@@ -1,4 +1,5 @@
-// Phase 13 — comparative benchmark: gecko_db vs Hive CE vs Sembast.
+// Phase 13 / M12 — comparative benchmark: gecko_db vs Hive CE vs Sembast vs
+// SQLite vs Isar (isar_community) vs Drift.
 //
 // A pragmatic, honest head-to-head on the SAME VM/hardware for the common
 // local-first workloads: single insert, bulk insert, hot/cold reads, update,
@@ -12,9 +13,17 @@
 //     comparison, not a defect.
 //   * Sizes are small enough to run in CI-ish time. Numbers are
 //     hardware/JIT dependent — indicative, not marketing.
+//   * SQLite and Drift (a typed layer over SQLite) resolve the native
+//     `sqlite3` library through Dart native assets (`package:sqlite3` 3.x) —
+//     no external dll is required on any platform.
+//   * Isar runs through the actively-maintained `isar_community` fork (the
+//     original `isar` generator rejects the current Dart SDK). Isar and Drift
+//     schemas are code-generated (`dart run build_runner build --force-jit`);
+//     the generated files are committed so the benchmark runs with no build
+//     step.
 //
 // Run from the repo root (requires release native artifact):
-//   dart run benchmark/comparative.dart          # all three
+//   dart run benchmark/comparative.dart          # all six
 //   dart run benchmark/comparative.dart --json   # machine-readable
 //
 library;
@@ -23,9 +32,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:drift/drift.dart' as drift;
 import 'package:gecko_db/gecko_db.dart';
 import 'package:hive_ce/hive.dart';
+import 'package:isar_community/isar.dart' as isar;
 import 'package:sembast/sembast_io.dart' as sembast;
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
+
+import 'drift_database.dart';
+import 'isar_schema.dart';
 
 const int _seedRows = 1000;
 const int _insertOps = 100;
@@ -287,6 +302,285 @@ class _SembastBackend implements _Backend {
   }
 }
 
+/// SQLite backend (M12): raw SQL via `package:sqlite3`, WAL journal, an index
+/// on `group`, prepared statements, and batched writes in one transaction.
+class _SqliteBackend implements _Backend {
+  @override
+  String get name => 'sqlite3 (file)';
+
+  late sqlite3.Database _db;
+  late sqlite3.PreparedStatement _put;
+  late sqlite3.PreparedStatement _get;
+  late sqlite3.PreparedStatement _delete;
+  late sqlite3.PreparedStatement _scan;
+  late sqlite3.PreparedStatement _query;
+
+  @override
+  Future<void> open(String dirPath) async {
+    // sqlite3 3.x resolves the native library through Dart native assets; no
+    // external dll is needed on any platform.
+    _db = sqlite3.sqlite3.open('$dirPath${Platform.pathSeparator}db.sqlite');
+    _db.execute('PRAGMA journal_mode = WAL');
+    _db.execute('PRAGMA synchronous = NORMAL');
+    _db.execute(
+      'CREATE TABLE IF NOT EXISTS items ('
+      'id INTEGER PRIMARY KEY, num INTEGER NOT NULL, "group" TEXT NOT NULL)',
+    );
+    _db.execute('CREATE INDEX IF NOT EXISTS idx_items_group ON items("group")');
+    _put = _db.prepare(
+      'INSERT INTO items(id, num, "group") VALUES (?, ?, ?) '
+      'ON CONFLICT(id) DO UPDATE SET num = excluded.num, '
+      '"group" = excluded."group"',
+    );
+    _get = _db.prepare('SELECT num, "group" FROM items WHERE id = ?');
+    _delete = _db.prepare('DELETE FROM items WHERE id = ?');
+    _scan = _db.prepare('SELECT id, num, "group" FROM items ORDER BY id');
+    _query = _db.prepare(
+      'SELECT id, num, "group" FROM items WHERE "group" = ?',
+    );
+  }
+
+  Future<void> _tx(List<Map<String, Object?>> rows) async {
+    _db.execute('BEGIN');
+    try {
+      for (final r in rows) {
+        _put.execute([r['id'], r['num'], r['group']]);
+      }
+      _db.execute('COMMIT');
+    } catch (_) {
+      _db.execute('ROLLBACK');
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> seed(List<Map<String, Object?>> rows) => _tx(rows);
+
+  @override
+  Future<void> put(int id, Map<String, Object?> row) async {
+    _put.execute([id, row['num'], row['group']]);
+  }
+
+  @override
+  Future<void> bulkPut(List<Map<String, Object?>> rows) => _tx(rows);
+
+  @override
+  Future<Map<String, Object?>?> get(int id) async {
+    final rows = _get.select([id]).toList();
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return <String, Object?>{
+      'id': id,
+      'num': r['num'],
+      'group': r['group'],
+    };
+  }
+
+  @override
+  Future<void> update(int id, Map<String, Object?> row) async {
+    _put.execute([id, row['num'], row['group']]);
+  }
+
+  @override
+  Future<void> delete(int id) async {
+    _delete.execute([id]);
+  }
+
+  @override
+  Future<List<Map<String, Object?>>> scanAll() async => [
+        for (final r in _scan.select([]))
+          <String, Object?>{
+            'id': r['id'],
+            'num': r['num'],
+            'group': r['group'],
+          },
+      ];
+
+  @override
+  Future<List<Map<String, Object?>>> queryGroup(String group) async => [
+        for (final r in _query.select([group]))
+          <String, Object?>{
+            'id': r['id'],
+            'num': r['num'],
+            'group': r['group'],
+          },
+      ];
+
+  @override
+  Future<void> close() async {
+    _put.close();
+    _get.close();
+    _delete.close();
+    _scan.close();
+    _query.close();
+    _db.close();
+  }
+}
+
+/// Isar backend (M12): `isar_community`, indexed on `group`.
+///
+/// Isar ids must be non-zero, so the benchmark's external id (which starts at
+/// 0) is offset by +1 when stored and mapped back when read.
+class _IsarBackend implements _Backend {
+  @override
+  String get name => 'isar_community (file)';
+
+  late isar.Isar _isar;
+  late isar.IsarCollection<Item> _coll;
+
+  Item _toItem(int id, Map<String, Object?> row) => Item()
+    ..id = id + 1
+    ..num = row['num'] as int
+    ..group = row['group'] as String;
+
+  Map<String, Object?> _toRow(Item item) =>
+      <String, Object?>{'id': item.id - 1, 'num': item.num, 'group': item.group};
+
+  @override
+  Future<void> open(String dirPath) async {
+    // Pure-Dart (non-Flutter) use: download the platform's Isar Core binary
+    // on first run and cache it next to the script (see isar_community docs
+    // for `initializeIsarCore`). Subsequent runs reuse the cached binary.
+    await isar.Isar.initializeIsarCore(download: true);
+    _isar = await isar.Isar.open(
+      [ItemSchema],
+      directory: dirPath,
+      name: 'items',
+    );
+    _coll = _isar.items;
+  }
+
+  @override
+  Future<void> seed(List<Map<String, Object?>> rows) => _isar.writeTxn(() async {
+        await _coll.putAll(
+          [for (final r in rows) _toItem(r['id'] as int, r)],
+        );
+      });
+
+  @override
+  Future<void> put(int id, Map<String, Object?> row) => _isar.writeTxn(
+        () => _coll.put(_toItem(id, row)),
+      );
+
+  @override
+  Future<void> bulkPut(List<Map<String, Object?>> rows) => _isar.writeTxn(() async {
+        await _coll.putAll(
+          [for (final r in rows) _toItem(r['id'] as int, r)],
+        );
+      });
+
+  @override
+  Future<Map<String, Object?>?> get(int id) async {
+    final item = await _coll.get(id + 1);
+    return item == null ? null : _toRow(item);
+  }
+
+  @override
+  Future<void> update(int id, Map<String, Object?> row) => _isar.writeTxn(
+        () => _coll.put(_toItem(id, row)),
+      );
+
+  @override
+  Future<void> delete(int id) => _isar.writeTxn(
+        () => _coll.delete(id + 1),
+      );
+
+  @override
+  Future<List<Map<String, Object?>>> scanAll() async =>
+      [for (final item in await _coll.where().findAll()) _toRow(item)];
+
+  @override
+  Future<List<Map<String, Object?>>> queryGroup(String group) async => [
+        for (final item in await _coll.where().groupEqualTo(group).findAll())
+          _toRow(item),
+      ];
+
+  @override
+  Future<void> close() => _isar.close();
+}
+
+/// Drift backend (M12): a typed layer over SQLite using the same native
+/// `sqlite3` library as the plain-SQLite backend.
+class _DriftBackend implements _Backend {
+  @override
+  String get name => 'drift (sqlite)';
+
+  late AppDatabase _db;
+
+  ItemsCompanion _companion(int id, Map<String, Object?> row) =>
+      ItemsCompanion.insert(
+        id: drift.Value(id),
+        num: row['num'] as int,
+        group: row['group'] as String,
+      );
+
+  Map<String, Object?> _toRow(ItemRow r) =>
+      <String, Object?>{'id': r.id, 'num': r.num, 'group': r.group};
+
+  @override
+  Future<void> open(String dirPath) async {
+    _db = AppDatabase.openFile('$dirPath${Platform.pathSeparator}db.sqlite');
+  }
+
+  @override
+  Future<void> seed(List<Map<String, Object?>> rows) async {
+    await _db.transaction(() async {
+      for (final r in rows) {
+        await _db.into(_db.items).insert(_companion(r['id'] as int, r));
+      }
+    });
+  }
+
+  @override
+  Future<void> put(int id, Map<String, Object?> row) =>
+      _db.into(_db.items).insertOnConflictUpdate(_companion(id, row));
+
+  @override
+  Future<void> bulkPut(List<Map<String, Object?>> rows) async {
+    await _db.transaction(() async {
+      for (final r in rows) {
+        await _db.into(_db.items).insert(_companion(r['id'] as int, r));
+      }
+    });
+  }
+
+  @override
+  Future<Map<String, Object?>?> get(int id) async {
+    final row = await (_db.select(_db.items)
+          ..where((t) => t.id.equals(id)))
+        .getSingleOrNull();
+    return row == null ? null : _toRow(row);
+  }
+
+  @override
+  Future<void> update(int id, Map<String, Object?> row) =>
+      _db.into(_db.items).insertOnConflictUpdate(_companion(id, row));
+
+  @override
+  Future<void> delete(int id) async {
+    await (_db.delete(_db.items)..where((t) => t.id.equals(id))).go();
+  }
+
+  @override
+  Future<List<Map<String, Object?>>> scanAll() async {
+    final rows = await (_db.select(_db.items)
+          ..orderBy([(t) => drift.OrderingTerm.asc(t.id)]))
+        .get();
+    return [for (final r in rows) _toRow(r)];
+  }
+
+  @override
+  Future<List<Map<String, Object?>>> queryGroup(String group) async {
+    final rows = await (_db.select(_db.items)
+          ..where((t) => t.group.equals(group)))
+        .get();
+    return [for (final r in rows) _toRow(r)];
+  }
+
+  @override
+  Future<void> close() => _db.close();
+}
+
 class _Row {
   _Row(this.backend, this.workload, this.msPerOp);
   final String backend;
@@ -306,10 +600,16 @@ Future<void> main(List<String> args) async {
     exit(2);
   }
 
+  // SQLite/Drift resolve the native `sqlite3` library through Dart native
+  // assets (package:sqlite3 3.x) — no external dll is required.
+
   final backends = <_Backend>[
     _GeckoBackend(nativePath),
     _HiveBackend(),
     _SembastBackend(),
+    _SqliteBackend(),
+    _IsarBackend(),
+    _DriftBackend(),
   ];
 
   final dir = await Directory.systemTemp.createTemp('gecko-compare-');
@@ -367,7 +667,8 @@ Future<void> main(List<String> args) async {
   stdout.writeln();
   stdout.writeln(
     'Caveat: gecko_db commits every write transactionally (redb) and tracks '
-    'changes for sync; Hive CE / Sembast do less. Compare like-for-like.',
+    'changes for sync; Hive CE / Sembast / Isar do less, and SQLite / Drift '
+    'skip change tracking and MVCC snapshotting. Compare like-for-like.',
   );
 }
 

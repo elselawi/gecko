@@ -22,3 +22,6 @@ perf.md
 
 # Local benchmark/gate run logs
 *.log
+
+# Isar Core binary downloaded at benchmark runtime (platform cache)
+benchmark/libisar.dll
