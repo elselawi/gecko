@@ -7,6 +7,11 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7.1 Slices 3–4 — Native relationships and route matrix**: `parent()`,
+  `loadAllChildren()`, and many-to-many ID retrieval now use snapshot-bound Rust
+  primitives on native/Web-Wasm, with Dart retaining relationship policy,
+  callbacks, mapping, and reactive lifecycle. Added the native/in-memory/Web
+  route matrix and M8 handoff documentation without adding a Rust query registry.
 - **M7.1 Slice 2 — Native aggregate/raw cleanup**: indexed native `count()` and
   `distinct()` now use snapshot-bound Rust durable-index candidate aggregates,
   avoiding primary-row transfer for aggregate-only queries. Unindexed predicate

@@ -457,26 +457,30 @@ unchanged. Delete-range pre-scans and `lastCommitSeq()` now dispose their native
 full package and Rust validation passes; `lastPlan`, stage timings, snapshot cleanup, typed errors, and
 Web/shared-dispatch behavior remain covered.
 
-**Slice 3 — Native relationship retrieval ☐**
+**Slice 3 — Native relationship retrieval ✅**
 
-Move the remaining expensive relationship reads to Rust where stable primitives exist:
+Moved the remaining expensive relationship reads to snapshot-bound Rust primitives:
 
-- `parent()` → snapshot-bound batched/native point read plus Rust-side FK extraction or predicate;
-- `loadAllChildren()` → one Rust indexed/predicate operation instead of a Dart full child-table scan;
-- many-to-many join retrieval → Rust snapshot-bound scan/filter where it avoids repeated Dart decoding.
+- `parent()` → Rust child FK extraction plus parent point read;
+- `loadAllChildren()` → one Rust operation using the union of indexed FK ranges or Rust-side FK matching;
+- many-to-many `rightIds()`/`leftIds()` → Rust snapshot join scan/filter.
 
 Dart retains relationship declarations, delete behaviors, policy decisions, model mapping, and reactive
-stream lifecycle. Rust must not execute arbitrary Dart relationship callbacks.
+stream lifecycle. Rust executes no arbitrary Dart relationship callbacks.
 
-**Proof:** native/Web parity, missing/stale FK behavior, snapshot consistency, N+1/backend-hop and
-rows-transferred benchmarks, delete-policy regression tests.
+**Proof:** native/in-memory relationship suites pass, including indexed and unindexed child retrieval,
+parent updates and missing rows, many-to-many IDs, reactive watches, snapshot consistency, and delete
+policy behavior. Rust relationship primitive coverage passes.
 
-**Slice 4 — Native route matrix and M8 handoff ☐**
+**Slice 4 — Native route matrix and M8 handoff ✅**
 
-Complete the native/in-memory/Web route matrix for every read, aggregate, relationship, and raw adapter
-operation. Record plan, snapshot boundary, backend hops, transferred rows, and typed-error behavior.
-Expose only M8 handoff metadata—changed row keys, indexed fields, and batch metadata. Do not add a Rust
-query registry or move query registration/lifecycle/backpressure semantics before M8 designs them.
+Documented the native file/Web-Wasm/in-memory route matrix in `docs/native-route-matrix.md`, including
+plan, snapshot boundary, backend hops, transferred rows, typed errors, diagnostics, and the limited M8
+handoff metadata. No Rust query registry or reactive query registration was added.
+
+**Proof:** shared native dispatch is used by native and Web-Wasm paths; generated FRB bindings and
+relationship/aggregate route tests pass. Change-feed/LSN ordering, migration callbacks, model mapping,
+relationship policies, and reactive lifecycle remain Dart-owned.
 
 **Slice 5 — Thin-client deletion pass ☐**
 

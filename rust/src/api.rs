@@ -503,6 +503,66 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// M7.1: snapshot-bound parent lookup. Rust extracts the child FK and
+    /// performs the parent point read before returning the parent row.
+    pub async fn snapshot_relationship_parent(
+        &self,
+        snapshot: u64,
+        child_table: String,
+        child_key: Vec<u8>,
+        parent_table: String,
+        foreign_key_field: String
+    ) -> Result<Option<ByteEntry>, String> {
+        self.worker
+            .snapshot_relationship_parent(
+                snapshot,
+                &child_table,
+                &child_key,
+                &parent_table,
+                &foreign_key_field,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// M7.1: snapshot-bound child retrieval using durable index ranges or a
+    /// pushed FK predicate.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn snapshot_relationship_children(
+        &self,
+        snapshot: u64,
+        child_table: String,
+        foreign_key_field: String,
+        parent_ids: Vec<Vec<u8>>,
+        index_table: String,
+        index_ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_relationship_children(
+                snapshot,
+                &child_table,
+                &foreign_key_field,
+                &parent_ids,
+                &index_table,
+                &index_ranges,
+                &predicate_bytes,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// M7.1: snapshot-bound many-to-many join ID retrieval.
+    pub async fn snapshot_relationship_join_ids(
+        &self,
+        snapshot: u64,
+        join_table: String,
+        field: String,
+        wanted_id: Vec<u8>
+    ) -> Result<Vec<Vec<u8>>, String> {
+        self.worker
+            .snapshot_relationship_join_ids(snapshot, &join_table, &field, &wanted_id)
+            .map_err(encode_worker_error)
+    }
+
     /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
     /// them. Scans [table], evaluates [predicate_bytes] against each row's
     /// bytes IN RUST, and returns only the count. A `count()` query no longer

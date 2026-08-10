@@ -506,6 +506,72 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
+  /// M7.1: snapshot-bound parent lookup with Rust-side FK extraction.
+  Future<RawEntry?> relationshipParent({
+    required String childTable,
+    required ByteKey childKey,
+    required String parentTable,
+    required String foreignKeyField,
+  }) async {
+    try {
+      final pair = await _worker.snapshotRelationshipParent(
+        snapshot: _snapshotId,
+        childTable: childTable,
+        childKey: childKey.bytes,
+        parentTable: parentTable,
+        foreignKeyField: foreignKeyField,
+      );
+      return pair == null ? null : RawEntry(ByteKey(pair.$1), pair.$2);
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M7.1: snapshot-bound child retrieval using Rust FK matching.
+  Future<List<RawEntry>> relationshipChildren({
+    required String childTable,
+    required String foreignKeyField,
+    required List<ByteKey> parentIds,
+    required List<(ByteKey, ByteKey)> indexRanges,
+    List<int> predicateBytes = const [1, 0],
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotRelationshipChildren(
+        snapshot: _snapshotId,
+        childTable: childTable,
+        foreignKeyField: foreignKeyField,
+        parentIds: [for (final id in parentIds) id.bytes],
+        indexTable: indexTable,
+        indexRanges: [
+          for (final range in indexRanges) (range.$1.bytes, range.$2.bytes),
+        ],
+        predicateBytes: predicateBytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  Future<List<List<int>>> relationshipJoinIds({
+    required String joinTable,
+    required String field,
+    required ByteKey wantedId,
+  }) async {
+    try {
+      return await _worker.snapshotRelationshipJoinIds(
+        snapshot: _snapshotId,
+        joinTable: joinTable,
+        field: field,
+        wantedId: wantedId.bytes,
+      );
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
   /// M4: full-scan + predicate with an early LIMIT/OFFSET, snapshot-bound.
   /// Returns at most [limit] matching rows after skipping [offset], stopping
   /// the scan as soon as the window fills.

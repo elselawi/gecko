@@ -206,6 +206,48 @@ void main() {
       });
 
       test(
+        'native parent and eager child reads preserve snapshot and parity',
+        () async {
+          final db = await open('native-relationship-primitives');
+          const rel = Relationship(
+            name: 'author_posts',
+            parentCollection: 'authors',
+            childCollection: 'posts',
+            type: RelationshipType.oneToMany,
+            foreignKeyField: 'authorId',
+          );
+          _declareAuthorsPosts(db, rel: rel);
+          final authors = db.collection<Map<String, Object?>>(
+            'authors',
+            toRow: (m) => m,
+            fromRow: (m) => Map<String, Object?>.from(m as Map),
+            id: (m) => m['id'],
+          );
+          final posts = db.collection<Map<String, Object?>>(
+            'posts',
+            toRow: (m) => m,
+            fromRow: (m) => Map<String, Object?>.from(m as Map),
+            id: (m) => m['id'],
+            indexFields: ['authorId'],
+          );
+          await authors.put({'id': 'a1', 'name': 'A'});
+          await authors.put({'id': 'a2', 'name': 'B'});
+          await posts.put({'id': 'p1', 'authorId': 'a1'});
+          await posts.put({'id': 'p2', 'authorId': 'a2'});
+          final parent = await db.relationships.parent(rel, 'p1');
+          expect(parent?['name'], 'A');
+          final grouped = await db.relationships.loadAllChildren(rel, ['a1', 'a2']);
+          expect(grouped['a1']!.map((row) => row['id']), ['p1']);
+          expect(grouped['a2']!.map((row) => row['id']), ['p2']);
+          await authors.put({'id': 'a1', 'name': 'A2'});
+          final parentAfter = await db.relationships.parent(rel, 'p1');
+          expect(parentAfter?['name'], 'A2');
+          expect(await db.relationships.parent(rel, 'missing'), isNull);
+          await db.close();
+        },
+      );
+
+      test(
         'watchParent and watchJoinIds re-emit on the relevant side',
         () async {
           final db = await open('watch-parent-join');

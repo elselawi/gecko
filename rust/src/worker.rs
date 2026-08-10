@@ -1172,6 +1172,171 @@ impl RedbWorker {
         Ok(result)
     }
 
+    /// M7.1: reads one parent row and extracts the child foreign-key value in
+    /// the same snapshot, returning no row materialization for a missing key.
+    pub fn snapshot_relationship_parent(
+        &self,
+        snapshot: u64,
+        child_table: &str,
+        child_key: &[u8],
+        parent_table: &str,
+        foreign_key_field: &str
+    ) -> Result<Option<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        let child = match transaction.open_table(table_definition(child_table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let Some(child_value) = child
+            .get(child_key)
+            .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+            return Ok(None);
+        };
+        let child_bytes = child_value.value();
+        let Some((start, end)) = crate::value_codec
+            ::find_field_range(child_bytes, foreign_key_field)
+            .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+            return Ok(None);
+        };
+        let parent_key = child_bytes[start..end].to_vec();
+        let parent = match transaction.open_table(table_definition(parent_table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let Some(parent_value) = parent
+            .get(parent_key.as_slice())
+            .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+            return Ok(None);
+        };
+        Ok(Some((parent_key, parent_value.value().to_vec())))
+    }
+
+    /// M7.1: returns child rows whose foreign key matches any requested
+    /// parent ID. Indexed callers supply durable index ranges; unindexed
+    /// callers supply the complete predicate and Rust evaluates it here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn snapshot_relationship_children(
+        &self,
+        snapshot: u64,
+        child_table: &str,
+        foreign_key_field: &str,
+        parent_ids: &[Vec<u8>],
+        index_table: &str,
+        index_ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8]
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let user_table = match transaction.open_table(table_definition(child_table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut candidates = if index_ranges.is_empty() {
+            user_table
+                .iter()
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .map(|entry| {
+                    entry
+                        .map(|(key, _)| key.value().to_vec())
+                        .map_err(|error| WorkerError::Storage(error.to_string()))
+                })
+                .collect::<Result<BTreeSet<_>, WorkerError>>()?
+        } else {
+            let index_table = match transaction.open_table(table_definition(index_table)) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            };
+            let mut union = BTreeSet::new();
+            for (start, end) in index_ranges {
+                for entry in index_table
+                    .range(start.as_slice()..=end.as_slice())
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                {
+                    let (_, value) = entry
+                        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    union.insert(value.value().to_vec());
+                }
+            }
+            union
+        };
+        if !parent_ids.is_empty() {
+            let wanted = parent_ids.iter().cloned().collect::<BTreeSet<_>>();
+            let mut matching = BTreeSet::new();
+            for key in &candidates {
+                let Some(value) = user_table
+                    .get(key.as_slice())
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                    continue;
+                };
+                let Some((start, end)) = crate::value_codec
+                    ::find_field_range(value.value(), foreign_key_field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                    continue;
+                };
+                if wanted.contains(&value.value()[start..end]) {
+                    matching.insert(key.clone());
+                }
+            }
+            candidates = matching;
+        }
+        let mut result = Vec::new();
+        for row_key in candidates {
+            let Some(value) = user_table
+                .get(row_key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                continue;
+            };
+            if predicate.test_bytes(value.value()) {
+                result.push((row_key, value.value().to_vec()));
+            }
+        }
+        Ok(result)
+    }
+
+    /// M7.1: returns join IDs from a reserved many-to-many table while the
+    /// entire scan remains inside one worker-owned snapshot.
+    pub fn snapshot_relationship_join_ids(
+        &self,
+        snapshot: u64,
+        join_table: &str,
+        field: &str,
+        wanted_id: &[u8]
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        let table = match transaction.open_table(table_definition(join_table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut result = Vec::new();
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+            let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row = value.value();
+            let Some((start, end)) = crate::value_codec
+                ::find_field_range(row, field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                continue;
+            };
+            if row[start..end] == *wanted_id {
+                let other = if field == "left" { "right" } else { "left" };
+                let Some((other_start, other_end)) = crate::value_codec
+                    ::find_field_range(row, other)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                    continue;
+                };
+                result.push(row[other_start..other_end].to_vec());
+            }
+            let _ = key;
+        }
+        Ok(result)
+    }
+
     fn query_indexed_multi_with(
         &self,
         transaction: &ReadTransaction,
@@ -2753,6 +2918,154 @@ mod tests {
         assert_eq!(snap_got.len(), 2);
         worker.drop_snapshot(snap);
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn relationship_primitives_are_snapshot_bound() {
+        let path = temp_path("relationship-primitives");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = vec![("posts".into(), vec!["authorId".into()])];
+        let rows = vec![
+            op_with_table(
+                OpKind::Put,
+                "authors",
+                Some(encode_test_string("a1")),
+                Some(encode_test_row(&[
+                    ("id", encode_test_string("a1")),
+                    ("name", encode_test_string("A")),
+                ])),
+            ),
+            op_with_table(
+                OpKind::Put,
+                "posts",
+                Some(encode_test_string("p1")),
+                Some(encode_test_row(&[
+                    ("id", encode_test_string("p1")),
+                    ("authorId", encode_test_string("a1")),
+                ])),
+            ),
+            op_with_table(
+                OpKind::Put,
+                "posts",
+                Some(encode_test_string("p2")),
+                Some(encode_test_row(&[
+                    ("id", encode_test_string("p2")),
+                    ("authorId", encode_test_string("a1")),
+                ])),
+            ),
+        ];
+        worker.apply_batch_with_indexes(&rows, &indexes).unwrap();
+        let snapshot = worker.create_snapshot().unwrap();
+
+        let parent = worker
+            .snapshot_relationship_parent(
+                snapshot,
+                "posts",
+                &encode_test_string("p1"),
+                "authors",
+                "authorId",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.0, encode_test_string("a1"));
+        assert_eq!(
+            crate::value_codec::decode_value(&parent.1)
+                .unwrap()
+                .find_field("name"),
+            Some(&crate::value_codec::RowValue::String("A".into()))
+        );
+
+        let exact_full = index_key(
+            "posts",
+            "authorId",
+            &encode_test_string("a1"),
+            &encode_test_string("p1"),
+        );
+        let record_id_bytes = encode_test_string("p1");
+        let exact = exact_full[..exact_full.len() - record_id_bytes.len()].to_vec();
+        let mut exact_end = exact.clone();
+        let last = exact_end.pop().unwrap();
+        exact_end.push(last + 1);
+        let children = worker
+            .snapshot_relationship_children(
+                snapshot,
+                "posts",
+                "authorId",
+                &[encode_test_string("a1")],
+                "__gecko_index",
+                &[(exact, exact_end)],
+                &crate::predicate::encode_predicate(&[]),
+            )
+            .unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].0, encode_test_string("p1"));
+        assert_eq!(children[1].0, encode_test_string("p2"));
+
+        let join_rows = vec![
+            op_with_table(
+                OpKind::Put,
+                "__gecko_join_students_courses",
+                Some(vec![1]),
+                Some(encode_test_row(&[
+                    ("left", encode_test_string("s1")),
+                    ("right", encode_test_string("c1")),
+                ])),
+            ),
+            op_with_table(
+                OpKind::Put,
+                "__gecko_join_students_courses",
+                Some(vec![2]),
+                Some(encode_test_row(&[
+                    ("left", encode_test_string("s1")),
+                    ("right", encode_test_string("c2")),
+                ])),
+            ),
+        ];
+        worker.apply_batch(&join_rows).unwrap();
+        let join_snapshot = worker.create_snapshot().unwrap();
+        let join_ids = worker
+            .snapshot_relationship_join_ids(
+                join_snapshot,
+                "__gecko_join_students_courses",
+                "left",
+                &encode_test_string("s1"),
+            )
+            .unwrap();
+        assert_eq!(join_ids, vec![encode_test_string("c1"), encode_test_string("c2")]);
+        worker.drop_snapshot(join_snapshot);
+
+        worker
+            .apply_batch_with_indexes(
+                &[op_with_table(
+                    OpKind::Put,
+                    "authors",
+                    Some(encode_test_string("a1")),
+                    Some(encode_test_row(&[
+                        ("id", encode_test_string("a1")),
+                        ("name", encode_test_string("B")),
+                    ])),
+                )],
+                &indexes,
+            )
+            .unwrap();
+        let old_parent = worker
+            .snapshot_relationship_parent(
+                snapshot,
+                "posts",
+                &encode_test_string("p1"),
+                "authors",
+                "authorId",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            crate::value_codec::decode_value(&old_parent.1)
+                .unwrap()
+                .find_field("name"),
+            Some(&crate::value_codec::RowValue::String("A".into()))
+        );
+        worker.drop_snapshot(snapshot);
         let _ = std::fs::remove_file(path);
     }
 

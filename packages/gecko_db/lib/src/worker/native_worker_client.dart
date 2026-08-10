@@ -477,6 +477,67 @@ class NativeWorkerClient {
     return [for (final b in (result as List)) List<int>.from(b as List)];
   }
 
+  /// M7.1: snapshot-bound parent lookup with Rust-side FK extraction.
+  Future<(List<int>, List<int>)?> snapshotRelationshipParent({
+    required int snapshot,
+    required String childTable,
+    required List<int> childKey,
+    required String parentTable,
+    required String foreignKeyField,
+  }) async {
+    final result = await _request('snapshotRelationshipParent', <Object?>[
+      snapshot,
+      childTable,
+      childKey,
+      parentTable,
+      foreignKeyField,
+    ]);
+    if (result == null) return null;
+    final pair = result as List;
+    return (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List));
+  }
+
+  /// M7.1: snapshot-bound child retrieval with Rust-side FK matching.
+  Future<List<(List<int>, List<int>)>> snapshotRelationshipChildren({
+    required int snapshot,
+    required String childTable,
+    required String foreignKeyField,
+    required List<List<int>> parentIds,
+    required String indexTable,
+    required List<(List<int>, List<int>)> indexRanges,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('snapshotRelationshipChildren', <Object?>[
+      snapshot,
+      childTable,
+      foreignKeyField,
+      parentIds,
+      indexTable,
+      [for (final range in indexRanges) <Object?>[range.$1, range.$2]],
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  Future<List<List<int>>> snapshotRelationshipJoinIds({
+    required int snapshot,
+    required String joinTable,
+    required String field,
+    required List<int> wantedId,
+  }) async {
+    final result = await _request('snapshotRelationshipJoinIds', <Object?>[
+      snapshot,
+      joinTable,
+      field,
+      wantedId,
+    ]);
+    return [for (final bytes in (result as List)) List<int>.from(bytes as List)];
+  }
+
   /// M4: full-scan + predicate with an early LIMIT/OFFSET (snapshot-bound).
   /// Returns at most [limit] matching rows after skipping [offset], stopping
   /// the scan as soon as the window fills.

@@ -201,12 +201,30 @@ class RelationshipManager {
     _checkChild(relationship);
     final fk = _fkField(relationship);
     final childKey = _byteOf(childId);
-    final raw = await _engine.rawGet(relationship.childCollection, childKey);
-    if (raw == null) return null;
-    final row = _mapOf(_codec.decode(raw));
-    final parentId = row[fk];
-    if (parentId == null) return null;
-    return _getRow(relationship.parentCollection, parentId);
+    final snap = await _engine.backend.snapshot();
+    try {
+      if (snap case final NativeRawSnapshot native) {
+        final entry = await native.relationshipParent(
+          childTable: relationship.childCollection,
+          childKey: childKey,
+          parentTable: relationship.parentCollection,
+          foreignKeyField: fk,
+        );
+        return entry == null ? null : _mapOf(_codec.decode(entry.value ?? const []));
+      }
+      final raw = await snap.read(relationship.childCollection, childKey);
+      if (raw == null) return null;
+      final row = _mapOf(_codec.decode(raw));
+      final parentId = row[fk];
+      if (parentId == null) return null;
+      final parentRaw = await snap.read(
+        relationship.parentCollection,
+        _byteOf(parentId),
+      );
+      return parentRaw == null ? null : _mapOf(_codec.decode(parentRaw));
+    } finally {
+      await snap.dispose();
+    }
   }
 
   /// Eager-loads children for a list of parents in one pass (avoids N+1).
@@ -222,6 +240,34 @@ class RelationshipManager {
     };
     final snap = await _engine.backend.snapshot();
     try {
+      if (snap case final NativeRawSnapshot native) {
+        final index = _indexLookup?.call(relationship.childCollection);
+        final ranges = <(ByteKey, ByteKey)>[];
+        if (index != null && index.secondary.isIndexed(fk)) {
+          for (final parentId in parentIds) {
+            final (start, end) = eqBounds(
+              relationship.childCollection,
+              fk,
+              parentId,
+              codec: _codec,
+            );
+            ranges.add((ByteKey(start), ByteKey(end)));
+          }
+        }
+        final entries = await native.relationshipChildren(
+          childTable: relationship.childCollection,
+          foreignKeyField: fk,
+          parentIds: [for (final id in parentIds) _byteOf(id)],
+          indexRanges: ranges,
+          predicateBytes: encodePredicate(const [], codec: _codec),
+        );
+        for (final entry in entries) {
+          final row = _mapOf(_codec.decode(entry.value ?? const []));
+          final pid = row[fk];
+          if (pid != null && wanted.contains(pid)) out[pid]!.add(row);
+        }
+        return out;
+      }
       final entries = await snap.scanAll(relationship.childCollection);
       for (final entry in entries) {
         final row = _mapOf(_codec.decode(entry.value ?? const []));
@@ -296,6 +342,14 @@ class RelationshipManager {
     final table = _joinTable(relationship);
     final snap = await _engine.backend.snapshot();
     try {
+      if (snap case final NativeRawSnapshot native) {
+        final encodedIds = await native.relationshipJoinIds(
+          joinTable: table,
+          field: 'left',
+          wantedId: _byteOf(leftId),
+        );
+        return [for (final bytes in encodedIds) _codec.decode(bytes)];
+      }
       final entries = await snap.scanAll(table);
       final out = <Object?>[];
       for (final entry in entries) {
@@ -320,6 +374,14 @@ class RelationshipManager {
     final table = _joinTable(relationship);
     final snap = await _engine.backend.snapshot();
     try {
+      if (snap case final NativeRawSnapshot native) {
+        final encodedIds = await native.relationshipJoinIds(
+          joinTable: table,
+          field: 'right',
+          wantedId: _byteOf(rightId),
+        );
+        return [for (final bytes in encodedIds) _codec.decode(bytes)];
+      }
       final entries = await snap.scanAll(table);
       final out = <Object?>[];
       for (final entry in entries) {
@@ -678,12 +740,6 @@ class RelationshipManager {
       for (final row in rows)
         if (accessor?.childIdOf(row) != null) accessor!.childIdOf(row),
     ];
-  }
-
-  Future<Map<Object?, Object?>?> _getRow(String collection, Object? id) async {
-    final raw = await _engine.rawGet(collection, _byteOf(id));
-    if (raw == null) return null;
-    return _mapOf(_codec.decode(raw));
   }
 
   String _fkField(Relationship r) =>

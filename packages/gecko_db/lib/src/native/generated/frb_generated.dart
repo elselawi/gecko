@@ -65,7 +65,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 128712327;
+  int get rustContentHash => -2081684140;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -346,6 +346,36 @@ abstract class RustLibApi extends BaseApi {
     required String table,
     Uint8List? start,
     Uint8List? end,
+  });
+
+  Future<List<(Uint8List, Uint8List)>>
+  crateApiNativeWorkerSnapshotRelationshipChildren({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String childTable,
+    required String foreignKeyField,
+    required List<Uint8List> parentIds,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> indexRanges,
+    required List<int> predicateBytes,
+  });
+
+  Future<List<Uint8List>> crateApiNativeWorkerSnapshotRelationshipJoinIds({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String joinTable,
+    required String field,
+    required List<int> wantedId,
+  });
+
+  Future<(Uint8List, Uint8List)?>
+  crateApiNativeWorkerSnapshotRelationshipParent({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String childTable,
+    required List<int> childKey,
+    required String parentTable,
+    required String foreignKeyField,
   });
 
   Future<StorageStats> crateApiNativeWorkerStorageStats({
@@ -2083,6 +2113,186 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<List<(Uint8List, Uint8List)>>
+  crateApiNativeWorkerSnapshotRelationshipChildren({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String childTable,
+    required String foreignKeyField,
+    required List<Uint8List> parentIds,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> indexRanges,
+    required List<int> predicateBytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(snapshot, serializer);
+          sse_encode_String(childTable, serializer);
+          sse_encode_String(foreignKeyField, serializer);
+          sse_encode_list_list_prim_u_8_strict(parentIds, serializer);
+          sse_encode_String(indexTable, serializer);
+          sse_encode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(
+            indexRanges,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 37,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerSnapshotRelationshipChildrenConstMeta,
+        argValues: [
+          that,
+          snapshot,
+          childTable,
+          foreignKeyField,
+          parentIds,
+          indexTable,
+          indexRanges,
+          predicateBytes,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiNativeWorkerSnapshotRelationshipChildrenConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_snapshot_relationship_children",
+        argNames: [
+          "that",
+          "snapshot",
+          "childTable",
+          "foreignKeyField",
+          "parentIds",
+          "indexTable",
+          "indexRanges",
+          "predicateBytes",
+        ],
+      );
+
+  @override
+  Future<List<Uint8List>> crateApiNativeWorkerSnapshotRelationshipJoinIds({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String joinTable,
+    required String field,
+    required List<int> wantedId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(snapshot, serializer);
+          sse_encode_String(joinTable, serializer);
+          sse_encode_String(field, serializer);
+          sse_encode_list_prim_u_8_loose(wantedId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 38,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerSnapshotRelationshipJoinIdsConstMeta,
+        argValues: [that, snapshot, joinTable, field, wantedId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerSnapshotRelationshipJoinIdsConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_snapshot_relationship_join_ids",
+        argNames: ["that", "snapshot", "joinTable", "field", "wantedId"],
+      );
+
+  @override
+  Future<(Uint8List, Uint8List)?>
+  crateApiNativeWorkerSnapshotRelationshipParent({
+    required NativeWorker that,
+    required BigInt snapshot,
+    required String childTable,
+    required List<int> childKey,
+    required String parentTable,
+    required String foreignKeyField,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(snapshot, serializer);
+          sse_encode_String(childTable, serializer);
+          sse_encode_list_prim_u_8_loose(childKey, serializer);
+          sse_encode_String(parentTable, serializer);
+          sse_encode_String(foreignKeyField, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 39,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNativeWorkerSnapshotRelationshipParentConstMeta,
+        argValues: [
+          that,
+          snapshot,
+          childTable,
+          childKey,
+          parentTable,
+          foreignKeyField,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerSnapshotRelationshipParentConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_snapshot_relationship_parent",
+        argNames: [
+          "that",
+          "snapshot",
+          "childTable",
+          "childKey",
+          "parentTable",
+          "foreignKeyField",
+        ],
+      );
+
+  @override
   Future<StorageStats> crateApiNativeWorkerStorageStats({
     required NativeWorker that,
   }) {
@@ -2097,7 +2307,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2133,7 +2343,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2208,6 +2418,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (Uint8List, Uint8List)
+  dco_decode_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as (Uint8List, Uint8List);
+  }
+
+  @protected
   BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_u_64(raw);
@@ -2256,6 +2475,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return (raw as List<dynamic>)
         .map(dco_decode_record_string_list_string)
         .toList();
+  }
+
+  @protected
+  (Uint8List, Uint8List)?
+  dco_decode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+            raw,
+          );
   }
 
   @protected
@@ -2395,6 +2627,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (Uint8List, Uint8List)
+  sse_decode_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      deserializer,
+    ));
+  }
+
+  @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_u_64(deserializer));
@@ -2471,6 +2714,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ans_.add(sse_decode_record_string_list_string(deserializer));
     }
     return ans_;
+  }
+
+  @protected
+  (Uint8List, Uint8List)?
+  sse_decode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -2627,6 +2886,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+    (Uint8List, Uint8List) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_record_list_prim_u_8_strict_list_prim_u_8_strict(
+      self,
+      serializer,
+    );
+  }
+
+  @protected
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self, serializer);
@@ -2699,6 +2970,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_record_string_list_string(item, serializer);
+    }
+  }
+
+  @protected
+  void
+  sse_encode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+    (Uint8List, Uint8List)? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
+        self,
+        serializer,
+      );
     }
   }
 
@@ -3262,6 +3550,58 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     table: table,
     start: start,
     end: end,
+  );
+
+  /// M7.1: snapshot-bound child retrieval using durable index ranges or a
+  /// pushed FK predicate.
+  Future<List<(Uint8List, Uint8List)>> snapshotRelationshipChildren({
+    required BigInt snapshot,
+    required String childTable,
+    required String foreignKeyField,
+    required List<Uint8List> parentIds,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> indexRanges,
+    required List<int> predicateBytes,
+  }) => RustLib.instance.api.crateApiNativeWorkerSnapshotRelationshipChildren(
+    that: this,
+    snapshot: snapshot,
+    childTable: childTable,
+    foreignKeyField: foreignKeyField,
+    parentIds: parentIds,
+    indexTable: indexTable,
+    indexRanges: indexRanges,
+    predicateBytes: predicateBytes,
+  );
+
+  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  Future<List<Uint8List>> snapshotRelationshipJoinIds({
+    required BigInt snapshot,
+    required String joinTable,
+    required String field,
+    required List<int> wantedId,
+  }) => RustLib.instance.api.crateApiNativeWorkerSnapshotRelationshipJoinIds(
+    that: this,
+    snapshot: snapshot,
+    joinTable: joinTable,
+    field: field,
+    wantedId: wantedId,
+  );
+
+  /// M7.1: snapshot-bound parent lookup. Rust extracts the child FK and
+  /// performs the parent point read before returning the parent row.
+  Future<(Uint8List, Uint8List)?> snapshotRelationshipParent({
+    required BigInt snapshot,
+    required String childTable,
+    required List<int> childKey,
+    required String parentTable,
+    required String foreignKeyField,
+  }) => RustLib.instance.api.crateApiNativeWorkerSnapshotRelationshipParent(
+    that: this,
+    snapshot: snapshot,
+    childTable: childTable,
+    childKey: childKey,
+    parentTable: parentTable,
+    foreignKeyField: foreignKeyField,
   );
 
   /// Reports physical/logical size and health counters (Workstream 5).

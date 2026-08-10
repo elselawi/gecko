@@ -158,6 +158,49 @@ Future<Object?> dispatchNativeWorker(
     case 'dropSnapshot':
       await worker.dropSnapshot(snapshot: _asBigInt(arguments[0]));
       return null;
+    case 'snapshotRelationshipParent':
+      final pair = await worker.snapshotRelationshipParent(
+        snapshot: _asBigInt(arguments[0]),
+        childTable: arguments[1] as String,
+        childKey: Uint8List.fromList(List<int>.from(arguments[2] as List)),
+        parentTable: arguments[3] as String,
+        foreignKeyField: arguments[4] as String,
+      );
+      return pair == null
+          ? null
+          : <Object?>[pair.$1.toList(), pair.$2.toList()];
+    case 'snapshotRelationshipChildren':
+      final pairs = await worker.snapshotRelationshipChildren(
+        snapshot: _asBigInt(arguments[0]),
+        childTable: arguments[1] as String,
+        foreignKeyField: arguments[2] as String,
+        parentIds: [
+          for (final id in (arguments[3] as List))
+            Uint8List.fromList(List<int>.from(id as List)),
+        ],
+        indexTable: arguments[4] as String,
+        indexRanges: [
+          for (final range in (arguments[5] as List))
+            (
+              Uint8List.fromList(List<int>.from((range as List)[0] as List)),
+              Uint8List.fromList(List<int>.from(range[1] as List)),
+            ),
+        ],
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[6] as List),
+        ),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
+    case 'snapshotRelationshipJoinIds':
+      final ids = await worker.snapshotRelationshipJoinIds(
+        snapshot: _asBigInt(arguments[0]),
+        joinTable: arguments[1] as String,
+        field: arguments[2] as String,
+        wantedId: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+      );
+      return [for (final id in ids) id.toList()];
     case 'snapshotQueryFilteredLimited':
       final pairs = await worker.snapshotQueryFilteredLimited(
         snapshot: _asBigInt(arguments[0]),

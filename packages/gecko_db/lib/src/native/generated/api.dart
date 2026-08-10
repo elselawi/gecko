@@ -333,6 +333,36 @@ abstract class NativeWorker implements RustOpaqueInterface {
     Uint8List? end,
   });
 
+  /// M7.1: snapshot-bound child retrieval using durable index ranges or a
+  /// pushed FK predicate.
+  Future<List<(Uint8List, Uint8List)>> snapshotRelationshipChildren({
+    required BigInt snapshot,
+    required String childTable,
+    required String foreignKeyField,
+    required List<Uint8List> parentIds,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> indexRanges,
+    required List<int> predicateBytes,
+  });
+
+  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  Future<List<Uint8List>> snapshotRelationshipJoinIds({
+    required BigInt snapshot,
+    required String joinTable,
+    required String field,
+    required List<int> wantedId,
+  });
+
+  /// M7.1: snapshot-bound parent lookup. Rust extracts the child FK and
+  /// performs the parent point read before returning the parent row.
+  Future<(Uint8List, Uint8List)?> snapshotRelationshipParent({
+    required BigInt snapshot,
+    required String childTable,
+    required List<int> childKey,
+    required String parentTable,
+    required String foreignKeyField,
+  });
+
   /// Reports physical/logical size and health counters (Workstream 5).
   Future<StorageStats> storageStats();
 
