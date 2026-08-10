@@ -152,6 +152,83 @@ void main() {
         await db.close();
       });
 
+      test(
+        'M5 multi-equality intersection uses both durable indexes',
+        () async {
+          final db = await open('multi-eq');
+          final col = _coll(db, 't', indexFields: ['name', 'age']);
+          for (var i = 0; i < 100; i++) {
+            await col.put(_Rec('r$i', 'name-${i % 5}', i));
+          }
+          final q = col.where({'name': 'name-3', 'age': 33});
+          final result = await q.findAll();
+          expect(result.map((r) => r.id), ['r33']);
+          expect(q.lastPlan, IndexPlan.secondaryIndex);
+          await db.close();
+        },
+      );
+
+      test(
+        'M5 indexed prefix uses durable field candidates and Rust recheck',
+        () async {
+          final db = await open('prefix-indexed');
+          final col = _coll(db, 't', prefixFields: ['name']);
+          for (var i = 0; i < 40; i++) {
+            await col.put(_Rec('r$i', i.isEven ? 'alpha-$i' : 'beta-$i', i));
+          }
+          final q = col.where().prefix('name', 'alpha-');
+          final result = await q.findAll();
+          expect(result, hasLength(20));
+          expect(result.every((r) => r.name.startsWith('alpha-')), isTrue);
+          expect(q.lastPlan, IndexPlan.secondaryIndex);
+          await db.close();
+        },
+      );
+
+      test('M5 indexed range + prefix + equality intersect together', () async {
+        final db = await open('three-way-index');
+        final col = _coll(
+          db,
+          't',
+          indexFields: ['age', 'nick'],
+          prefixFields: ['name'],
+        );
+        for (var i = 0; i < 100; i++) {
+          await col.put(_Rec('r$i', 'name-${i % 4}', i, 'g${i % 3}'));
+        }
+        final q = col
+            .where({'nick': 'g0'})
+            .range('age', min: 20, max: 39)
+            .prefix('name', 'name-1');
+        final result = await q.findAll();
+        expect(result.map((r) => r.id), ['r21', 'r33']);
+        expect(q.lastPlan, IndexPlan.secondaryIndex);
+        await db.close();
+      });
+
+      test(
+        'M5 indexed range and prefix aggregates retain index plan',
+        () async {
+          final db = await open('indexed-aggregates');
+          final col = _coll(
+            db,
+            't',
+            indexFields: ['age'],
+            prefixFields: ['name'],
+          );
+          for (var i = 0; i < 50; i++) {
+            await col.put(_Rec('r$i', 'name-${i % 2}', i, 'g${i % 3}'));
+          }
+          final rangeQ = col.where().range('age', min: 10, max: 19);
+          expect(await rangeQ.count(), 10);
+          expect(rangeQ.lastPlan, IndexPlan.secondaryIndex);
+          final prefixQ = col.where().prefix('name', 'name-1');
+          expect((await prefixQ.distinct('nick')).toSet(), {'g0', 'g1', 'g2'});
+          expect(prefixQ.lastPlan, IndexPlan.secondaryIndex);
+          await db.close();
+        },
+      );
+
       test('unindexed range query falls back to a full scan', () async {
         final db = await open('range-unindexed');
         final col = _coll(db, 't');
@@ -459,6 +536,24 @@ void main() {
       },
     );
 
+    test('M5 indexed candidate routes avoid a native full scan', () async {
+      final db = await openNative(slowQueryThreshold: 1);
+      final col = _coll(db, 't', indexFields: ['age'], prefixFields: ['name']);
+      for (var i = 0; i < 500; i++) {
+        await col.put(_Rec('r$i', 'name-${i % 5}', i, 'g${i % 3}'));
+      }
+      final range = col.where().range('age', min: 120, max: 129);
+      expect(await range.findAll(), hasLength(10));
+      expect(range.lastPlan, IndexPlan.secondaryIndex);
+      final prefix = col.where().prefix('name', 'name-1');
+      expect(await prefix.findAll(), hasLength(100));
+      expect(prefix.lastPlan, IndexPlan.secondaryIndex);
+      final rec = db.engine.recentSlowQueries.last;
+      expect(rec.indexed, isTrue);
+      expect(rec.timings!.backendRead, lessThan(10000));
+      await db.close();
+    });
+
     test(
       'indexed equality with a sort still agrees with the in-memory plan',
       () async {
@@ -584,19 +679,16 @@ void main() {
     );
 
     test(
-      'multi-eq / range / prefix fall back to the Dart per-id path',
+      'M5 covered multi-eq / range / prefix use durable candidates',
       () async {
-        // Phase 2 step 1 indexed-eq fast path handles single covered equality
-        // only; mixed filters (eq + range, range alone, prefix) are not
-        // index-served. On the native backend they now go through the Phase 2
-        // step 2 predicate-push full scan (`nativeFilteredScan`); on the
-        // in-memory backend they use the Dart per-id read path. Either way
-        // the results must be correct.
+        // M5 intersects broad durable-index candidate ranges in Rust and
+        // rechecks the complete predicate there. The result remains semantic
+        // parity with the Dart index, while avoiding a full native scan.
         final db = await openNative();
         final col = _coll(
           db,
           't',
-          indexFields: ['nick'],
+          indexFields: ['nick', 'age'],
           prefixFields: ['name'],
         );
         for (var i = 0; i < 120; i++) {
@@ -607,11 +699,13 @@ void main() {
         // Range on a numeric indexed field (no eq) — Dart path.
         final rangeQ = col.where().range('age', min: 20, max: 25);
         final rangeResult = await rangeQ.findAll();
-        expect(rangeResult, isNotEmpty);
-        // Prefix on a prefixed field — Dart path.
+        expect(rangeResult, hasLength(24));
+        expect(rangeQ.lastPlan, IndexPlan.secondaryIndex);
+        // Prefix on a prefixed field — M5 durable candidate path.
         final prefixQ = col.where().prefix('name', 'name-1');
         final prefixResult = await prefixQ.findAll();
         expect(prefixResult, hasLength(30)); // 'name-1' for i ≡ 1 mod 4 → 30
+        expect(prefixQ.lastPlan, IndexPlan.secondaryIndex);
         await db.close();
       },
     );

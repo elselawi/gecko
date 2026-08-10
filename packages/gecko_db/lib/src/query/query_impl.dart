@@ -196,10 +196,9 @@ class QueryImpl<T> implements Query<T> {
   }
 
   /// When [idx] is non-null and the query has exactly one equality filter
-  /// covered by the index, returns `(field, value)` for a durable-index
+  /// covered by the index, returns `(field, value)` for the exact durable-index
   /// range scan. Returns null for multi-eq, range, prefix, or uncovered
-  /// queries (those stay on the Dart per-id path until the corresponding
-  /// bound helpers land).
+  /// queries; M5 routes those through `_nativeIndexedRanges` instead.
   (String, Object?)? _nativeEqProbe(SecondaryIndex? idx) {
     if (idx == null) return null;
     final eqs = <String, Object?>{
@@ -208,13 +207,33 @@ class QueryImpl<T> implements Query<T> {
     };
     if (eqs.length != 1 || !idx.coversEq(eqs)) return null;
     // Range/prefix filters mixed with the eq would also need primitive
-    // intersection in Rust; defer those to the Dart path.
+    // intersection in Rust; the M5 multi-index route handles those queries.
     final hasRangeOrPrefix = _filters.any(
       (f) => f.isRangeFilter || f.isPrefixFilter,
     );
     if (hasRangeOrPrefix) return null;
     final entry = eqs.entries.single;
     return (entry.key, entry.value);
+  }
+
+  /// Returns broad durable-index bounds for every filter that can narrow a
+  /// native candidate set. Equality uses an exact value bound; range and
+  /// prefix use the whole `(table, field)` span because DefaultWireCodec v1
+  /// is not semantic-order-preserving for all supported values. Rust always
+  /// rechecks the complete predicate, so broad bounds remain correct.
+  List<(List<int>, List<int>)>? _nativeIndexedRanges(SecondaryIndex? idx) {
+    if (idx == null) return null;
+    final ranges = <(List<int>, List<int>)>[];
+    for (final f in _filters) {
+      if (f.isIndexUsable && idx.isIndexed(f.field)) {
+        ranges.add(eqBounds(_table, f.field, f.value, codec: _codec));
+      } else if (f.isRangeFilter && idx.isRangeIndexed(f.field)) {
+        ranges.add(fieldBounds(_table, f.field, codec: _codec));
+      } else if (f.isPrefixFilter && idx.isPrefixed(f.field)) {
+        ranges.add(fieldBounds(_table, f.field, codec: _codec));
+      }
+    }
+    return ranges.isEmpty ? null : ranges;
   }
 
   /// Computes the candidate-id set from any index-usable filters (equality,
@@ -270,7 +289,8 @@ class QueryImpl<T> implements Query<T> {
       // covered by the index, traverse the durable `__gecko_index` table in
       // one FRB hop and join back to the rows — eliminating the Dart-side
       // N+1 point reads (88% of indexed eq per the Phase 1 profile).
-      // Multi-eq/range/prefix stay on the Dart per-id path for now.
+      // M5 handles multi-eq/range/prefix below through Rust candidate
+      // intersection and complete predicate recheck.
       final nativeEq = _nativeEqProbe(idx);
       if (nativeEq != null && snap is NativeRawSnapshot) {
         final (field, value) = nativeEq;
@@ -320,6 +340,50 @@ class QueryImpl<T> implements Query<T> {
             if (t != null) t.matched++;
             yield item;
           }
+        }
+        if (t != null) t.stopAccum(_QueryStage.predicate);
+        return;
+      }
+
+      // M5: range, prefix, and multi-equality filters use durable-index
+      // candidate intersection in Rust. The broad field ranges are followed
+      // by a complete Rust predicate recheck, preserving semantic range and
+      // prefix behavior despite the v1 codec's non-sortable value bytes.
+      final nativeRanges = _nativeIndexedRanges(idx);
+      if (nativeRanges != null && snap is NativeRawSnapshot) {
+        if (t != null) t.start(_QueryStage.backendRead);
+        final entries = await snap.queryIndexedMulti(
+          table: _table,
+          ranges: [
+            for (final range in nativeRanges)
+              (ByteKey(range.$1), ByteKey(range.$2)),
+          ],
+          predicateBytes: encodePredicate(_filters, codec: _codec),
+        );
+        if (t != null) t.stop(_QueryStage.backendRead);
+        final decoded = <_Decoded>[];
+        for (final entry in entries) {
+          if (t != null) {
+            t.scanned++;
+            t.start(_QueryStage.decode);
+          }
+          final row = _mapOf(_codec.decode(entry.value ?? const []));
+          if (t != null) {
+            t.stop(_QueryStage.decode);
+            t.start(_QueryStage.mapCopy);
+          }
+          if (t != null) t.stop(_QueryStage.mapCopy);
+          decoded.add(_Decoded(entry.key, row));
+        }
+        if (_sort.isNotEmpty) {
+          if (t != null) t.start(_QueryStage.sort);
+          decoded.sort(_compareDecoded);
+          if (t != null) t.stop(_QueryStage.sort);
+        }
+        if (t != null) t.start(_QueryStage.predicate);
+        for (final item in decoded) {
+          if (t != null) t.matched++;
+          yield item;
         }
         if (t != null) t.stopAccum(_QueryStage.predicate);
         return;
@@ -689,7 +753,7 @@ class QueryImpl<T> implements Query<T> {
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      if (_nativeEqProbe(secondary?.secondary) == null &&
+      if (_nativeIndexedRanges(secondary?.secondary) == null &&
           snap is NativeRawSnapshot) {
         final predicateBytes = encodePredicate(_filters, codec: _codec);
         lastPlan = IndexPlan.nativeFilteredScan;
@@ -718,7 +782,7 @@ class QueryImpl<T> implements Query<T> {
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      if (_nativeEqProbe(secondary?.secondary) == null &&
+      if (_nativeIndexedRanges(secondary?.secondary) == null &&
           snap is NativeRawSnapshot) {
         final predicateBytes = encodePredicate(_filters, codec: _codec);
         lastPlan = IndexPlan.nativeFilteredScan;

@@ -498,6 +498,28 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
+  /// M5: intersects multiple durable-index candidate ranges in Rust and
+  /// rechecks the complete predicate in the same MVCC snapshot.
+  Future<List<RawEntry>> queryIndexedMulti({
+    required String table,
+    required List<(ByteKey, ByteKey)> ranges,
+    required List<int> predicateBytes,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQueryIndexedMulti(
+        snapshot: _snapshotId,
+        table: table,
+        indexTable: indexTable,
+        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        predicateBytes: predicateBytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
   /// M4: index-served query with an early LIMIT/OFFSET, snapshot-bound.
   Future<List<RawEntry>> queryIndexedLimited({
     required String table,

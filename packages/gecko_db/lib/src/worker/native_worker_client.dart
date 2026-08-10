@@ -482,6 +482,30 @@ class NativeWorkerClient {
     ];
   }
 
+  /// M5: snapshot-bound intersection of multiple durable-index candidate
+  /// ranges. Rust rechecks the complete predicate before returning rows.
+  Future<List<(List<int>, List<int>)>> snapshotQueryIndexedMulti({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<(List<int>, List<int>)> ranges,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('snapshotQueryIndexedMulti', <Object?>[
+      snapshot,
+      table,
+      indexTable,
+      [
+        for (final range in ranges) <Object?>[range.$1, range.$2],
+      ],
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
   /// M4: index-served query with an early LIMIT/OFFSET (snapshot-bound).
   Future<List<(List<int>, List<int>)>> snapshotQueryIndexedLimited({
     required int snapshot,

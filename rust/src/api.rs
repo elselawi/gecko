@@ -211,6 +211,22 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// M5: intersects multiple durable-index candidate ranges in one
+    /// snapshot-bound operation and rechecks the complete predicate in Rust.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn snapshot_query_indexed_multi(
+        &self,
+        snapshot: u64,
+        table: String,
+        index_table: String,
+        ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_indexed_multi(snapshot, &table, &index_table, &ranges, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
     /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
     /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
     /// (decoding only the referenced fields), and returns only the matching

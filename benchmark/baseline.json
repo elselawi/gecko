@@ -2,88 +2,88 @@
   "benchmark": "gecko_db_local_stopgap",
   "platform": "windows",
   "dart": "3.10.8",
-  "generatedAt": "2026-08-09T21:54:26.198571Z",
+  "generatedAt": "2026-08-10T07:10:34.092310Z",
   "tolerance": 0.3,
   "results": [
     {
       "backend": "in-memory",
       "workload": "insert",
-      "msPerOp": 3.247832
+      "msPerOp": 3.3540520000000003
     },
     {
       "backend": "in-memory",
       "workload": "bulkInsert",
-      "msPerOp": 0.28354
+      "msPerOp": 0.29557799999999995
     },
     {
       "backend": "in-memory",
       "workload": "hotRead",
-      "msPerOp": 0.0022841999999999997
+      "msPerOp": 0.0012234000000000001
     },
     {
       "backend": "in-memory",
       "workload": "coldRead",
-      "msPerOp": 0.0025992000000000003
+      "msPerOp": 0.0033038
     },
     {
       "backend": "in-memory",
       "workload": "rangeScan",
-      "msPerOp": 56.1507
+      "msPerOp": 58.21496666666667
     },
     {
       "backend": "in-memory",
       "workload": "filteredQuery",
-      "msPerOp": 49.09836666666667
+      "msPerOp": 49.1361
     },
     {
       "backend": "in-memory",
       "workload": "watch",
-      "msPerOp": 132.92954999999998
+      "msPerOp": 136.15688
     },
     {
       "backend": "in-memory",
       "workload": "txnCommit",
-      "msPerOp": 138.608595
+      "msPerOp": 134.954405
     },
     {
       "backend": "native file",
       "workload": "insert",
-      "msPerOp": 1.09339
+      "msPerOp": 1.070516
     },
     {
       "backend": "native file",
       "workload": "bulkInsert",
-      "msPerOp": 0.061793
+      "msPerOp": 0.061966
     },
     {
       "backend": "native file",
       "workload": "hotRead",
-      "msPerOp": 0.001656
+      "msPerOp": 0.0016534
     },
     {
       "backend": "native file",
       "workload": "coldRead",
-      "msPerOp": 0.0177052
+      "msPerOp": 0.0176186
     },
     {
       "backend": "native file",
       "workload": "rangeScan",
-      "msPerOp": 96.3175
+      "msPerOp": 95.42723333333333
     },
     {
       "backend": "native file",
       "workload": "filteredQuery",
-      "msPerOp": 9.6942
+      "msPerOp": 9.800366666666667
     },
     {
       "backend": "native file",
       "workload": "watch",
-      "msPerOp": 1.2635399999999999
+      "msPerOp": 1.2350999999999999
     },
     {
       "backend": "native file",
       "workload": "txnCommit",
-      "msPerOp": 1.266945
+      "msPerOp": 1.240665
     }
   ]
 }

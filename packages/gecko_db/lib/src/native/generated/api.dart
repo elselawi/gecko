@@ -262,6 +262,16 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
+  /// M5: intersects multiple durable-index candidate ranges in one
+  /// snapshot-bound operation and rechecks the complete predicate in Rust.
+  Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedMulti({
+    required BigInt snapshot,
+    required String table,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> ranges,
+    required List<int> predicateBytes,
+  });
+
   /// Snapshot-bound variant of [Self::query_indexed_ordered].
   Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedOrdered({
     required BigInt snapshot,

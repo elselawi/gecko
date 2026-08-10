@@ -9,7 +9,7 @@ use redb::{
     backends::FileBackend, Database, DatabaseError, ReadOnlyDatabase, ReadTransaction,
     ReadableDatabase, ReadableTable, TableDefinition, TableHandle,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -750,6 +750,96 @@ impl RedbWorker {
             // deleted out of band) is silently skipped: the durable index is
             // maintained atomically with the data, so this should not happen
             // in normal operation, and skipping is the safe fallback.
+        }
+        Ok(result)
+    }
+
+    /// M5: scans one or more durable-index ranges, intersects their candidate
+    /// row keys, and re-evaluates the complete predicate in Rust. Range and
+    /// prefix filters use broad `(table, field)` bounds because the v1 row
+    /// codec is not generally order-preserving (notably for negative numbers
+    /// and length-prefixed strings). The durable index narrows the candidate
+    /// set; [predicate_bytes] remains the semantic source of truth.
+    pub fn query_indexed_multi(
+        &self,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_indexed_multi_with(&transaction, table, index_table, ranges, predicate_bytes)
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed_multi].
+    pub fn snapshot_query_indexed_multi(
+        &self,
+        snapshot: u64,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_indexed_multi_with(transaction, table, index_table, ranges, predicate_bytes)
+    }
+
+    fn query_indexed_multi_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        if ranges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let index_def = table_definition(index_table);
+        let index_table = match transaction.open_table(index_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+
+        // A BTreeSet gives deterministic candidate order and makes each
+        // intersection independent of hash iteration order.
+        let mut candidates: Option<BTreeSet<Vec<u8>>> = None;
+        for (start, end) in ranges {
+            let keys = index_table
+                .range(start.as_slice()..=end.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
+                .collect::<BTreeSet<_>>();
+            candidates = Some(match candidates {
+                None => keys,
+                Some(previous) => previous.intersection(&keys).cloned().collect(),
+            });
+            if candidates.as_ref().is_some_and(BTreeSet::is_empty) {
+                return Ok(Vec::new());
+            }
+        }
+
+        let user_def = table_definition(table);
+        let user_table = match transaction.open_table(user_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let mut result = Vec::new();
+        for row_key in candidates.unwrap_or_default() {
+            let Some(value) = user_table
+                .get(row_key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+            else {
+                continue;
+            };
+            let row_bytes = value.value();
+            if predicate.test_bytes(row_bytes) {
+                result.push((row_key, row_bytes.to_vec()));
+            }
         }
         Ok(result)
     }
@@ -2226,6 +2316,30 @@ mod tests {
                 end: None,
             });
         }
+        // Also index nick so M5 tests can intersect two different fields.
+        for k in [
+            b"k0".to_vec(),
+            b"k1".to_vec(),
+            b"k2".to_vec(),
+            b"k3".to_vec(),
+        ] {
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "__gecko_index".into(),
+                key: Some(index_key("items", "nick", &encode_test_string("g0"), &k)),
+                value: Some(k),
+                start: None,
+                end: None,
+            });
+        }
+        ops.push(Op {
+            kind: OpKind::Put,
+            table: "__gecko_index".into(),
+            key: Some(index_key("items", "nick", &encode_test_string("g1"), b"k4")),
+            value: Some(b"k4".to_vec()),
+            start: None,
+            end: None,
+        });
         worker.apply_batch(&ops).unwrap();
         (path, worker)
     }
@@ -2417,6 +2531,47 @@ mod tests {
             .unwrap();
         assert_eq!(off[0].0, b"k2");
         assert_eq!(off[1].0, b"k3");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_multi_intersects_and_rechecks_predicate() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::RowValue;
+        let (path, worker) = seed_indexed_age_fixture("qmulti");
+        let age_bounds = age_field_bounds();
+        let nick_full = index_key(
+            "items",
+            "nick",
+            &[crate::value_codec::TAG_NULL],
+            &[crate::value_codec::TAG_NULL],
+        );
+        let nick_start = nick_full[..nick_full.len() - 2].to_vec();
+        let mut nick_end = nick_start.clone();
+        let last = nick_end.pop().unwrap();
+        nick_end.push(last + 1);
+        let predicate = predicate::encode_predicate(&[
+            Filter::Range {
+                field: "age".into(),
+                min: Some(RowValue::Int64(15)),
+                max: Some(RowValue::Int64(35)),
+            },
+            Filter::Equals {
+                field: "nick".into(),
+                value: RowValue::String("g0".into()),
+            },
+        ]);
+        let got = worker
+            .query_indexed_multi(
+                "items",
+                "__gecko_index",
+                &[age_bounds, (nick_start, nick_end)],
+                &predicate,
+            )
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, b"k1");
+        assert_eq!(got[1].0, b"k2");
         let _ = std::fs::remove_file(path);
     }
 

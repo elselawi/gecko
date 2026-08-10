@@ -90,68 +90,111 @@ void main() {
 
   void runSuite(String label, Future<DatabaseImpl> Function(String tag) open) {
     group('M4 sort + limit ($label)', () {
-      test('ORDER BY indexedField LIMIT matches in-memory and uses the index', () async {
-        final db = await open('sort-idx');
-        await _seed(db, 't');
-        final col = _coll(db, 't', indexFields: ['nick']);
-        final q = col.where().sort([SortSpec('nick')]).limit(5);
-        final result = await q.findAll();
-        // 4 rows have nick g0 (r0/r10/r20/r30) and sort first; the 5th is g1.
-        expect(result, hasLength(5));
-        expect(result.map((r) => r.nick).toList(), ['g0', 'g0', 'g0', 'g0', 'g1']);
-        // Native streams the durable index (secondaryIndex); in-memory has no
-        // Rust and falls back to a full scan + Dart sort (still parity-correct).
-        expect(
-          q.lastPlan,
-          db.engine.backend is NativeRawBackend
-              ? IndexPlan.secondaryIndex
-              : IndexPlan.fullScan,
-        );
-        // Parity with in-memory full sort.
-        final mem = await _coll(db, 't').where().sort([SortSpec('nick')]).findAll();
-        expect(result.map((r) => r.id).toList(), mem.take(5).map((r) => r.id).toList());
-        await db.close();
-      });
+      test(
+        'ORDER BY indexedField LIMIT matches in-memory and uses the index',
+        () async {
+          final db = await open('sort-idx');
+          await _seed(db, 't');
+          final col = _coll(db, 't', indexFields: ['nick']);
+          final q = col.where().sort([SortSpec('nick')]).limit(5);
+          final result = await q.findAll();
+          // 4 rows have nick g0 (r0/r10/r20/r30) and sort first; the 5th is g1.
+          expect(result, hasLength(5));
+          expect(result.map((r) => r.nick).toList(), [
+            'g0',
+            'g0',
+            'g0',
+            'g0',
+            'g1',
+          ]);
+          // Native streams the durable index (secondaryIndex); in-memory has no
+          // Rust and falls back to a full scan + Dart sort (still parity-correct).
+          expect(
+            q.lastPlan,
+            db.engine.backend is NativeRawBackend
+                ? IndexPlan.secondaryIndex
+                : IndexPlan.fullScan,
+          );
+          // Parity with in-memory full sort.
+          final mem = await _coll(
+            db,
+            't',
+          ).where().sort([SortSpec('nick')]).findAll();
+          expect(
+            result.map((r) => r.id).toList(),
+            mem.take(5).map((r) => r.id).toList(),
+          );
+          await db.close();
+        },
+      );
 
       test('ORDER BY indexedField with offset + LIMIT windows match', () async {
         final db = await open('sort-win');
         await _seed(db, 't');
         final col = _coll(db, 't', indexFields: ['nick']);
         final full = await col.where().sort([SortSpec('nick')]).findAll();
-        for (final (offset, limit) in [(0, 5), (3, 4), (8, 20), (45, 10), (50, 2)]) {
-          final q = col.where().sort([SortSpec('nick')]).offset(offset).limit(limit);
+        for (final (offset, limit) in [
+          (0, 5),
+          (3, 4),
+          (8, 20),
+          (45, 10),
+          (50, 2),
+        ]) {
+          final q = col
+              .where()
+              .sort([SortSpec('nick')])
+              .offset(offset)
+              .limit(limit);
           final got = (await q.findAll()).map((r) => r.id).toList();
-          final expected = full.skip(offset).take(limit).map((r) => r.id).toList();
+          final expected = full
+              .skip(offset)
+              .take(limit)
+              .map((r) => r.id)
+              .toList();
           expect(got, expected, reason: 'offset=$offset limit=$limit');
         }
         await db.close();
       });
 
-      test('missing sort-field rows sort last (ascending) / first (descending)', () async {
-        final db = await open('sort-missing');
-        await _seed(db, 't');
-        final col = _coll(db, 't', indexFields: ['nick']);
-        // Ascending, no limit: nick rows then no-nick rows.
-        final asc = await col.where().sort([SortSpec('nick')]).findAll();
-        expect(asc.last.id, 'noNick2'); // no-nick rows last (stable: noNick1, noNick2)
-        expect(asc[asc.length - 2].id, 'noNick1');
-        // Descending uses the top-K path on native (missing-first).
-        final desc = await col
-            .where()
-            .sort([SortSpec('nick', SortOrder.descending)])
-            .findAll();
-        expect(desc.first.id, 'noNick1');
-        expect(desc[1].id, 'noNick2');
-        // Parity on ids.
-        final memAsc = await _coll(db, 't').where().sort([SortSpec('nick')]).findAll();
-        expect(asc.map((r) => r.id).toList(), memAsc.map((r) => r.id).toList());
-        final memDesc = await _coll(db, 't')
-            .where()
-            .sort([SortSpec('nick', SortOrder.descending)])
-            .findAll();
-        expect(desc.map((r) => r.id).toList(), memDesc.map((r) => r.id).toList());
-        await db.close();
-      });
+      test(
+        'missing sort-field rows sort last (ascending) / first (descending)',
+        () async {
+          final db = await open('sort-missing');
+          await _seed(db, 't');
+          final col = _coll(db, 't', indexFields: ['nick']);
+          // Ascending, no limit: nick rows then no-nick rows.
+          final asc = await col.where().sort([SortSpec('nick')]).findAll();
+          expect(
+            asc.last.id,
+            'noNick2',
+          ); // no-nick rows last (stable: noNick1, noNick2)
+          expect(asc[asc.length - 2].id, 'noNick1');
+          // Descending uses the top-K path on native (missing-first).
+          final desc = await col.where().sort([
+            SortSpec('nick', SortOrder.descending),
+          ]).findAll();
+          expect(desc.first.id, 'noNick1');
+          expect(desc[1].id, 'noNick2');
+          // Parity on ids.
+          final memAsc = await _coll(
+            db,
+            't',
+          ).where().sort([SortSpec('nick')]).findAll();
+          expect(
+            asc.map((r) => r.id).toList(),
+            memAsc.map((r) => r.id).toList(),
+          );
+          final memDesc = await _coll(
+            db,
+            't',
+          ).where().sort([SortSpec('nick', SortOrder.descending)]).findAll();
+          expect(
+            desc.map((r) => r.id).toList(),
+            memDesc.map((r) => r.id).toList(),
+          );
+          await db.close();
+        },
+      );
 
       test('non-indexed sort uses the top-K path with parity', () async {
         final db = await open('sort-topk');
@@ -166,26 +209,20 @@ void main() {
         );
         expect(
           got.map((r) => r.id).toList(),
-          (await _coll(db, 't').where().sort([SortSpec('age')]).findAll())
-              .take(7)
-              .map((r) => r.id)
-              .toList(),
+          (await _coll(db, 't').where().sort([
+            SortSpec('age'),
+          ]).findAll()).take(7).map((r) => r.id).toList(),
         );
         // With a filter: age >= 5, sorted by age ascending.
-        final filtered = _coll(db, 't')
-            .where()
-            .range('age', min: 5)
-            .sort([SortSpec('age')])
-            .limit(6);
+        final filtered = _coll(
+          db,
+          't',
+        ).where().range('age', min: 5).sort([SortSpec('age')]).limit(6);
         final gotF = await filtered.findAll();
-        final expectedF = (await _coll(db, 't')
-                .where()
-                .range('age', min: 5)
-                .sort([SortSpec('age')])
-                .findAll())
-            .take(6)
-            .map((r) => r.id)
-            .toList();
+        final expectedF =
+            (await _coll(db, 't').where().range('age', min: 5).sort([
+              SortSpec('age'),
+            ]).findAll()).take(6).map((r) => r.id).toList();
         expect(gotF.map((r) => r.id).toList(), expectedF);
         await db.close();
       });
@@ -195,68 +232,65 @@ void main() {
         await _seed(db, 't');
         // Multi-field: nick asc, then age desc (nick is indexed, but multi-field
         // sorts are not index-covered → top-K).
-        final q = _coll(db, 't', indexFields: ['nick']).where()
+        final q = _coll(db, 't', indexFields: ['nick'])
+            .where()
             .sort([SortSpec('nick'), SortSpec('age', SortOrder.descending)])
             .limit(10);
         final got = (await q.findAll()).map((r) => r.id).toList();
-        final expected = (await _coll(db, 't')
-                .where()
-                .sort([SortSpec('nick'), SortSpec('age', SortOrder.descending)])
-                .findAll())
-            .take(10)
-            .map((r) => r.id)
-            .toList();
+        final expected = (await _coll(db, 't').where().sort([
+          SortSpec('nick'),
+          SortSpec('age', SortOrder.descending),
+        ]).findAll()).take(10).map((r) => r.id).toList();
         expect(got, expected);
         // Descending single-field on an indexed field.
-        final desc = _coll(db, 't', indexFields: ['nick']).where()
-            .sort([SortSpec('nick', SortOrder.descending)])
-            .limit(6);
+        final desc = _coll(
+          db,
+          't',
+          indexFields: ['nick'],
+        ).where().sort([SortSpec('nick', SortOrder.descending)]).limit(6);
         final gotD = (await desc.findAll()).map((r) => r.id).toList();
-        final expectedD = (await _coll(db, 't')
-                .where()
-                .sort([SortSpec('nick', SortOrder.descending)])
-                .findAll())
-            .take(6)
-            .map((r) => r.id)
-            .toList();
+        final expectedD = (await _coll(db, 't').where().sort([
+          SortSpec('nick', SortOrder.descending),
+        ]).findAll()).take(6).map((r) => r.id).toList();
         expect(gotD, expectedD);
         await db.close();
       });
 
-      test('non-sorted limit/offset stops early on native and matches', () async {
-        final db = await open('early-limit');
-        await _seed(db, 't');
-        // Unindexed filtered query with a window.
-        final q = _coll(db, 't').where().range('age', min: 5).offset(4).limit(6);
-        final got = (await q.findAll()).map((r) => r.id).toList();
-        final expected = (await _coll(db, 't')
-                .where()
-                .range('age', min: 5)
-                .findAll())
-            .skip(4)
-            .take(6)
-            .map((r) => r.id)
-            .toList();
-        expect(got, expected);
-        // Indexed-eq query with a window.
-        final iq = _coll(db, 't', indexFields: ['nick'])
-            .where({'nick': 'g3'})
-            .offset(1)
-            .limit(2);
-        final gotI = (await iq.findAll()).map((r) => r.id).toList();
-        final expectedI = (await _coll(db, 't', indexFields: ['nick'])
-                .where({'nick': 'g3'})
-                .findAll())
-            .skip(1)
-            .take(2)
-            .map((r) => r.id)
-            .toList();
-        expect(gotI, expectedI);
-        expect(iq.lastPlan, IndexPlan.secondaryIndex);
-        // limit 0 → empty on both.
-        expect(await _coll(db, 't').where().limit(0).findAll(), isEmpty);
-        await db.close();
-      });
+      test(
+        'non-sorted limit/offset stops early on native and matches',
+        () async {
+          final db = await open('early-limit');
+          await _seed(db, 't');
+          // Unindexed filtered query with a window.
+          final q = _coll(
+            db,
+            't',
+          ).where().range('age', min: 5).offset(4).limit(6);
+          final got = (await q.findAll()).map((r) => r.id).toList();
+          final expected =
+              (await _coll(db, 't').where().range('age', min: 5).findAll())
+                  .skip(4)
+                  .take(6)
+                  .map((r) => r.id)
+                  .toList();
+          expect(got, expected);
+          // Indexed-eq query with a window.
+          final iq = _coll(
+            db,
+            't',
+            indexFields: ['nick'],
+          ).where({'nick': 'g3'}).offset(1).limit(2);
+          final gotI = (await iq.findAll()).map((r) => r.id).toList();
+          final expectedI = (await _coll(db, 't', indexFields: ['nick']).where({
+            'nick': 'g3',
+          }).findAll()).skip(1).take(2).map((r) => r.id).toList();
+          expect(gotI, expectedI);
+          expect(iq.lastPlan, IndexPlan.secondaryIndex);
+          // limit 0 → empty on both.
+          expect(await _coll(db, 't').where().limit(0).findAll(), isEmpty);
+          await db.close();
+        },
+      );
 
       test('first() with a sort returns the ordered first row', () async {
         final db = await open('first-sort');

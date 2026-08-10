@@ -174,7 +174,7 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M4 done; M5–M10 open). Each milestone
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M5 done; M6–M10 open). Each milestone
 > has a goal, concrete steps, a "done when" check, and — where it moves Dart→Rust — an ROI note and the
 > Rust tests + Dart deletions it requires.
 >
@@ -250,26 +250,28 @@ negative, > result count).
 queries no longer materialize the full candidate set; results match the current Dart plans exactly
 (parity test vs in-memory full-sort — 14 new tests in `m4_sort_limit_test.dart`).
 
-### M5 — Range/prefix/multi-eq indexed fast path  ⏳ next
+### M5 — Range/prefix/multi-eq indexed fast path  ✅ done (ADR-0020)
 
 **Goal:** extend the M2 indexed-eq fast path to the remaining index-usable filters, so they skip the
 full scan instead of going through `query_filtered`.
 
 **Steps:**
-1. **`rangeBounds` / `prefixBounds`** — port `eqBounds` (`durable_index_bounds.dart`) to range and prefix
-   filters. The durable-index key layout (`[table, field, value, recordId]`) makes these contiguous
-   byte ranges too. Route covered range/prefix queries through `query_indexed` instead of
-   `query_filtered`.
-2. **Multi-eq intersection in Rust** — intersect several index range scans in one hop instead of
-   Dart's per-id intersection.
+1. ✅ **Durable candidate bounds:** exact equality filters use `eqBounds`; range and prefix filters use
+   broad `fieldBounds(table, field)` spans. `DefaultWireCodec` v1 is not semantic-order-preserving
+   for every supported value, so M5 intentionally does not invent unsafe `rangeBounds`/`prefixBounds`.
+2. ✅ **Multi-index intersection in Rust:** `query_indexed_multi` scans all covered durable-index ranges,
+   intersects row-key sets in one MVCC read transaction, joins rows, and rechecks the complete predicate
+   in Rust. This covers multi-eq and mixed equality + range + prefix filters.
+3. ✅ **Aggregates:** covered range/prefix/multi-eq `count()` and `distinct()` retain the indexed route;
+   uncovered filters continue through native predicate push.
 
-**ROI note:** Lower priority than M3/M4 — range/prefix *already work correctly* (they go through
-`query_filtered`, which is already 12.4× faster than the old Dart scan). M5 is the incremental win of
-skipping the full scan for *covered* range/prefix filters. Defer unless a profile shows range/prefix
-queries are hot.
+**ROI note:** Range/prefix already worked correctly through Rust predicate push; M5 now avoids the
+full primary-table scan and Dart per-id loop for covered candidates while keeping exact parity through
+Rust predicate re-evaluation.
 
-**Done when:** covered range/prefix/multi-eq use `query_indexed` (asserted by plan + `backendRead` <
-full-scan baseline); results match `query_filtered` parity.
+**Done when:** ✅ covered range/prefix/multi-eq use `IndexPlan.secondaryIndex` and the durable candidate
+route; native/in-memory parity tests pass; Rust intersection and predicate-recheck tests pass; full
+package suite remains green.
 
 ### M6 — Architecture decisions, measured  ☐
 

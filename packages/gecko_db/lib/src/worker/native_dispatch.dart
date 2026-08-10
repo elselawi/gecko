@@ -158,6 +158,26 @@ Future<Object?> dispatchNativeWorker(
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
       ];
+    case 'snapshotQueryIndexedMulti':
+      final ranges = [
+        for (final range in (arguments[3] as List))
+          (
+            Uint8List.fromList(List<int>.from((range as List)[0] as List)),
+            Uint8List.fromList(List<int>.from(range[1] as List)),
+          ),
+      ];
+      final pairs = await worker.snapshotQueryIndexedMulti(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        indexTable: arguments[2] as String,
+        ranges: ranges,
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[4] as List),
+        ),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
     case 'snapshotQueryIndexedLimited':
       final pairs = await worker.snapshotQueryIndexedLimited(
         snapshot: _asBigInt(arguments[0]),
@@ -181,9 +201,7 @@ Future<Object?> dispatchNativeWorker(
         predicateBytes: Uint8List.fromList(
           List<int>.from(arguments[2] as List),
         ),
-        sortSpecBytes: Uint8List.fromList(
-          List<int>.from(arguments[3] as List),
-        ),
+        sortSpecBytes: Uint8List.fromList(List<int>.from(arguments[3] as List)),
         limit: arguments[4] == null ? null : _asBigInt(arguments[4]),
         offset: _asBigInt(arguments[5]),
       );

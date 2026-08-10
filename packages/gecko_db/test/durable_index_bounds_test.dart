@@ -4,7 +4,8 @@
 // `__gecko_index` keys whose 4-element composite is `[table, field, value, *]`,
 // and `_incrementLastByte` must carry on 0xFF (including the all-0xFF edge).
 import 'package:gecko_db/gecko_db.dart';
-import 'package:gecko_db/src/query/durable_index_bounds.dart' show eqBounds;
+import 'package:gecko_db/src/query/durable_index_bounds.dart'
+    show eqBounds, fieldBounds;
 import 'package:gecko_db/src/wire/wire_codec.dart';
 import 'package:test/test.dart';
 
@@ -73,6 +74,42 @@ void main() {
       expect(_lexCompare(key, start), greaterThanOrEqualTo(0));
       expect(_lexCompare(key, end), lessThanOrEqualTo(0));
     });
+
+    test('fieldBounds includes all values but excludes other fields', () {
+      final (start, end) = fieldBounds('items', 'age');
+      final codec = const DefaultWireCodec();
+      for (final value in <Object?>[
+        -10,
+        0,
+        10,
+        1.5,
+        'short',
+        'a much longer value',
+      ]) {
+        final key = codec.encode(['items', 'age', value, 'r0']);
+        expect(_lexCompare(key, start), greaterThanOrEqualTo(0));
+        expect(_lexCompare(key, end), lessThanOrEqualTo(0));
+      }
+      final otherField = codec.encode(['items', 'name', 10, 'r0']);
+      expect(_lexCompare(otherField, start), isNot(0));
+    });
+
+    test(
+      'fieldBounds is a broad candidate span, not semantic value ordering',
+      () {
+        // DefaultWireCodec v1 length-prefixes strings and does not sort all
+        // numeric encodings by semantic value. M5 therefore uses fieldBounds
+        // only to generate candidates and rechecks the predicate in Rust.
+        final codec = const DefaultWireCodec();
+        final values = ['z', 'aa', 'prefix-long'];
+        final (start, end) = fieldBounds('items', 'name');
+        for (final value in values) {
+          final key = codec.encode(['items', 'name', value, 'r0']);
+          expect(_lexCompare(key, start), greaterThanOrEqualTo(0));
+          expect(_lexCompare(key, end), lessThanOrEqualTo(0));
+        }
+      },
+    );
   });
 }
 

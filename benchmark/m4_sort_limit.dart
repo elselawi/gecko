@@ -23,7 +23,8 @@ import 'package:gecko_db/gecko_db.dart';
 Future<void> main() async {
   final dir = await Directory.systemTemp.createTemp('m4-perf-');
   final root = Directory.current.path;
-  final nativePath = '$root${Platform.pathSeparator}rust'
+  final nativePath =
+      '$root${Platform.pathSeparator}rust'
       '${Platform.pathSeparator}target${Platform.pathSeparator}release'
       '${Platform.pathSeparator}gecko_db_rust.dll';
   final db = await DatabaseImpl.open(
@@ -69,14 +70,24 @@ Future<void> main() async {
     return [times.first, times[times.length ~/ 2]];
   }
 
-  final idx = await measure(col.where().sort([const SortSpec('nick')]).limit(20));
-  stdout.writeln('indexed ORDER BY nick LIMIT 20 on $n rows: best=${idx[0]}us median=${idx[1]}us');
+  final idx = await measure(
+    col.where().sort([const SortSpec('nick')]).limit(20),
+  );
+  stdout.writeln(
+    'indexed ORDER BY nick LIMIT 20 on $n rows: best=${idx[0]}us median=${idx[1]}us',
+  );
 
-  final topk = await measure(col.where().sort([const SortSpec('age')]).limit(20));
-  stdout.writeln('top-K ORDER BY age LIMIT 20 on $n rows: best=${topk[0]}us median=${topk[1]}us');
+  final topk = await measure(
+    col.where().sort([const SortSpec('age')]).limit(20),
+  );
+  stdout.writeln(
+    'top-K ORDER BY age LIMIT 20 on $n rows: best=${topk[0]}us median=${topk[1]}us',
+  );
 
   final early = await measure(col.where().limit(20));
-  stdout.writeln('early LIMIT 20 on $n rows: best=${early[0]}us median=${early[1]}us');
+  stdout.writeln(
+    'early LIMIT 20 on $n rows: best=${early[0]}us median=${early[1]}us',
+  );
 
   await db.close();
   try {

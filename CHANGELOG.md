@@ -7,6 +7,19 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M5 — Indexed range, prefix, and multi-equality intersection** (ADR-0020):
+  covered native filters now narrow candidates through the durable index in one
+  MVCC read operation and recheck the complete predicate in Rust.
+  - Exact equality filters use `eqBounds`; range and prefix filters use broad
+    `fieldBounds(table, field)` spans because `DefaultWireCodec` v1 is not
+    semantic-order-preserving for every supported numeric/string value.
+  - `query_indexed_multi` intersects durable row-key candidate sets for
+    multi-eq and mixed equality + range + prefix filters, then applies the
+    complete Rust predicate for correctness.
+  - Covered `count()` and `distinct()` retain `IndexPlan.secondaryIndex`;
+    uncovered filters continue through native predicate push.
+  - 10 new parity/bounds/index-hop tests; benchmark profile:
+    `benchmark/m5_indexed_filters.dart`.
 - **M4 — Indexed sorting and early LIMIT** (ADR-0019): sorted/limited queries
   push sort + window to Rust on native — no materialization, no Dart sort.
   - `query_indexed_ordered` streams index-covered sorts directly from the
