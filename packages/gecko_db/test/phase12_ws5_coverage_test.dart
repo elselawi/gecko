@@ -215,4 +215,59 @@ void main() {
       await db.close();
     },
   );
+
+  group('M7.5 native query coverage', () {
+    test(
+      'timing-armed sorted/indexed/limited routes populate stage timings',
+      () async {
+        final db = await DatabaseImpl.open(
+          path,
+          config: DatabaseConfig(
+            nativeLibraryPath: nativePath,
+            slowQueryThresholdMicros: 1,
+          ),
+        );
+        final col = db.collection<Map<String, Object?>>(
+          'items',
+          toRow: (m) => m,
+          fromRow: (m) => Map<String, Object?>.from(m as Map),
+          id: (m) => m['id'],
+          indexFields: const ['group'],
+        );
+        for (var i = 0; i < 60; i++) {
+          await col.put({'id': 'k$i', 'group': 'g${i % 3}', 'n': i});
+        }
+        // Eq + sort on the SAME indexed field: the index-covered ordered
+        // route takes the eq-on-field branch (index-key order == sort order).
+        final eqSorted = col
+            .where({'group': 'g1'})
+            .sort([const SortSpec('group')])
+            .limit(10);
+        expect(await eqSorted.findAll(), hasLength(10));
+        expect(eqSorted.lastPlan, IndexPlan.secondaryIndex);
+        // Sorted + limited without an eq: Rust top-K route.
+        final topK = col.where().sort([const SortSpec('n')]).limit(5);
+        expect(await topK.findAll(), hasLength(5));
+        expect(topK.lastPlan, IndexPlan.nativeFilteredScan);
+        // Sorted without a window: streams through `_scanWith` with the
+        // timing-armed Dart sort stage.
+        final sorted = col.where().sort([const SortSpec('n')]);
+        expect(await sorted.findAll(), hasLength(60));
+        // Indexed eq without a window: single-eq join + Dart predicate
+        // recheck (timing-armed).
+        final eq = col.where({'group': 'g2'});
+        expect(await eq.findAll(), hasLength(20));
+        expect(eq.lastPlan, IndexPlan.secondaryIndex);
+        // Unindexed range with timing: native predicate count.
+        final unindexed = col.where().range('n', min: 10, max: 19);
+        expect(await unindexed.count(), 10);
+        // `first()` with timing arms the windowed scan path.
+        final first = col.where({'group': 'g0'}).first();
+        expect((await first)!['n'], isA<int>());
+        // Slow-query records were captured for the timed queries.
+        expect(db.engine.recentSlowQueries, isNotEmpty);
+        await db.close();
+      },
+    );
+  });
 }

@@ -541,26 +541,17 @@ class _CollectionImpl<T> implements Collection<T> {
       }
       return rows;
     }
-    // M3: on the native backend, one `get_many` Rust call fetches every key in
-    // a single read transaction (kills the N+1). In-memory falls back to
-    // per-key reads (it has no Rust fast path).
-    final snap = await _db.engine.backend.snapshot();
+    // M3: one `get_many` Rust call fetches every key in a single read
+    // transaction (kills the N+1). The engine is always native.
+    final snap = await _db.engine.backend.snapshot() as NativeRawSnapshot;
     try {
       final rows = <T>[];
-      if (snap is NativeRawSnapshot) {
-        final entries = await snap.getMany(name, keys);
-        final byKey = {for (final e in entries) e.key: e.value};
-        for (final key in keys) {
-          final raw = byKey[key];
-          if (raw == null) continue;
-          rows.add(_fromRow(_codec.decode(raw)));
-        }
-      } else {
-        for (final key in keys) {
-          final raw = await snap.read(name, key);
-          if (raw == null) continue;
-          rows.add(_fromRow(_codec.decode(raw)));
-        }
+      final entries = await snap.getMany(name, keys);
+      final byKey = {for (final e in entries) e.key: e.value};
+      for (final key in keys) {
+        final raw = byKey[key];
+        if (raw == null) continue;
+        rows.add(_fromRow(_codec.decode(raw)));
       }
       return rows;
     } finally {

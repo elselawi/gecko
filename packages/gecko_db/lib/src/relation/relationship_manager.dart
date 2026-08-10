@@ -115,7 +115,7 @@ class RelationshipManager {
   ) async {
     _checkChild(relationship);
     final fk = _fkField(relationship);
-    final snap = await _engine.backend.snapshot();
+    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
     try {
       return await _childRowsFrom(snap, relationship, parentId, fk);
     } finally {
@@ -126,15 +126,13 @@ class RelationshipManager {
   /// Resolves child rows for [parentId] against [snap], using the child
   /// collection's secondary index when the FK field is indexed.
   Future<List<Map<Object?, Object?>>> _childRowsFrom(
-    RawSnapshot snap,
+    NativeRawSnapshot snap,
     Relationship r,
     Object? parentId,
     String fk,
   ) async {
     final index = _indexLookup?.call(r.childCollection);
-    if (snap is NativeRawSnapshot &&
-        index != null &&
-        index.fields.contains(fk)) {
+    if (index != null && index.fields.contains(fk)) {
       // Native relationship lookup streams the durable index in Rust;
       // Dart retains only the declaration metadata.
       final (start, end) = eqBounds(
@@ -154,25 +152,18 @@ class RelationshipManager {
         if (row[fk] == parentId) rows.add(row);
       }
       return rows;
-    } else if (snap is NativeRawSnapshot) {
-      // Native unindexed relationship lookup evaluates the predicate in Rust,
-      // transferring only matching child rows to Dart.
-      final entries = await snap.queryFiltered(
-        table: r.childCollection,
-        predicateBytes: encodePredicate([
-          Filter.eq(fk, parentId),
-        ], codec: _codec),
-      );
-      return [
-        for (final entry in entries)
-          _mapOf(_codec.decode(entry.value ?? const [])),
-      ];
     }
-    final entries = await snap.scanAll(r.childCollection);
+    // Native unindexed relationship lookup evaluates the predicate in Rust,
+    // transferring only matching child rows to Dart.
+    final entries = await snap.queryFiltered(
+      table: r.childCollection,
+      predicateBytes: encodePredicate([
+        Filter.eq(fk, parentId),
+      ], codec: _codec),
+    );
     return [
       for (final entry in entries)
-        if (_mapOf(_codec.decode(entry.value ?? const []))[fk] == parentId)
-          _mapOf(_codec.decode(entry.value ?? const [])),
+        _mapOf(_codec.decode(entry.value ?? const [])),
     ];
   }
 
@@ -184,29 +175,17 @@ class RelationshipManager {
     _checkChild(relationship);
     final fk = _fkField(relationship);
     final childKey = _byteOf(childId);
-    final snap = await _engine.backend.snapshot();
+    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
     try {
-      if (snap case final NativeRawSnapshot native) {
-        final entry = await native.relationshipParent(
-          childTable: relationship.childCollection,
-          childKey: childKey,
-          parentTable: relationship.parentCollection,
-          foreignKeyField: fk,
-        );
-        return entry == null
-            ? null
-            : _mapOf(_codec.decode(entry.value ?? const []));
-      }
-      final raw = await snap.read(relationship.childCollection, childKey);
-      if (raw == null) return null;
-      final row = _mapOf(_codec.decode(raw));
-      final parentId = row[fk];
-      if (parentId == null) return null;
-      final parentRaw = await snap.read(
-        relationship.parentCollection,
-        _byteOf(parentId),
+      final entry = await snap.relationshipParent(
+        childTable: relationship.childCollection,
+        childKey: childKey,
+        parentTable: relationship.parentCollection,
+        foreignKeyField: fk,
       );
-      return parentRaw == null ? null : _mapOf(_codec.decode(parentRaw));
+      return entry == null
+          ? null
+          : _mapOf(_codec.decode(entry.value ?? const []));
     } finally {
       await snap.dispose();
     }
@@ -223,37 +202,28 @@ class RelationshipManager {
     final out = <Object?, List<Map<Object?, Object?>>>{
       for (final id in parentIds) id: <Map<Object?, Object?>>[],
     };
-    final snap = await _engine.backend.snapshot();
+    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
     try {
-      if (snap case final NativeRawSnapshot native) {
-        final index = _indexLookup?.call(relationship.childCollection);
-        final ranges = <(ByteKey, ByteKey)>[];
-        if (index != null && index.fields.contains(fk)) {
-          for (final parentId in parentIds) {
-            final (start, end) = eqBounds(
-              relationship.childCollection,
-              fk,
-              parentId,
-              codec: _codec,
-            );
-            ranges.add((ByteKey(start), ByteKey(end)));
-          }
+      final index = _indexLookup?.call(relationship.childCollection);
+      final ranges = <(ByteKey, ByteKey)>[];
+      if (index != null && index.fields.contains(fk)) {
+        for (final parentId in parentIds) {
+          final (start, end) = eqBounds(
+            relationship.childCollection,
+            fk,
+            parentId,
+            codec: _codec,
+          );
+          ranges.add((ByteKey(start), ByteKey(end)));
         }
-        final entries = await native.relationshipChildren(
-          childTable: relationship.childCollection,
-          foreignKeyField: fk,
-          parentIds: [for (final id in parentIds) _byteOf(id)],
-          indexRanges: ranges,
-          predicateBytes: encodePredicate(const [], codec: _codec),
-        );
-        for (final entry in entries) {
-          final row = _mapOf(_codec.decode(entry.value ?? const []));
-          final pid = row[fk];
-          if (pid != null && wanted.contains(pid)) out[pid]!.add(row);
-        }
-        return out;
       }
-      final entries = await snap.scanAll(relationship.childCollection);
+      final entries = await snap.relationshipChildren(
+        childTable: relationship.childCollection,
+        foreignKeyField: fk,
+        parentIds: [for (final id in parentIds) _byteOf(id)],
+        indexRanges: ranges,
+        predicateBytes: encodePredicate(const [], codec: _codec),
+      );
       for (final entry in entries) {
         final row = _mapOf(_codec.decode(entry.value ?? const []));
         final pid = row[fk];
@@ -325,25 +295,14 @@ class RelationshipManager {
   ) async {
     _checkJoinable(relationship);
     final table = _joinTable(relationship);
-    final snap = await _engine.backend.snapshot();
+    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
     try {
-      if (snap case final NativeRawSnapshot native) {
-        final encodedIds = await native.relationshipJoinIds(
-          joinTable: table,
-          field: 'left',
-          wantedId: _byteOf(leftId),
-        );
-        return [for (final bytes in encodedIds) _codec.decode(bytes)];
-      }
-      final entries = await snap.scanAll(table);
-      final out = <Object?>[];
-      for (final entry in entries) {
-        final join = _mapOf(_codec.decode(entry.value ?? const []));
-        if (join['left'] == leftId && join.containsKey('right')) {
-          out.add(join['right']);
-        }
-      }
-      return out;
+      final encodedIds = await snap.relationshipJoinIds(
+        joinTable: table,
+        field: 'left',
+        wantedId: _byteOf(leftId),
+      );
+      return [for (final bytes in encodedIds) _codec.decode(bytes)];
     } finally {
       await snap.dispose();
     }
@@ -357,25 +316,14 @@ class RelationshipManager {
   ) async {
     _checkJoinable(relationship);
     final table = _joinTable(relationship);
-    final snap = await _engine.backend.snapshot();
+    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
     try {
-      if (snap case final NativeRawSnapshot native) {
-        final encodedIds = await native.relationshipJoinIds(
-          joinTable: table,
-          field: 'right',
-          wantedId: _byteOf(rightId),
-        );
-        return [for (final bytes in encodedIds) _codec.decode(bytes)];
-      }
-      final entries = await snap.scanAll(table);
-      final out = <Object?>[];
-      for (final entry in entries) {
-        final join = _mapOf(_codec.decode(entry.value ?? const []));
-        if (join['right'] == rightId && join.containsKey('left')) {
-          out.add(join['left']);
-        }
-      }
-      return out;
+      final encodedIds = await snap.relationshipJoinIds(
+        joinTable: table,
+        field: 'right',
+        wantedId: _byteOf(rightId),
+      );
+      return [for (final bytes in encodedIds) _codec.decode(bytes)];
     } finally {
       await snap.dispose();
     }
@@ -707,7 +655,9 @@ class RelationshipManager {
     final snap = snapshot ?? await _engine.backend.snapshot();
     final owned = snapshot == null;
     try {
-      return await _childRowsFrom(snap, r, parentId, fk);
+      // The engine is always native; the commitBatch/engine snapshot is a
+      // NativeRawSnapshot at runtime.
+      return await _childRowsFrom(snap as NativeRawSnapshot, r, parentId, fk);
     } finally {
       if (owned) await snap.dispose();
     }
