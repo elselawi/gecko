@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 void main() {
   group('Phase 2 bounded cache memory + backpressure', () {
     test('LRU weight bound caps resident bytes, not just entries', () {
@@ -37,8 +39,12 @@ void main() {
     });
 
     test('RawEngine cache bounds resident value bytes', () async {
-      final backend = InMemoryBackend();
-      final engine = RawEngine(backend, lruCapacity: 100, lruMaxWeight: 12);
+      final db = await openNativeTestDatabase('bounds-cache');
+      final engine = RawEngine(
+        db.engine.backend,
+        lruCapacity: 100,
+        lruMaxWeight: 12,
+      );
       final k1 = ByteKey([1]);
       final k2 = ByteKey([2]);
       await engine.rawPut('t', k1, [1, 2, 3, 4, 5, 6]);

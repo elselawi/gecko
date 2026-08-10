@@ -1,7 +1,5 @@
-// Shared behavioral contract for every raw backend available in the current
-// process. The exact same tests run against the in-memory backend and the
-// native file-backed backend (Workstream 2), so no backend can hide
-// behavior behind a test that only exercises one implementation.
+// Shared raw backend contract for the file-backed Rust/redb implementation.
+// Each test uses a unique temporary native file and cleans it after teardown.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -151,8 +149,6 @@ void main() {
       });
     });
   }
-
-  runContractSuite('in-memory', () async => InMemoryBackend(), null);
 
   Directory? nativeDir;
   runContractSuite(

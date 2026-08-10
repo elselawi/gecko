@@ -5,6 +5,8 @@ import 'package:crypto/crypto.dart';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _MemoryResolverStorage implements ResolverStorage {
   final files = <String, List<int>>{};
   final directories = <String>[];
@@ -24,9 +26,9 @@ class _MemoryResolverStorage implements ResolverStorage {
 }
 
 class _DelayedBackend implements RawBackend {
-  _DelayedBackend(this.delay);
+  _DelayedBackend(this.delay, this.delegate);
   final Duration delay;
-  final InMemoryBackend delegate = InMemoryBackend();
+  final RawBackend delegate;
 
   @override
   bool get isReadOnly => false;
@@ -60,7 +62,11 @@ void main() {
   });
 
   test('close waits for an admitted write to drain', () async {
-    final backend = _DelayedBackend(const Duration(milliseconds: 20));
+    final db = await openNativeTestDatabase('defensive-drain');
+    final backend = _DelayedBackend(
+      const Duration(milliseconds: 20),
+      db.engine.backend,
+    );
     final engine = RawEngine(backend, inFlightBatchLimit: 1);
     final pending = engine.rawPut('t', ByteKey([1]), [1]);
     final drain = engine.drain();

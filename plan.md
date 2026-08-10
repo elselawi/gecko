@@ -511,9 +511,11 @@ support through the Rust/Wasm + OPFS file-backed path. After M7.5, every support
 by Rust/redb and a file-like persistent store; Dart no longer contains a second storage/query/index
 engine.
 
-**Kickoff:** ADR-0028 locks the pre-release product decision and
+**Progress:** ADR-0028 locks the pre-release product decision and
 `docs/m7-5-migration-plan.md` records the dependency inventory, fixture conversion,
-sequencing, measurements, and gates. No public API or backend deletion has happened yet.
+sequencing, measurements, and gates. The public `DatabaseConfig.inMemory` option,
+`useInMemory` opener path, and public `InMemoryBackend` export are now removed. Fixture
+conversion and deletion of the remaining Dart backend are still open.
 
 **Product contract after M7.5:**
 
@@ -526,9 +528,11 @@ sequencing, measurements, and gates. No public API or backend deletion has happe
 - Temporary directories/files are used for tests; they are not a separate database implementation.
 
 **Steps:**
-1. ☐ **Lock the product decision.** Add an ADR defining native-file/OPFS-file support, removal of
+1. ✅ **Lock the product decision.** ADR-0028 defines native-file/OPFS-file support, removal of
    in-memory APIs, the Web persistence contract, encryption behavior, and the replacement test strategy.
-2. ☐ **Remove the public in-memory surface.** Remove `DatabaseConfig.inMemory`, `useInMemory`, `mem://`,
+2. ◐ **Remove the public in-memory surface.** `DatabaseConfig.inMemory`, the public `useInMemory` opener
+   path, and the public `InMemoryBackend` export are removed. Remaining `mem://`/`:memory:` fixtures,
+   documentation, and internal implementation references await fixture conversion.
    `:memory:`, and related public documentation, examples, error branches, and API snapshot entries.
 3. ☐ **Delete the Dart backend.** Remove `InMemoryBackend`, Dart-only storage snapshots, Dart-only query
    and index execution, and backend-specific branches that exist only for in-memory behavior.

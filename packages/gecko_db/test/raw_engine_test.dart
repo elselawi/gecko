@@ -3,13 +3,20 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 void main() {
-  late InMemoryBackend backend;
+  late NativeRawBackend backend;
   late RawEngine engine;
 
-  setUp(() {
-    backend = InMemoryBackend();
+  setUp(() async {
+    final db = await openNativeTestDatabase('raw-engine');
+    backend = db.engine.backend as NativeRawBackend;
     engine = RawEngine(backend, lruCapacity: 4, inFlightBatchLimit: 2);
+  });
+
+  tearDown(() async {
+    await engine.dispose();
   });
 
   group('RawEngine: rawGet / rawPut / rawDelete / rawClear', () {

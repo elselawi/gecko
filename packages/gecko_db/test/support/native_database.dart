@@ -33,7 +33,7 @@ Future<DatabaseImpl> openNativeTestDatabase(
     slowQueryThresholdMicros: config.slowQueryThresholdMicros,
     compactionSnapshotDrainTimeout: config.compactionSnapshotDrainTimeout,
   );
-  return DatabaseImpl.open(path, config: configured, useInMemory: false);
+  return DatabaseImpl.open(path, config: configured);
 }
 
 String _nativeLibraryPath() {

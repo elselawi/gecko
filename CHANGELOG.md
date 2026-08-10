@@ -7,6 +7,11 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7.5 kickoff** (ADR-0028): locked the file-backed Rust/redb product
+  contract and migration plan. The public `DatabaseConfig.inMemory` option,
+  `useInMemory` opener path, and `InMemoryBackend` export are removed; temporary
+  native-file fixture conversion and the remaining Dart backend deletion are
+  staged next.
 - **M7.1 Slice 5 — Thin-client deletion pass**: removed the redundant Dart
   predicate recheck after Rust's windowed indexed query route and corrected
   native/in-memory route and repair terminology. Public/raw/snapshot contracts,

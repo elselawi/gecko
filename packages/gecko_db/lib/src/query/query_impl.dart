@@ -155,9 +155,7 @@ class QueryImpl<T> implements Query<T> {
   FilterGroup get _group => FilterGroup(_filters);
 
   /// Lazy iteration over matching decoded rows in sort order. Native queries
-  /// use durable Rust indexes directly; the Dart secondary index remains only
-  /// for the transitional in-memory reference backend. Readiness still waits
-  /// for Rust's asynchronous durable-index repair.
+  /// use durable Rust indexes directly.
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
