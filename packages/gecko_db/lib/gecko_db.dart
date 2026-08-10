@@ -73,20 +73,8 @@ export 'src/backend/raw_backend.dart'
 export 'src/backend/in_memory_backend.dart' show InMemoryBackend;
 export 'src/backend/native_raw_backend.dart'
     show NativeRawBackend, NativeRawSnapshot;
-export 'src/backend/encrypted_raw_backend.dart' show EncryptedRawBackend;
-export 'src/api/crypto.dart'
-    show CryptoBackend, CryptoPage, Aes256GcmCryptoBackend;
 export 'src/crypto/physical_encryption.dart'
-    show
-        KeyProvider,
-        FixedKeyProvider,
-        EnvironmentKeyProvider,
-        FileKeyProvider,
-        KeyEncoding,
-        rotatePhysicalKey,
-        validatePhysicalKey,
-        decodeKey,
-        initialPhysicalKeyGeneration;
+    show rotatePhysicalKey, validateEncryptionKey, initialPhysicalKeyGeneration;
 export 'src/cache/lru_cache.dart' show LruCache;
 export 'src/database_impl.dart' show DatabaseImpl;
 export 'src/errors/errors.dart' show GeckoError, GeckoErrorType;

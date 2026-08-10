@@ -85,15 +85,16 @@ class NativeRawBackend implements RawBackend {
   /// Opens a file-backed worker after `RustLib.init()` has loaded the native
   /// artifact through the generated FRB loader.
   ///
-  /// When [physicalKey] is supplied (32 bytes), the file is opened with
-  /// physical AES-256-GCM page encryption; [physicalKeyGeneration] selects
-  /// the key generation for interrupted-rotation recovery.
+  /// When [encryptionKey] is supplied (32 raw bytes), the file is opened with
+  /// Rust AES-256-GCM physical page encryption;
+  /// [encryptionKeyGeneration] selects the key generation for interrupted
+  /// rotation recovery.
   static Future<NativeRawBackend> open(
     String path, {
     bool readOnly = false,
     String? nativeLibraryPath,
-    List<int>? physicalKey,
-    int physicalKeyGeneration = 1,
+    List<int>? encryptionKey,
+    int encryptionKeyGeneration = 1,
   }) async {
     try {
       final backend = NativeRawBackend._(
@@ -101,8 +102,8 @@ class NativeRawBackend implements RawBackend {
           path: path,
           readOnly: readOnly,
           nativeLibraryPath: nativeLibraryPath,
-          physicalKey: physicalKey,
-          physicalKeyGeneration: physicalKeyGeneration,
+          encryptionKey: encryptionKey,
+          encryptionKeyGeneration: encryptionKeyGeneration,
         ),
         readOnly,
       );

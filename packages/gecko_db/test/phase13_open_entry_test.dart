@@ -98,7 +98,7 @@ void main() {
           path,
           config: DatabaseConfig(
             nativeLibraryPath: _nativeLibraryPath(root),
-            physicalEncryptionKey: key,
+            encryptionKey: key,
           ),
         );
         final col = db.collection<Map<String, Object?>>(
@@ -115,7 +115,7 @@ void main() {
             path,
             config: DatabaseConfig(
               nativeLibraryPath: _nativeLibraryPath(root),
-              physicalEncryptionKey: List<int>.filled(32, 0x99),
+              encryptionKey: List<int>.filled(32, 0x99),
             ),
           ),
           throwsA(isA<GeckoError>()),

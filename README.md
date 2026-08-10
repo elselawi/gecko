@@ -6,8 +6,8 @@ SharedPreferences replacement you never have to hand-roll an observable layer fo
 widgets consume live, typed queries directly — no separate state-management
 package required.
 
-> **Status: in active development (Phases 0 and 2–13 implemented).** See
-> [`plan.md`](plan.md) for the full roadmap and the per-phase progress checkboxes.
+**Status: in active development (M6.5 pre-release simplification next).** See
+[`plan.md`](plan.md) for the full roadmap and milestone progress checkboxes.
 
 ---
 
@@ -38,13 +38,13 @@ package required.
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
-| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015); native index-served eq fast path — one FRB hop, no N+1 (ADR-0016); native predicate push for unindexed scans — full-scan 100k 482 ms → 39 ms, 12.4× (ADR-0017); M3 read-path completion — `iterate`/`count`/`distinct` on the native fast path, aggregate pushdown, and public `Collection.getMany(ids)` (ADR-0018); M4 indexed sorting + early LIMIT — index-covered sorts stream in order (no sort, no materialization; `ORDER BY indexedField LIMIT 20` on 100k = ~0.2 ms), non-indexed sorts use a Rust top-K heap, deterministic record-key tie-break across all paths (ADR-0019); M5 indexed range/prefix/multi-eq candidate intersection in Rust — broad durable field bounds plus full predicate recheck, with covered aggregate routing (ADR-0020) |
+| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + in-memory secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015); native index-served eq fast path — one FRB hop, no N+1 (ADR-0016); native predicate push for unindexed scans — full-scan 100k 482 ms → 39 ms, 12.4× (ADR-0017); M3 read-path completion — `iterate`/`count`/`distinct` on the native fast path, aggregate pushdown, and public `Collection.getMany(ids)` (ADR-0018); M4 indexed sorting + early LIMIT — index-covered sorts stream in order (no sort, no materialization; `ORDER BY indexedField LIMIT 20` on 100k = ~0.2 ms), non-indexed sorts use a Rust top-K heap, deterministic record-key tie-break across all paths (ADR-0019); M5 indexed range/prefix/multi-eq candidate intersection in Rust — broad durable field bounds plus full predicate recheck, with covered aggregate routing (ADR-0020); M6 retains the worker isolate; M6.5 is simplifying encryption to one optional native Rust physical-encryption path with raw keys and public rotation (ADR-0021/0022) |
 | 6 | Relationships & referential integrity (Tier 3): FK helpers, delete behaviors, eager load, cycle detection | ✅ many-to-many joins, delete hooks, restrict-naming; typed-collection wiring open |
 | 7 | Transactions, durable change tracking, sync hooks, LSN ordering, origin tagging, idempotency, and GC watermark | ✅ |
 | 8 | Pluggable conflict resolution, three-way merge, preserved manual conflicts, and atomic resolution | ✅ |
 | 9 | Attachment metadata, content-hash dedupe, shared blobs, orphan detection, and state queries | ✅ |
 | 10 | Schema versioning & migrations: version stamping, ordered transactional steps, additive fast paths, open-time compatibility gate | ✅ |
-| 11 | Logical-value encryption, pluggable authenticated crypto, opaque backend storage, and typed decryption failures | ✅ logical + physical AES-256-GCM page encryption, key providers, atomic key rotation (ADR-0009) |
+| 11 | Optional native physical encryption, opaque backend storage, and typed decryption failures | ✅ Rust AES-256-GCM page encryption, raw-key rotation, atomic crash recovery (ADR-0009); M6.5 removes the pre-release logical/custom/provider layers (ADR-0022) |
 | 12 | Bulk writes, bounded cache/lazy iteration, per-row diff watches, and opt-in diagnostics | ✅ + in-place compaction, maintenance state machine, size reporting, slow-query logging, counters (ADR-0010) |
 | 13 | Runnable quickstart/advanced examples and release-hardening documentation | ✅ examples/tests, consumer fixture, policies/compatibility/migration docs, traceability checker, **WS8 reliability/security/perf qualification** (randomized, differential, crash-injection, parallel-isolation, 100k+ large-data, soak, perf gate, security + offline lints) and **Phase 13 comparative benchmark** (Hive CE + Sembast; Isar/Drift/SQLite future work); six-platform matrix remains open |
 
@@ -56,7 +56,7 @@ adapter/resolver edge branches remain). The Rust crate is gated separately as CI
 lands (Phase 0/1 item).
 
 ```text
-Dart unit tests: 472 passing (package) + 32 (tool)
+Dart unit tests: 539 passing (package) + 32 (tool)
 Coverage gate:   95% line / 100% branch  → PASS
 ```
 
@@ -221,10 +221,12 @@ The design is documented in [`plan.md`](plan.md) and in the
   A dedicated Dart **worker isolate** hosts the database client's work (reads,
   batch marshaling, change-feed fan-out) off the caller's UI isolate — embraced
   *modestly* (one isolate per open database, never a second writer). See
-  [ADR-0003](docs/adr/0003-worker-isolate.md).
+  [ADR-0003](docs/adr/0003-worker-isolate.md). M6 retains this choice; M6.5
+  changes encryption only.
 - **Everything is a file-format contract.** All state — including change
-  tracking, sync, indexes, attachments, migrations, encryption metadata — lives
-  in reserved `__gecko_*` tables in the same store, transactionally with the data.
+  tracking, sync, indexes, attachments, migrations, and encryption-related
+  metadata — lives in reserved `__gecko_*` tables in the same store,
+  transactionally with the data.
   Phase 7 adds staged multi-collection `writeTxn` blocks, durable LSN-ordered
   change records, origin-tagged sync hooks, idempotency dedupe, and watermark-
   based change-log compaction.
@@ -258,14 +260,14 @@ The design is documented in [`plan.md`](plan.md) and in the
   database: parent references, content-hash dedupe with shared blobs, and
   transactionally-advanced upload/delete/retry states with pending/failed/
   completed/orphan queries.
-- **Encryption seam.** Phase 11 provides `EncryptedRawBackend`, a pluggable
-  authenticated `CryptoBackend` registry, AES-256-GCM, ciphertext opacity, and
-  typed wrong-key/tamper failures. Workstream 4 adds **physical** AES-256-GCM
-  page encryption below redb (`EncryptingStorageBackend`), key providers
-  (`FixedKeyProvider`, `EnvironmentKeyProvider`, `FileKeyProvider`),
-  fail-before-open key resolution, and atomic key rotation with crash recovery
-  to either the old or the new key
-  (see [ADR-0009](docs/adr/0009-physical-encryption-and-key-management.md)).
+- **Encryption seam.** The pre-release target is one optional native-only
+  encryption mechanism: Rust AES-256-GCM page encryption below redb
+  (`EncryptingStorageBackend`). No key means plaintext pages; a raw 32-byte
+  key enables encryption. The application owns key storage; gecko_db provides
+  no custom crypto registry, provider abstraction, logical value wrapper, or
+  text key encoding. Public raw-key rotation remains atomic and crash
+  recoverable. Web and in-memory encryption are explicitly unsupported
+  (ADR-0022; physical format and rotation are recorded in ADR-0009).
 - **Compaction & maintenance.** Workstream 5 adds in-place compaction via
   `Database.maintenance` (`compact()`/`recover()`/`storageStats()`) with a
   five-state machine (idle/compacting/committed/failed/recovering), a durable
@@ -364,6 +366,7 @@ the repo root; long modes via `GECKO_LONG_TEST=1`, nightly in CI):
 | Query profile (Phase 1) | `benchmark/query_profile.dart` | Per-stage `QueryStageTimings` split for a full scan and an indexed eq query at 1k/100k rows; advisory (ADR-0015) |
 | Sort/limit profile (M4) | `benchmark/m4_sort_limit.dart` | Indexed `ORDER BY … LIMIT 20`, top-K non-indexed sort, and early-limit scans at 100k rows; advisory (ADR-0019) |
 | Indexed filter profile (M5) | `benchmark/m5_indexed_filters.dart` | Covered range/prefix/multi-eq queries versus native predicate scans; advisory (ADR-0020) |
+| Architecture profile (M6) | `benchmark/m6_architecture.dart` + `benchmark/boundary.dart` | Worker-isolate/FRB boundary and opt-in logical-encryption overhead; advisory (ADR-0021) |
 | Offline lint | `tool/offline_lint.dart` | Forbids network + `DateTime.now()` in all test sources (determinism) |
 | Security review | `tool/security_review.dart` | Scans Dart + Rust for secret literals, key logging, raw values in errors, base64 credential blobs |
 

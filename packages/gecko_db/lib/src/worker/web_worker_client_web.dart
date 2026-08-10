@@ -45,8 +45,8 @@ class WebWorkerClient {
     required String workerUrl,
     required String path,
     bool readOnly = false,
-    String? physicalKey,
-    int physicalKeyGeneration = 1,
+    List<int>? encryptionKey,
+    int encryptionKeyGeneration = 1,
   }) async {
     final worker = _WorkerCtor(workerUrl);
     final client = WebWorkerClient._(worker, '');
@@ -85,8 +85,8 @@ class WebWorkerClient {
       'id': requestId,
       'path': path,
       'readOnly': readOnly,
-      if (physicalKey != null) 'physicalKey': physicalKey,
-      'physicalKeyGeneration': physicalKeyGeneration,
+      if (encryptionKey != null) 'encryptionKey': encryptionKey,
+      'encryptionKeyGeneration': encryptionKeyGeneration,
     });
 
     final response = await completer.future.timeout(

@@ -18,9 +18,10 @@ disk.
 
 Workstream 4 requires a *physical* layer: every byte written by the storage
 engine should be authenticated-encrypted below redb, with length preservation,
-typed failures on wrong/corrupt keys, key-provider seams, atomic key rotation
-with crash recovery to either key, tenant separation, nonce-uniqueness
-guarantees, and honest documentation of secure deletion.
+typed failures on wrong/corrupt keys, atomic key rotation with crash recovery
+to either key, tenant separation, nonce-uniqueness guarantees, and honest
+documentation of secure deletion. The pre-release simplification in ADR-0022
+removes the unfinished key-provider and logical-encryption layers.
 
 ## Decision
 
@@ -71,18 +72,20 @@ At every crash point the live file is entirely old-key or entirely new-key,
 never mixed. Rotation therefore requires the database to be closed and is
 exposed as `rotatePhysicalKey` (pure Rust path, no redb handle).
 
-### 3. Key providers and fail-before-open
+### 3. Raw-key fail-before-open contract (M6.5 target)
 
-`KeyProvider` is the public seam: `FixedKeyProvider` (dev/tests),
-`EnvironmentKeyProvider` (CI/containers), and `FileKeyProvider` (Docker
-secrets) ship with pure-Dart implementations; platform secure storage
-(Keychain, DPAPI, libsecret, Android Keystore) is a documented extension point
-for later workstreams. Keys are 32 bytes, never logged, never persisted by the
-engine, and resolved *before* the file is opened: a missing key fails with a
-typed `keyUnavailable` error and no file is created (a missing key can never
-silently produce a plaintext database). `DatabaseConfig` gains
-`physicalEncryptionKey` and `physicalKeyGeneration` (1 for fresh files; the
-generation returned by `rotatePhysicalKey` after rotation) plus `keyProvider`.
+The pre-release product accepts exactly one raw 32-byte AES-256 key through
+`DatabaseConfig.encryptionKey`. There is no public key-provider abstraction,
+text encoding, crypto registry, or custom encryption implementation. The
+application owns secure key storage and passes the already-resolved bytes to
+gecko_db.
+
+Keys are never logged or persisted by the engine and are validated *before*
+the file is opened. A missing or invalid key fails with a typed error and no
+file is created. No key means ordinary plaintext pages; a key is supported
+only for the native file backend. Web and in-memory encryption are rejected
+explicitly. The retained generation value is used only for physical rotation
+recovery.
 
 ### 4. Tenant separation and nonce uniqueness
 
@@ -114,8 +117,10 @@ generation returned by `rotatePhysicalKey` after rotation) plus `keyProvider`.
   value structure, and no key material (validated by raw-file scan tests).
 - Wrong keys, missing keys, corrupted pages, and tampered tags fail with typed
   errors before any data is returned.
-- Physical and logical encryption compose: values can be additionally sealed
-  above the storage layer.
+- The physical layer is the sole supported encryption mechanism in the
+  pre-release product; logical per-value encryption is removed by ADR-0022.
+- Native query execution is unchanged when encryption is enabled because Rust
+  decrypts pages below redb before query/index evaluation.
 - The 29-byte-per-page overhead (~0.7%) and per-page AES-GCM cost trade
   security for modest space/time; redb's checksum layer still applies on
   decrypted pages.

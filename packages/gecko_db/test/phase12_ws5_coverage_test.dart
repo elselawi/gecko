@@ -1,7 +1,7 @@
 // Workstream 5 coverage hardening.
 //
 // These tests close the branch/line gaps introduced by the maintenance and
-// diagnostics surfaces: maintenance toStrings, key-provider failures,
+// diagnostics surfaces: maintenance toStrings, raw-key validation,
 // recovery from a failed compaction, read-only marker handling, preserved
 // conflict round-trips with a resolution, and secondary-index edge paths.
 import 'dart:io';
@@ -33,16 +33,6 @@ String _nativeLibraryPath(String root) {
       : 'libgecko_db_rust.so';
   return '$root${Platform.pathSeparator}rust${Platform.pathSeparator}'
       'target${Platform.pathSeparator}release${Platform.pathSeparator}$name';
-}
-
-class _ThrowingKeyProvider implements KeyProvider {
-  @override
-  String get name => 'throwing-test';
-
-  @override
-  Future<List<int>?> obtain() async {
-    throw StateError('secret unavailable');
-  }
 }
 
 void main() {
@@ -88,21 +78,21 @@ void main() {
     await db.close();
   });
 
-  test('a throwing key provider fails before the file is created', () async {
+  test('an invalid raw key fails before the file is created', () async {
     await expectLater(
       DatabaseImpl.open(
         path,
         useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
-          keyProvider: _ThrowingKeyProvider(),
+          encryptionKey: const [1, 2],
         ),
       ),
       throwsA(
         isA<GeckoError>().having(
           (e) => e.type,
           'type',
-          GeckoErrorType.keyUnavailable,
+          GeckoErrorType.invalidOperation,
         ),
       ),
     );

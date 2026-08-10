@@ -36,10 +36,7 @@ class DatabaseConfig {
     this.readOnly = false,
     this.inMemory = false,
     this.encryptionKey,
-    this.cryptoBackendName = 'aes256Gcm',
-    this.physicalEncryptionKey,
-    this.physicalKeyGeneration = 1,
-    this.keyProvider,
+    this.encryptionKeyGeneration = 1,
     this.nativeLibraryPath,
     this.inFlightBatchLimit,
     this.lruCapacity,
@@ -59,29 +56,16 @@ class DatabaseConfig {
   /// databases are not persisted and cannot be physically encrypted.
   final bool inMemory;
 
-  /// Optional encryption key (Phase 11). When supplied, logical values are
-  /// encrypted before reaching the selected RawBackend.
+  /// Optional raw 32-byte AES-256-GCM key for native physical page
+  /// encryption. Encryption is disabled when this is null. The application
+  /// owns key storage; gecko_db does not accept custom crypto methods or key
+  /// providers. Web and in-memory encryption are unsupported.
   final List<int>? encryptionKey;
 
-  /// Registered crypto backend name. `aes256Gcm` is the built-in default;
-  /// custom names must be registered with `CryptoBackend.register`.
-  final String cryptoBackendName;
-
-  /// Optional 32-byte AES-256 key for *physical* page encryption (Workstream
-  /// 4). When supplied (or resolved through [keyProvider]), every native file
-  /// page is authenticated-encrypted below redb, so raw-file scans never find
-  /// plaintext. Physical and logical ([encryptionKey]) encryption compose.
-  final List<int>? physicalEncryptionKey;
-
-  /// Key generation for [physicalEncryptionKey]. Freshly encrypted files use
-  /// generation 1; after [`rotatePhysicalKey`] the new key uses the returned
+  /// Key generation for [encryptionKey]. Freshly encrypted files use
+  /// generation 1; after [rotatePhysicalKey] the new key uses the returned
   /// generation so interrupted rotations recover to the correct key.
-  final int physicalKeyGeneration;
-
-  /// Optional key source used when [physicalEncryptionKey] is null. The key
-  /// is resolved *before* the file is opened; if it is unavailable the open
-  /// fails with a typed `keyUnavailable` error and no file is created.
-  final KeyProvider? keyProvider;
+  final int encryptionKeyGeneration;
 
   /// Explicit path to a prebuilt native library. When null, the platform
   /// native resolver (Phase 1) selects one automatically.

@@ -9,7 +9,6 @@ export: src/api/change_tracking.dart show: ChangeOrigin, ChangeRecord, SyncHookA
 export: src/api/collection.dart show: Collection, RowMapper, IdExtractor
 export: src/api/collection_diff.dart show: CollectionDiff
 export: src/api/conflict.dart show: ConflictApi, ConflictRequest, ConflictResolutionResult, ConflictStrategy, ConflictStrategyHandler, ConflictVersion, PreservedConflict, Resolution, ResolutionKind
-export: src/api/crypto.dart show: CryptoBackend, CryptoPage, Aes256GcmCryptoBackend
 export: src/api/database.dart show: Database, DatabaseConfig, WriteCallback
 export: src/api/diagnostics.dart show: DiagnosticsApi, DiagnosticsSnapshot
 export: src/api/maintenance.dart show: MaintenanceApi, MaintenanceState, StorageStats, SlowQueryRecord, QueryStageTimings
@@ -18,12 +17,11 @@ export: src/api/schema.dart show: SchemaApi, MigrationStep, MigrationPlan, Migra
 export: src/api/sync_state.dart show: SyncState, SyncPhase
 export: src/api/transaction.dart show: Transaction
 export: src/backend/byte_key.dart show: ByteKey
-export: src/backend/encrypted_raw_backend.dart show: EncryptedRawBackend
 export: src/backend/in_memory_backend.dart show: InMemoryBackend
 export: src/backend/native_raw_backend.dart show: NativeRawBackend, NativeRawSnapshot
 export: src/backend/raw_backend.dart show: RawBackend, RawSnapshot, RawOp, RawPut, RawDelete, RawDeleteRange, RawClear, RawEntry, RawBatch, keyNotFoundError
 export: src/cache/lru_cache.dart show: LruCache
-export: src/crypto/physical_encryption.dart show: KeyProvider, FixedKeyProvider, EnvironmentKeyProvider, FileKeyProvider, KeyEncoding, rotatePhysicalKey, validatePhysicalKey, decodeKey, initialPhysicalKeyGeneration
+export: src/crypto/physical_encryption.dart show: rotatePhysicalKey, validateEncryptionKey, initialPhysicalKeyGeneration
 export: src/database_impl.dart show: DatabaseImpl
 export: src/errors/errors.dart show: GeckoError, GeckoErrorType
 export: src/errors/native_error.dart show: mapNativeError

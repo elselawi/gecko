@@ -8,7 +8,7 @@
 //     before any data is returned,
 //   * no sentinel plaintext ever appears in the raw file,
 //   * nonces are unique across writes, sessions, and rotations,
-//   * key providers resolve before the file is created (fail-before-open),
+//   * raw keys validate before the file is created (fail-before-open),
 //   * tenant separation (two keys cannot read each other's files),
 //   * atomic key rotation with crash recovery to either the old or new key,
 //   * encrypted and unencrypted backends pass equivalent logical behavior.
@@ -45,9 +45,6 @@ String _nativeLibraryPath(String root) {
 
 List<int> _keyA() => List<int>.filled(32, 0x41);
 List<int> _keyB() => List<int>.filled(32, 0x42);
-
-String _hexKey(List<int> key) =>
-    key.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
 /// All physical nonces currently present in the raw file (last 12 bytes of
 /// every non-zero physical page), in file order (may contain duplicates if a
@@ -94,7 +91,8 @@ void main() {
     useInMemory: false,
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
-      physicalEncryptionKey: key,
+      encryptionKey: key,
+      encryptionKeyGeneration: keyGeneration,
     ),
   );
 
@@ -246,86 +244,39 @@ void main() {
       );
     });
 
-    test('missing key provider fails before the file is created', () async {
-      final provider = _NullKeyProvider();
+    test('invalid raw key fails before the file is created', () async {
       await expectLater(
         DatabaseImpl.open(
           path,
           useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            keyProvider: provider,
+            encryptionKey: const [1, 2],
           ),
         ),
         throwsA(
           isA<GeckoError>().having(
             (e) => e.type,
             'type',
-            GeckoErrorType.keyUnavailable,
+            GeckoErrorType.invalidOperation,
           ),
         ),
       );
       expect(
         File(path).existsSync(),
         isFalse,
-        reason: 'a missing key must never create a plaintext database file',
+        reason: 'an invalid key must never create a database file',
       );
     });
 
-    test(
-      'FixedKeyProvider, FileKeyProvider, and EnvironmentKeyProvider',
-      () async {
-        // Fixed provider opens and persists.
-        final fixedDb = await DatabaseImpl.open(
-          path,
-          useInMemory: false,
-          config: DatabaseConfig(
-            nativeLibraryPath: nativePath,
-            keyProvider: FixedKeyProvider(_keyA()),
-          ),
-        );
-        await writeSample(fixedDb, 'fixed');
-        await fixedDb.close();
-
-        // File provider reads the same key from a key file.
-        final keyFile = '${tempDir.path}${Platform.pathSeparator}key.hex';
-        File(keyFile).writeAsStringSync(_hexKey(_keyA()));
-        final fileDb = await DatabaseImpl.open(
-          path,
-          useInMemory: false,
-          config: DatabaseConfig(
-            nativeLibraryPath: nativePath,
-            keyProvider: FileKeyProvider(keyFile),
-          ),
-        );
-        expect(await readAll(fileDb), hasLength(50));
-        await fileDb.close();
-
-        // Environment provider: an unset variable is unavailable (typed error,
-        // file untouched).
-        final envDb = EnvironmentKeyProvider(
-          environmentVariable: 'GECKO_DB_WS4_UNSET_VARIABLE',
-        );
-        expect(await envDb.obtain(), isNull);
-        await expectLater(
-          DatabaseImpl.open(
-            path,
-            useInMemory: false,
-            config: DatabaseConfig(
-              nativeLibraryPath: nativePath,
-              keyProvider: envDb,
-            ),
-          ),
-          throwsA(
-            isA<GeckoError>().having(
-              (e) => e.type,
-              'type',
-              GeckoErrorType.keyUnavailable,
-            ),
-          ),
-        );
-      },
-    );
+    test('raw 32-byte key opens and persists', () async {
+      final encrypted = await openEncrypted(key: _keyA());
+      await writeSample(encrypted, 'raw');
+      await encrypted.close();
+      final reopened = await openEncrypted(key: _keyA());
+      expect(await readAll(reopened), hasLength(50));
+      await reopened.close();
+    });
 
     test('two tenants cannot read each other files', () async {
       final tenantA = await DatabaseImpl.open(
@@ -333,7 +284,7 @@ void main() {
         useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
-          physicalEncryptionKey: _keyA(),
+          encryptionKey: _keyA(),
         ),
       );
       await writeSample(tenantA, 'tenant-a');
@@ -345,7 +296,7 @@ void main() {
         useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
-          physicalEncryptionKey: _keyB(),
+          encryptionKey: _keyB(),
         ),
       );
       await writeSample(tenantB, 'tenant-b');
@@ -358,7 +309,7 @@ void main() {
           useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            physicalEncryptionKey: _keyA(),
+            encryptionKey: _keyA(),
           ),
         ),
         throwsA(isA<GeckoError>()),
@@ -369,7 +320,7 @@ void main() {
           useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            physicalEncryptionKey: _keyB(),
+            encryptionKey: _keyB(),
           ),
         ),
         throwsA(isA<GeckoError>()),
@@ -412,8 +363,8 @@ void main() {
           useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            physicalEncryptionKey: _keyB(),
-            physicalKeyGeneration: 2,
+            encryptionKey: _keyB(),
+            encryptionKeyGeneration: 2,
           ),
         );
         final all = await readAll(reopened);
@@ -445,8 +396,8 @@ void main() {
         useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
-          physicalEncryptionKey: _keyB(),
-          physicalKeyGeneration: 2,
+          encryptionKey: _keyB(),
+          encryptionKeyGeneration: 2,
         ),
       );
       await writeSample(dbB, 'fwd');
@@ -466,8 +417,8 @@ void main() {
         useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
-          physicalEncryptionKey: _keyB(),
-          physicalKeyGeneration: 2,
+          encryptionKey: _keyB(),
+          encryptionKeyGeneration: 2,
         ),
       );
       expect(await readAll(reopened), hasLength(50));
@@ -534,29 +485,21 @@ void main() {
       },
     );
 
-    test('in-memory backend rejects a physical encryption key', () async {
+    test('in-memory backend rejects an encryption key', () async {
       await expectLater(
         DatabaseImpl.open(
           path,
           useInMemory: true,
-          config: DatabaseConfig(physicalEncryptionKey: _keyA()),
+          config: DatabaseConfig(encryptionKey: _keyA()),
         ),
         throwsA(
           isA<GeckoError>().having(
             (e) => e.type,
             'type',
-            GeckoErrorType.cryptoBackend,
+            GeckoErrorType.invalidOperation,
           ),
         ),
       );
     });
   });
-}
-
-class _NullKeyProvider implements KeyProvider {
-  @override
-  String get name => 'null-test';
-
-  @override
-  Future<List<int>?> obtain() async => null;
 }

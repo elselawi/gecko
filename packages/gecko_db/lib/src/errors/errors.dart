@@ -84,6 +84,4 @@ enum GeckoErrorType {
   conflict,
   attachment,
   migration,
-  cryptoBackend,
-  keyUnavailable,
 }

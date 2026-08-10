@@ -38,9 +38,9 @@ global script that:
   race where a client's first request is dropped because the handler was not yet
   installed),
 - serves a stable JSON protocol (below),
-- rejects `physicalKey` requests on the web (there is no key-management surface
-  for physical encryption in a Worker today; a typed error is returned instead
-  of silently ignoring the key).
+- rejects `encryptionKey` requests on the web (M6.5's native-only physical
+  encryption contract); a typed error is returned instead of silently ignoring
+  the key.
 
 It is excluded from VM analysis (`packages/gecko_db/web/**` in
 `analysis_options.yaml`) because it references web-only FRB symbols.
@@ -93,7 +93,7 @@ compiles on both platforms. `WebWorkerClient.open(...)`:
 - The worker entry and client are `dart2js`/`dart:js_interop` code that cannot
   be analyzed or unit-tested on the VM; their live validation depends on the
   CDP-driven browser harness and the protocol-level unit tests.
-- `physicalKey` (physical encryption) is unsupported on the web worker and
+- `encryptionKey` (physical encryption) is unsupported on the web worker and
   returns a typed error; consumers must keep encryption keys out of browser
   worker contexts.
 - `dart:js_interop` on this SDK has no `asString()`; message decoding relies on

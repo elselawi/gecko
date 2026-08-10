@@ -46,8 +46,10 @@ side enforces these through the compatibility handshake
   `checksumMismatch` error before any data is returned — never a silent misread.
 - **Native handshake**: the worker's build id must match the package's pinned
   matrix, or the worker is rejected before use.
-- **Encrypted files**: sealed under the tenant key; wrong key / corrupt page →
-  typed authentication failure before data.
+- **Encrypted files**: M6.5 target contract uses one raw 32-byte key for
+  native Rust AES-256-GCM physical encryption; encryption is off by default,
+  Web/in-memory encryption is unsupported, and wrong key / corrupt page →
+  typed authentication failure before data. Public raw-key rotation remains.
 
 ## Verification
 

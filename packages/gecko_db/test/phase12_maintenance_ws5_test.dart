@@ -458,7 +458,7 @@ void main() {
           useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            physicalEncryptionKey: List<int>.filled(32, key),
+            encryptionKey: List<int>.filled(32, key),
           ),
         );
         await writeRows(db, 60);
@@ -470,7 +470,7 @@ void main() {
           useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            physicalEncryptionKey: List<int>.filled(32, key),
+            encryptionKey: List<int>.filled(32, key),
           ),
         );
         try {

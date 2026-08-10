@@ -22,9 +22,10 @@ disclosure.
 ## Security posture (what gecko_db does and does not claim)
 
 **Claimed and tested:**
-- Data at rest is protected by authenticated encryption (physical AES-256-GCM
-  page encryption, ADR-0009) when a key is configured; raw-file scans find no
-  plaintext.
+- Data at rest is protected by authenticated encryption (Rust physical
+  AES-256-GCM page encryption, ADR-0009) when a raw 32-byte native key is
+  configured; raw-file scans find no plaintext. Encryption is off by default
+  and is native-only in the M6.5 target contract.
 - Wrong keys, missing keys, and corrupted/tampered pages fail with typed
   errors before any data is returned.
 - Keys are never written to disk by the engine, never logged, and never
@@ -32,6 +33,9 @@ disclosure.
 - Key rotation is atomic with crash recovery to either the old or the new key.
 - Tenant separation: files are sealed under their tenant key; cross-key open
   fails authentication.
+- The application owns key storage; gecko_db does not accept custom crypto
+  implementations or key-provider plugins. Public raw-key rotation remains
+  atomic and crash-recoverable.
 
 **Explicitly NOT claimed:**
 - **Physical secure deletion** — logical deletion is supported; physical media

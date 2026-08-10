@@ -17,10 +17,11 @@ maintainer/consumer orientation guide.
   a Web Worker (see [ADR-0013](adr/0013-web-runtime-frb-glue-and-opfs.md) and
   `tool/web_smoke/` for the worker bootstrap pattern). On the web
   `DatabaseConfig.nativeLibraryPath` is interpreted as the glue URL prefix.
-- **`DatabaseConfig`** — read-only, in-memory, logical/physical encryption
-  keys, key providers, native library path, LRU bounds, backpressure,
-  change-log retention, schema gate, slow-query threshold, compaction
-  snapshot-drain timeout.
+- **`DatabaseConfig`** — read-only, in-memory, optional native physical
+  encryption key, native library path, LRU bounds, backpressure, change-log
+  retention, schema gate, slow-query threshold, compaction snapshot-drain
+  timeout. M6.5 simplifies encryption to one optional raw 32-byte key; the
+  target contract has no logical encryption, custom crypto, or key providers.
 
 ## Tier 1 — collections (boxes)
 
@@ -64,12 +65,19 @@ prefixFields:)` returns a `Collection<T>`:
 
 ## Encryption
 
-- **Logical**: `EncryptedRawBackend` + `CryptoBackend` registry
-  (`Aes256GcmCryptoBackend`).
-- **Physical** (ADR-0009): `DatabaseConfig.physicalEncryptionKey` +
-  `physicalKeyGeneration`; `KeyProvider` (`FixedKeyProvider`,
-  `EnvironmentKeyProvider`, `FileKeyProvider`); `rotatePhysicalKey`,
-  `decodeKey`, `validatePhysicalKey`.
+M6.5 target contract (ADR-0022):
+
+- Encryption is **off by default** when no key is supplied.
+- Native file encryption uses one fixed Rust AES-256-GCM physical page layer.
+- The application supplies one raw 32-byte `encryptionKey`; key storage remains
+  the application's responsibility.
+- There is no logical value-encryption wrapper, custom crypto registry,
+  provider abstraction, text key encoding, or user-supplied encryption method.
+- Encryption is native-only; Web and in-memory encryption are rejected.
+- Public `rotatePhysicalKey(oldKey, newKey)` remains atomic and crash-recoverable.
+
+The existing physical format and rotation implementation are documented in
+[ADR-0009](adr/0009-physical-encryption-and-key-management.md).
 
 ## Bulk writes and diagnostics
 
@@ -88,7 +96,8 @@ prefixFields:)` returns a `Collection<T>`:
   collectionNotFound, schemaValidation, transactionAborted, decryption,
   databaseAlreadyOpen, databaseLocked, upgradeRequired, checksumMismatch,
   invalidOperation, syncState, conflict, attachment, migration,
-  cryptoBackend, keyUnavailable).
+  migration). M6.5 removes the obsolete key-provider and custom-crypto error
+  categories from the target public surface.
 - `mapNativeError` converts native worker failures to typed `GeckoError`s.
 
 ## Guarantees (summary)

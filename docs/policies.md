@@ -57,9 +57,12 @@ Dart/native handshake).
 - **Native artifact**: the Rust worker reports a build id (`0.0.1+rust`) in the
   compatibility handshake; an artifact whose handshake does not match the
   package is rejected before use.
-- **Encrypted databases**: physical encryption is sealed under the tenant key;
-  reopening with the wrong key (or a corrupted page) fails authentication
-  before any data is returned. Physical secure-deletion is **not** claimed.
+- **Encrypted databases**: the pre-release contract uses one optional raw
+  32-byte key for native Rust AES-256-GCM physical encryption. Encryption is
+  off by default; Web and in-memory encryption are unsupported. Reopening with
+  the wrong key (or a corrupted page) fails authentication before any data is
+  returned. Public key rotation remains atomic and crash-recoverable. Physical
+  secure-deletion is **not** claimed. See ADR-0022.
 
 ## Security disclosure process
 

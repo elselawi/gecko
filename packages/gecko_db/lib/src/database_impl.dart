@@ -13,7 +13,6 @@ import 'dart:math' as math;
 import 'package:path/path.dart' as path_util;
 
 import 'backend/byte_key.dart';
-import 'backend/encrypted_raw_backend.dart';
 import 'backend/in_memory_backend.dart';
 import 'backend/raw_backend.dart';
 import 'errors/errors.dart';
@@ -32,7 +31,6 @@ import 'api/change.dart';
 import 'api/change_tracking.dart';
 import 'api/collection.dart';
 import 'api/collection_diff.dart';
-import 'api/crypto.dart';
 import 'crypto/physical_encryption.dart';
 import 'api/conflict.dart';
 import 'api/database.dart';
@@ -173,18 +171,18 @@ class DatabaseImpl implements Database {
     RawBackend? backend;
     DatabaseImpl? db;
     try {
-      // Resolve the physical encryption key BEFORE the file is touched. A
-      // missing key must fail with a typed error and never silently create a
-      // plaintext database (Workstream 4 requirement 5).
-      final physicalKey =
-          config.physicalEncryptionKey ??
-          await _resolvePhysicalKey(config.keyProvider, path);
+      // Validate the raw physical key before the file is touched. A malformed
+      // key fails with a typed error and never creates a database file.
+      final encryptionKey = config.encryptionKey;
+      if (encryptionKey != null) {
+        validateEncryptionKey(encryptionKey);
+      }
       if (useInMemory) {
-        if (physicalKey != null) {
+        if (encryptionKey != null) {
           throw GeckoError(
-            GeckoErrorType.cryptoBackend,
-            'Physical encryption requires the native file backend; '
-            'in-memory databases cannot be encrypted at rest',
+            GeckoErrorType.invalidOperation,
+            'Encryption requires the native file backend; in-memory databases '
+            'cannot be encrypted at rest',
           );
         }
         backend = InMemoryBackend(isReadOnly: config.readOnly);
@@ -193,15 +191,9 @@ class DatabaseImpl implements Database {
           path,
           readOnly: config.readOnly,
           nativeLibraryPath: config.nativeLibraryPath,
-          physicalKey: physicalKey,
-          physicalKeyGeneration: config.physicalKeyGeneration,
+          encryptionKey: encryptionKey,
+          encryptionKeyGeneration: config.encryptionKeyGeneration,
         );
-      }
-      if (config.encryptionKey != null) {
-        final crypto = config.cryptoBackendName == 'aes256Gcm'
-            ? Aes256GcmCryptoBackend(config.encryptionKey!)
-            : CryptoBackend.resolve(config.cryptoBackendName);
-        backend = EncryptedRawBackend(backend, crypto: crypto);
       }
       db = DatabaseImpl._(
         path,
@@ -257,37 +249,6 @@ class DatabaseImpl implements Database {
   /// Whether a database is currently open at [path] (for lifecycle tests).
   static bool isOpenAt(String path) =>
       _openDatabases.containsKey(_registryKey(path));
-
-  /// Resolves the 32-byte physical encryption key from [provider] before the
-  /// file is opened. A provider that returns null (or throws) fails with a
-  /// typed `keyUnavailable`/`cryptoBackend` error so no file is ever created
-  /// without the key the caller expected (Workstream 4 requirement 5).
-  static Future<List<int>?> _resolvePhysicalKey(
-    KeyProvider? provider,
-    String path,
-  ) async {
-    if (provider == null) return null;
-    final List<int>? key;
-    try {
-      key = await provider.obtain();
-    } catch (error) {
-      throw GeckoError(
-        GeckoErrorType.keyUnavailable,
-        'Physical key provider "${provider.name}" failed for $path: $error',
-        details: <String, Object?>{'path': path, 'provider': provider.name},
-      );
-    }
-    if (key == null) {
-      throw GeckoError(
-        GeckoErrorType.keyUnavailable,
-        'No physical encryption key available from provider '
-        '"${provider.name}" for $path',
-        details: <String, Object?>{'path': path, 'provider': provider.name},
-      );
-    }
-    validatePhysicalKey(key);
-    return key;
-  }
 
   @override
   Collection<T> collection<T>(

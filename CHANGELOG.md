@@ -7,6 +7,24 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M6 — Measured architecture decisions** (ADR-0021):
+  - Retains the worker-isolate native client as the default. The measured
+    isolate round trip is 57.3µs versus 25.1µs for direct FRB, but the isolate
+    preserves UI-thread offload, single-writer ownership, deterministic
+    teardown, and crash/reopen qualification.
+  - The logical-encryption measurement (121.6ms median versus 4.4ms plain
+    native) became the justification for M6.5's pre-release removal decision;
+    it is not retained as a product feature.
+  - Added `benchmark/m6_architecture.dart` for repeatable measurements.
+- **M6.5 — Rust-only physical encryption simplification** (ADR-0022):
+  - Planned pre-release contract: encryption off by default; one raw 32-byte
+    `encryptionKey` enables fixed Rust AES-256-GCM physical encryption on
+    native file databases.
+  - Logical value encryption, custom crypto registries, key providers, text
+    encodings, and user-supplied encryption methods are removed from the target
+    API. Public raw-key rotation remains.
+  - Web and in-memory encryption are explicitly unsupported; no released
+    consumer migration is required.
 - **M5 — Indexed range, prefix, and multi-equality intersection** (ADR-0020):
   covered native filters now narrow candidates through the durable index in one
   MVCC read operation and recheck the complete predicate in Rust.
@@ -123,14 +141,15 @@ All notable changes to gecko_db are documented here. The format follows
   - Finding: the cost is overwhelmingly in boundary crossings
     (`backendRead` is 70% of a 100k-row full scan and 88% of an indexed eq
     query), not Dart decode/predicate — directly motivates Phase 2.
-- Workstream 4 — **Physical encryption and key management** (ADR-0009):
+- Workstream 4 — **Physical encryption and key management** (ADR-0009,
+  historical pre-M6.5 surface):
   - `EncryptingStorageBackend`: AES-256-GCM per physical page below redb
     (`[gen 1][ciphertext‖tag 4112][nonce 12]`), length-preserving and
     page-aligned; wrong key / corrupt page → typed errors before data.
-  - `DatabaseConfig.physicalEncryptionKey` / `physicalKeyGeneration` /
-    `keyProvider`; `KeyProvider` seam with `FixedKeyProvider`,
-    `EnvironmentKeyProvider`, `FileKeyProvider`; fail-before-open key
-    resolution (`keyUnavailable`).
+  - The pre-M6.5 implementation exposed separate physical-key and provider
+    configuration; ADR-0022 replaces that unfinished public surface with one
+    raw `encryptionKey` while preserving the Rust physical format and rotation
+    behavior.
   - `rotatePhysicalKey`: atomic key rotation with crash recovery to either the
     old or the new key.
 - Workstream 5 — **Compaction, maintenance, and diagnostics** (ADR-0010):
@@ -212,7 +231,9 @@ All notable changes to gecko_db are documented here. The format follows
   conflicts.
 - Phase 9: attachment metadata, content-hash dedupe, orphan detection.
 - Phase 10: schema versioning and transactional migrations.
-- Phase 11: logical encryption (`EncryptedRawBackend`, `Aes256GcmCryptoBackend`).
+- Phase 11: historical logical encryption (`EncryptedRawBackend`,
+  `Aes256GcmCryptoBackend`), scheduled for removal before first release by
+  M6.5/ADR-0022.
 - Phase 12: bulk writes, bounded cache, per-row diff watches, opt-in
   diagnostics.
 - Phase 13: runnable quickstart/advanced examples and release-hardening docs.

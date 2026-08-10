@@ -124,7 +124,7 @@ asserts the DOM/title markers. Two live-validated suites:
 - OPFS allows only one sync access handle per file at a time; the engine must
   be closed deterministically or the next open fails with
   `NoModificationAllowedError`.
-- Physical encryption (`physicalEncryptionKey`) is not supported on the web
-  (the wasm OPFS path is opened unencrypted; the API rejects keyed opens on the
-  web with a typed error).
+- Physical encryption (`encryptionKey` in the M6.5 target contract) is not
+  supported on the web (the wasm OPFS path is opened unencrypted; the API
+  rejects keyed opens on the web with a typed error).
 - A vendored FRB copy must be kept in sync when upgrading FRB.

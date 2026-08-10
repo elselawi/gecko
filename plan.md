@@ -65,9 +65,10 @@ references them; where older text conflicts, the contract wins.
    no rename. OPFS storage and transparent encryption sit **below** a page scheduler; secure deletion
    is explicitly **out of scope** (no callback to know a byte range was freed) — mitigated by
    full-disk encryption / SSD wipes, documented honestly.
-2. **Encryption/compression must be length-preserving per page.** Default AES-256-GCM: 12-byte nonce +
-   16-byte tag in page slack, ciphertext replaces payload. A wrong key surfaces as a typed
-   `DecryptionError`, never silently wrong data.
+2. **Encryption/compression must be length-preserving per page.** The sole pre-release encryption
+   mechanism is optional native Rust AES-256-GCM: 12-byte nonce + 16-byte tag in page slack,
+   ciphertext replaces payload. A wrong key surfaces as a typed `DecryptionError`, never silently
+   wrong data. Web and in-memory encryption are unsupported.
 3. **Sync scope.** Only the local transactional change-tracking metadata + local conflict resolution are
    in scope. The transport (HTTP, SQLite, CRDT…), identity, and conflict *policies* are out of scope.
 4. **Concurrency & lifecycle.** One worker per file; cross-process exclusion is redb's OS lock;
@@ -116,7 +117,7 @@ All ✅. The table names the subsystem + key proof; consult the named ADR/test f
 | 8 | Conflict resolution against sync metadata | `phase8_conflict_test.dart` |
 | 9 | Attachments & file-reference metadata (blob de-dup) | `phase9_attachments_test.dart` |
 | 10 | Schema versioning & migrations (additive + breaking, open-time gate) | `phase10_migrations_test.dart` |
-| 11 | Encryption at rest: logical (Dart) + physical AES-256-GCM (Rust) + key rotation | ADR-0009; `phase11_crypto_ws4_test.dart` |
+| 11 | Encryption at rest: physical AES-256-GCM (Rust) + raw-key rotation; historical logical layer removed by M6.5 | ADR-0009, ADR-0022; `phase11_crypto_ws4_test.dart` |
 | 12 | Performance, compaction, diagnostics: `bulkWrite`, LRU, slow-query logging, maintenance machine | ADR-0010; `phase12_*` tests |
 | 13 | API polish, docs, examples, compatibility matrix, consumer fixture | ADR-0011; `examples/`, `tool/docs_examples_test.dart`, `tool/consumer_fixture_test.dart` |
 
@@ -127,7 +128,8 @@ All ✅ except two explicitly-deferred items (noted ☐).
 - **WS0–2** ✅ Contract lock, native worker lifecycle, backend differential/conformance (in-memory ↔
   native parity via `raw_backend_contract_test.dart` + `phase2_differential_test.dart`).
 - **WS3** ✅ Durable indexes + relationships (`__gecko_index`, drift repair, reactive relations).
-- **WS4** ✅ Physical encryption (AES-256-GCM per page, key providers, rotation crash matrix).
+- **WS4** ✅ Physical encryption (AES-256-GCM per page, raw-key contract, rotation crash matrix).
+  M6.5 removes the historical key-provider and logical-encryption layers before release.
   ☐ Overflow-page data/tag atomicity — tracked, no dedicated test (redb writes overflow through the same
   encrypted path).
 - **WS5** ✅ Compaction (in-place `Database::compact`, 5-state machine), diagnostics (slow-query,
@@ -149,8 +151,7 @@ the already-done Phases 1–3 of Wave A). **All done.**
 |---|---|---|---|
 | **M1** Instrument the read/query path | `benchmark/boundary.dart` (per-layer latency), `QueryStageTimings` (8 query-path stages on `SlowQueryRecord.timings`), `benchmark/query_profile.dart` (1k/100k split) | ADR-0015 | FRB floor ~18–19µs dwarfs redb's get; full-scan 100k `backendRead` 70%, indexed eq `backendRead` 88% (N+1) |
 | **M2 Native query fast path** | (a) `RedbWorker::query_indexed` — durable-index traversal in one hop (kills N+1); (b) `RedbWorker::query_filtered` + `value_codec.rs` (Rust port of `DefaultWireCodec`) + `predicate.rs` (predicate evaluator) — push predicate to Rust | ADR-0016 (indexed), ADR-0017 (predicate push) | Indexed eq 100k: 38ms→12ms (3.2×); full-scan 100k: 482ms→39ms (**12.4×**, meets ≥10× target) |
-| **M3 Read-path completion + `getMany`** | (a) route `iterate()` through `_scanWith` (deleted the `_streamUnsorted` per-id loop); (b) aggregate pushdown `query_filtered_count` / `query_filtered_distinct` (+ `value_codec::find_field_range`); (c) public `Collection.getMany(ids)` = `RedbWorker::get_many` (one read txn, N keys); (d) relationship `children` batches through `snap.getMany` | ADR-0018 | `count()`/`distinct()` on native transfer zero rows (count) / one field-slice per row (distinct); `getMany` kills the relationship N+1; all read paths now use the native fast path |
-
+| **M3** Read-path completion + `getMany` | (a) route `iterate()` through `_scanWith` (deleted the `_streamUnsorted` per-id loop); (b) aggregate pushdown `query_filtered_count` / `query_filtered_distinct` (+ `value_codec::find_field_range`); (c) public `Collection.getMany(ids)` = `RedbWorker::get_many` (one read txn, N keys); (d) relationship `children` batches through `snap.getMany` | ADR-0018 | `count()`/`distinct()` on native transfer zero rows (count) / one field-slice per row (distinct); `getMany` kills the relationship N+1; all read paths now use the native fast path || **M4–M6.5** Query optimization + architecture | Indexed sort/limit, indexed filter intersection, worker/encryption architecture decisions, pre-release encryption simplification | ADR-0019–0022 | M4 indexed sort+limit 154µs median on 100k; M5 multi-eq ~1.0ms but broad range/prefix bounds remain slower than full scan; M6 isolate 57.3µs vs direct FRB 25.1µs and logical encryption 121.6ms vs plain 4.4ms, motivating M6.5 removal |
 **Known gaps after M2 — closed by M3 (ADR-0018):**
 - `iterate()` / `count()` / `distinct()` / `first()` / `findPage()` on native now **use the native
   fast path** (`iterate` via `_scanWith`; `count`/`distinct` via aggregate pushdown; `first`/`findPage`
@@ -161,11 +162,12 @@ the already-done Phases 1–3 of Wave A). **All done.**
 
 - **68 Dart test files** in `packages/gecko_db/test/` (phase0–14, query, relationship, backend,
   predicate_codec, durable_index_bounds, m3_read_path, etc.).
-- **18 ADRs** in `docs/adr/` (0001–0018).
+- **22 ADRs** in `docs/adr/` (0001–0022).
 - **Rust unit tests** in `rust/src/{worker,value_codec,predicate,wire,format_header,compatibility,
   crypto_storage}.rs` + integration tests in `rust/tests/`.
-- Gates (all green on `origin/main`): `dart analyze`, `dart test packages/gecko_db/test` (508 tests),
-  `dart test tool` (32), coverage 95% line / 100% branch, `tool/coverage_gate`, `tool/offline_lint`,
+- Gates (all green on `origin/main` before M6.5 implementation): `dart analyze`,
+  `dart test packages/gecko_db/test` (539 tests), `dart test tool` (32),
+  coverage 95% line / 100% branch, `tool/coverage_gate`, `tool/offline_lint`,
   `tool/security_review`, `tool/traceability_check`, `tool/api_snapshot`, `tool/build_artifacts
   check-bindings`, `cargo check`/`test`/`clippy -- -D warnings`/`fmt --check`.
 
@@ -174,9 +176,9 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M5 done; M6–M10 open). Each milestone
-> has a goal, concrete steps, a "done when" check, and — where it moves Dart→Rust — an ROI note and the
-> Rust tests + Dart deletions it requires.
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6 done; M6.5 next; M7–M10 open).
+> Each milestone has a goal, concrete steps, a "done when" check, and — where it moves Dart→Rust — an
+> ROI note and the Rust tests + Dart deletions it requires.
 >
 > **Ordering.** M3 gates M4–M7 (read-path completion must finish before sort/limit/migration cleanup
 > build on it). **M9 can start immediately in parallel** with anything.
@@ -273,23 +275,90 @@ Rust predicate re-evaluation.
 route; native/in-memory parity tests pass; Rust intersection and predicate-recheck tests pass; full
 package suite remains green.
 
-### M6 — Architecture decisions, measured  ☐
+### M6 — Architecture decisions, measured  ✅ done (ADR-0021; encryption retention superseded by ADR-0022)
 
 **Goal:** settle two open architecture questions with data (M1 boundary numbers are the input).
 
-1. **Worker-isolate cost:** M1 showed `isolateRoundTrip` ~53µs vs FRB-only ~26µs (+~28µs marshalling).
+1. **Worker-isolate cost:** fresh boundary measurement shows `isolateRoundTrip` **57.3µs** vs
+   direct FRB **25.1µs** (+32.3µs marshalling).
    Decide whether the worker isolate earns its keep (UI-thread offload, hot-restart/GC stability, FFI
    off the UI isolate) vs an opt-in direct-FFI mode. Any removal must be opt-in, preserve the
    single-writer rule, and pass crash/reopen + hot-restart suites. **Also decides the 1k `< 1ms`
    indexed target** (the FRB floor is the blocker).
-2. **Encryption layering:** confirm from the M1 profile whether the Dart logical-encryption layer
-   (`EncryptedRawBackend`) appears in any hot path; if not, keep it (it's the only encryption surface
-   for in-memory DBs). If it is hot, push it to Rust (it largely already is — physical encryption is
-   Rust-only; the Dart layer is additive for in-memory).
+   **Decision:** retain the worker isolate as the default; do not add a direct-FFI mode in M6. The
+   ~32µs premium is below the 1k-row query budget and buys UI-thread offload, single-writer ownership,
+   deterministic teardown, and crash/reopen qualification. An opt-in direct mode remains deferred
+   until a measured workload shows the boundary is the bottleneck.
+2. **Encryption layering:** M6 measured the Dart logical-encryption layer at plain native median
+   **4.4ms** versus logical-encrypted median **121.6ms** (~27.5×). M6.5 now supersedes the initial
+   retention decision: because the product has no released consumers, remove logical encryption and
+   custom/provider surfaces before release rather than preserve the expensive second layer. Physical
+   Rust encryption remains the sole supported encryption mechanism.
 
-**Done when:** both decisions recorded in an ADR with measured justification.
+**Done when:** ✅ both decisions are recorded in ADR-0021 with measured justification.
 
-### M7 — Dart→Rust migration cleanup (the "Dart as thin client" pass)  ☐
+### M6.5 — Rust-only encryption simplification  ⏳ next (ADR-0022)
+
+**Goal:** simplify the pre-release encryption contract from two encryption layers and extensible
+providers into one optional native Rust physical-encryption mechanism. Encryption is off by default,
+enabled only by a raw 32-byte key, and unavailable on Web/in-memory backends. Public raw-key rotation
+remains. No released-consumer migration is required.
+
+**Target contract:**
+
+- no key → native file uses ordinary plaintext redb pages;
+- raw 32-byte `encryptionKey` → native file uses Rust AES-256-GCM physical page encryption;
+- no logical per-value encryption, custom crypto algorithms, crypto registry, key-provider abstraction,
+  text key encodings, or user-supplied encryption method;
+- `rotatePhysicalKey(oldKey, newKey)` remains public and crash-recoverable;
+- encryption requested for Web or in-memory is rejected explicitly with a typed error;
+- query execution is identical for encrypted and unencrypted native files because encryption is below
+  Rust/redb, not an encrypted Dart `RawBackend` wrapper.
+
+**Steps:**
+1. ✅ **Lock the API and format policy.** Adopted the single raw-key contract, native-only behavior,
+   default-off policy, retained public rotation, and no logical-encryption compatibility migration.
+2. ✅ **Delete logical encryption.** Removed `EncryptedRawBackend`, logical envelopes, `CryptoBackend`,
+   `CryptoPage`, `Aes256GcmCryptoBackend`, registry methods, and wrapper-specific error branches.
+3. ✅ **Simplify `DatabaseConfig`.** Removed `cryptoBackendName`, logical/physical layering,
+   `KeyProvider`, `KeyEncoding`, provider resolution, and the old `physicalEncryptionKey` naming;
+   retained one optional raw `encryptionKey` plus the generation value needed for rotation recovery.
+4. ✅ **Simplify native open.** Validates exactly 32 raw bytes before file access, passes them directly to
+   Rust physical storage, rejects keys on Web/in-memory, and preserves typed wrong/corrupt-key and
+   read-only behavior.
+5. ✅ **Preserve public key rotation.** Kept raw old/new key validation, closed-file requirements,
+   generation handling, atomic sibling swap, interruption recovery, and no key persistence/logging.
+6. ✅ **Remove obsolete public exports and tests.** Updated `gecko_db.dart`, API snapshot, physical
+   encryption tests, dependent tests, examples, and error expectations; removed logical-encryption tests.
+7. ☐ **Qualify security and storage behavior.** Cover encryption-off plaintext, encryption-on secrecy,
+   wrong keys, tampering, reopen, compaction, snapshots, indexes, query pushdown, rotation, interrupted
+   rotation, and explicit unsupported Web/in-memory behavior.
+8. ☐ **Measure performance.** Replace the logical-wrapper benchmark with plaintext versus Rust physical
+   encryption measurements for writes, indexed reads, scans, compaction, and rotation. Confirm M4/M5
+   query routes remain available when physical encryption is enabled.
+9. ☐ **Update all documentation.** Rewrite ADR-0009 historical scope, ADR-0021's superseded decision,
+   `README.md`, `CHANGELOG.md`, `docs/api.md`, `docs/policies.md`, `SECURITY.md`, `improvements.md`,
+   examples, and compatibility/release notes.
+10. ☐ **Run release gates.** Run API snapshot/contract, traceability, full Dart/Rust tests, coverage,
+    security review, offline lint, artifact/binding checks, crash/reopen tests, and the native/Web/
+    in-memory matrix.
+
+**Dart deletions expected:** approximately 300–450 production lines and 250–400 encryption-specific
+ test lines, plus obsolete exports/documentation. The exact count is recorded after implementation.
+
+**Rust changes expected:** primarily API/configuration integration and test updates; approximately
+50–150 lines changed or added. No second logical encryption implementation is planned.
+
+**Why this simplification is justified:** M6 measured logical encryption at 121.6 ms median versus
+4.4 ms plain native for a 10k-row indexed equality workload (~27.5× overhead). There are no released
+consumers, so removing the unfinished logical/custom-provider surface avoids migration burden while
+making every native query use the same Rust path.
+
+**Done when:** the single raw-key/native-only contract is implemented and documented; public rotation
+and physical-format compatibility remain; logical/custom/provider surfaces are gone; encrypted native
+queries retain M4/M5 routes; all security, parity, API, coverage, and release gates pass.
+
+### M7 — Dart→Rust migration cleanup (the "Dart as thin client" pass)  ☐ next
 
 **Goal:** now that the read/query path moved to Rust (M2–M5), audit and delete Dart code that is
 genuinely redundant on the native backend, and strengthen Rust unit tests to cover what the deleted Dart

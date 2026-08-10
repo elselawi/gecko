@@ -4,7 +4,8 @@
 // surface — exactly what an external consumer would write, with no
 // repository-internal (`package:gecko_db/src/...`) imports. It exercises the
 // full flow: import → open → write → read → watch → query → migrate → encrypt
-// → maintain → close, and prints `CONSUMER-OK` on success.
+// → maintain → close, and prints `CONSUMER-OK` on success. M6.5 uses one raw
+// key and removes custom providers.
 //
 // Usage:
 //   dart run examples/consumer.dart <dbPath> <nativeLibPath> [hexEncryptionKey]
@@ -17,20 +18,28 @@ import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
 
+List<int> _decodeHexKey(String value) {
+  final cleaned = value.replaceAll(RegExp(r'\s+'), '');
+  if (cleaned.length != 64 || !RegExp(r'^[0-9a-fA-F]+$').hasMatch(cleaned)) {
+    throw const FormatException('expected exactly 64 hexadecimal characters');
+  }
+  return [
+    for (var i = 0; i < cleaned.length; i += 2)
+      int.parse(cleaned.substring(i, i + 2), radix: 16),
+  ];
+}
+
 Future<void> main(List<String> args) async {
   if (args.length < 2) {
     throw ArgumentError('usage: consumer.dart <dbPath> <nativeLib> [hexKey]');
   }
   final dbPath = args[0];
   final nativeLib = args[1];
-  final key = args.length > 2 ? decodeKey(args[2]) : null;
+  final key = args.length > 2 ? _decodeHexKey(args[2]) : null;
 
   final db = await Database.open(
     dbPath,
-    config: DatabaseConfig(
-      nativeLibraryPath: nativeLib,
-      physicalEncryptionKey: key,
-    ),
+    config: DatabaseConfig(nativeLibraryPath: nativeLib, encryptionKey: key),
   );
   try {
     final notes = db.collection<Map<String, Object?>>(

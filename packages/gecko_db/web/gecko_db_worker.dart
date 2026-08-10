@@ -160,7 +160,7 @@ Future<void> _handleOpen(
 ) async {
   final path = message['path'] as String;
   final readOnly = message['readOnly'] as bool? ?? false;
-  final physicalKey = message['physicalKey'] as String?;
+  final encryptionKey = message['encryptionKey'];
   final id = message['id'];
 
   void fail(String error) => post(<String, Object?>{
@@ -171,7 +171,7 @@ Future<void> _handleOpen(
   });
 
   try {
-    if (physicalKey != null) {
+    if (encryptionKey != null) {
       fail(
         'physical encryption is not supported on the web; '
         'use OPFS (no key) or :memory:',

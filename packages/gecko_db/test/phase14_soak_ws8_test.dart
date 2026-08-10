@@ -83,7 +83,7 @@ void main() {
           path,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
-            physicalEncryptionKey: _key,
+            encryptionKey: _key,
             changeLogMaxEntries: 500,
           ),
         );
@@ -114,7 +114,7 @@ void main() {
             path,
             config: DatabaseConfig(
               nativeLibraryPath: nativePath,
-              physicalEncryptionKey: _key,
+              encryptionKey: _key,
               changeLogMaxEntries: 500,
             ),
           );
@@ -320,7 +320,7 @@ void main() {
               path,
               config: DatabaseConfig(
                 nativeLibraryPath: nativePath,
-                physicalEncryptionKey: wrongKey,
+                encryptionKey: wrongKey,
               ),
             ),
             throwsA(isA<GeckoError>()),

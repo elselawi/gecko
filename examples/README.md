@@ -32,8 +32,10 @@ dart run examples/consumer.dart <dbPath> <nativeLibPath> [hexEncryptionKey]
 
 `consumer.dart` is exactly what an external consumer would write: it imports
 only `package:gecko_db/gecko_db.dart` (no repository-internal imports) and
-exercises import → open → write → watch → query → migrate → encrypt → maintain
-→ close, printing `CONSUMER-OK` on success. `tool/consumer_fixture_test.dart`
+exercises import → open → write → watch → query → migrate → optional native
+physical encryption → maintain → close, printing `CONSUMER-OK` on success.
+M6.5 uses one raw 32-byte key and does not expose custom crypto or key-provider
+methods. `tool/consumer_fixture_test.dart`
 runs it in CI and rejects any internal import that creeps in.
 
 The examples are documentation fixtures; `packages/gecko_db/test/phase13_examples_test.dart`

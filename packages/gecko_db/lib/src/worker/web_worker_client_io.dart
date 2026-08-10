@@ -21,8 +21,8 @@ class WebWorkerClient {
     required String workerUrl,
     required String path,
     bool readOnly = false,
-    String? physicalKey,
-    int physicalKeyGeneration = 1,
+    List<int>? encryptionKey,
+    int encryptionKeyGeneration = 1,
   }) async {
     _unsupported();
   }

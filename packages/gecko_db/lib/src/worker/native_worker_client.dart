@@ -88,8 +88,8 @@ class NativeWorkerClient {
     required String path,
     required bool readOnly,
     String? nativeLibraryPath,
-    List<int>? physicalKey,
-    int physicalKeyGeneration = 1,
+    List<int>? encryptionKey,
+    int encryptionKeyGeneration = 1,
   }) async {
     // coverage:ignore-start web
     if (isWeb) {
@@ -97,8 +97,8 @@ class NativeWorkerClient {
         path: path,
         readOnly: readOnly,
         nativeLibraryPath: nativeLibraryPath,
-        physicalKey: physicalKey,
-        physicalKeyGeneration: physicalKeyGeneration,
+        encryptionKey: encryptionKey,
+        encryptionKeyGeneration: encryptionKeyGeneration,
       );
     }
     // coverage:ignore-end web
@@ -109,8 +109,8 @@ class NativeWorkerClient {
           path,
           readOnly,
           nativeLibraryPath,
-          physicalKey,
-          physicalKeyGeneration,
+          encryptionKey,
+          encryptionKeyGeneration,
         ], errorsAreFatal: false);
     final client = NativeWorkerClient._(isolate, receivePort);
     try {
@@ -131,8 +131,8 @@ class NativeWorkerClient {
     required String path,
     required bool readOnly,
     String? nativeLibraryPath,
-    List<int>? physicalKey,
-    int physicalKeyGeneration = 1,
+    List<int>? encryptionKey,
+    int encryptionKeyGeneration = 1,
   }) async {
     final client = NativeWorkerClient._webDirect();
     try {
@@ -145,7 +145,13 @@ class NativeWorkerClient {
       // Sync access handles are worker-only, so outside a Worker (or in a
       // non-secure context) this fails with a typed error before touching
       // anything. `:memory:` needs no handle.
-      if (path != ':memory:' && physicalKey == null) {
+      if (encryptionKey != null) {
+        throw const GeckoError(
+          GeckoErrorType.invalidOperation,
+          'Physical encryption is not supported on Web',
+        );
+      }
+      if (path != ':memory:') {
         final opfsError = await registerOpfsHandle(path);
         if (opfsError != null) {
           throw GeckoError(
@@ -155,12 +161,12 @@ class NativeWorkerClient {
           );
         }
       }
-      final worker = physicalKey == null
+      final worker = encryptionKey == null
           ? await NativeWorker.open(path: path, readOnly: readOnly)
           : await NativeWorker.openEncrypted(
               path: path,
-              key: physicalKey,
-              keyGen: physicalKeyGeneration,
+              key: encryptionKey,
+              keyGen: encryptionKeyGeneration,
             );
       final handshake = CompatibilityHandshake.decode(
         await worker.compatibilityHandshake(),
@@ -795,8 +801,8 @@ Future<void> _nativeWorkerMain(List<Object?> args) async {
   final path = args[1] as String;
   final readOnly = args[2] as bool;
   final nativeLibraryPath = args[3] as String?;
-  final physicalKey = args[4] as List<int>?;
-  final physicalKeyGeneration = args[5] as int;
+  final encryptionKey = args[4] as List<int>?;
+  final encryptionKeyGeneration = args[5] as int;
   final isolateName = Isolate.current.debugName ?? 'gecko-native-worker';
   try {
     // Platform-specific library resolution: FFI dynamic library on native,
@@ -806,12 +812,12 @@ Future<void> _nativeWorkerMain(List<Object?> args) async {
         nativeLibraryPath: nativeLibraryPath,
       ),
     );
-    final worker = physicalKey == null
+    final worker = encryptionKey == null
         ? await NativeWorker.open(path: path, readOnly: readOnly)
         : await NativeWorker.openEncrypted(
             path: path,
-            key: physicalKey,
-            keyGen: physicalKeyGeneration,
+            key: encryptionKey,
+            keyGen: encryptionKeyGeneration,
           );
     final handshake = CompatibilityHandshake.decode(
       await worker.compatibilityHandshake(),
