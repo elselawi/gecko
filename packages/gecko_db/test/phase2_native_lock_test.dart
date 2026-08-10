@@ -26,10 +26,7 @@ void main() {
       final config = DatabaseConfig(nativeLibraryPath: nativePath);
       DatabaseImpl? first;
       try {
-        first = await DatabaseImpl.open(
-          path,
-          config: config,
-        );
+        first = await DatabaseImpl.open(path, config: config);
         await expectLater(
           DatabaseImpl.open(path, config: config),
           throwsA(

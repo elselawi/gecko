@@ -32,7 +32,9 @@ void main() {
   );
 
   test('concurrent same-path opens admit only one database', () async {
-    final directory = await Directory.systemTemp.createTemp('gecko-concurrent-');
+    final directory = await Directory.systemTemp.createTemp(
+      'gecko-concurrent-',
+    );
     addTearDown(() => directory.delete(recursive: true));
     final path = '${directory.path}${Platform.pathSeparator}db.redb';
     final attempts = await Future.wait<Object?>([

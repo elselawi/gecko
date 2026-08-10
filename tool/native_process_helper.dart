@@ -46,10 +46,7 @@ Future<void> _run(List<String> args) async {
   final dbPath = args[1];
   final nativeLib = args[2];
   final config = DatabaseConfig(nativeLibraryPath: nativeLib);
-  final db = await DatabaseImpl.open(
-    dbPath,
-    config: config,
-  );
+  final db = await DatabaseImpl.open(dbPath, config: config);
   try {
     switch (mode) {
       case 'write':

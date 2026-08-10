@@ -5,7 +5,8 @@ import 'package:test/test.dart';
 
 import 'support/native_database.dart';
 
-Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('phase8b-$name');
+Future<DatabaseImpl> _open(String name) =>
+    openNativeTestDatabase('phase8b-$name');
 
 void main() {
   setUp(ConflictStrategy.restoreDefaults);

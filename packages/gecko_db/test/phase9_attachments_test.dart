@@ -13,7 +13,8 @@ Object? _toRow(_Parent p) => {'name': p.name};
 _Parent _fromRow(Object? row) => _Parent('', (row as Map)['name'] as String);
 Object? _parentId(_Parent p) => p.id;
 
-Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('phase9-$name');
+Future<DatabaseImpl> _open(String name) =>
+    openNativeTestDatabase('phase9-$name');
 void main() {
   group('Phase 9 attachment metadata', () {
     test('create, read, and duplicate-hash dedupe share a blob', () async {

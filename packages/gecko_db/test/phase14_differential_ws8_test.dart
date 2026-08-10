@@ -68,10 +68,7 @@ void main() {
       final firstDbPath = '${tempDir.path}${Platform.pathSeparator}db.redb';
       final secondDbPath = '${tempDir.path}${Platform.pathSeparator}db2.redb';
       final firstEngine = RawEngine(
-        await NativeRawBackend.open(
-          firstDbPath,
-          nativeLibraryPath: nativePath,
-        ),
+        await NativeRawBackend.open(firstDbPath, nativeLibraryPath: nativePath),
       );
       final secondEngine = RawEngine(
         await NativeRawBackend.open(
@@ -81,11 +78,7 @@ void main() {
       );
       try {
         final steps = _generate(SeededRandom(seed * 0x85EBCA6B), _steps);
-        final outcome = await runDifferential(
-          firstEngine,
-          secondEngine,
-          steps,
-        );
+        final outcome = await runDifferential(firstEngine, secondEngine, steps);
         expect(
           outcome.passed,
           isTrue,

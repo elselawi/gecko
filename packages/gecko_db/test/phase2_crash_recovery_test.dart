@@ -50,10 +50,7 @@ void main() {
         await db.close();
         db = null;
 
-        final reopened = await DatabaseImpl.open(
-          path,
-          config: config,
-        );
+        final reopened = await DatabaseImpl.open(path, config: config);
         final reopenedRaw = await reopened.rawGet('items', key);
         expect(reopenedRaw, isNotNull);
         expect(codec.decode(reopenedRaw!), 'after');

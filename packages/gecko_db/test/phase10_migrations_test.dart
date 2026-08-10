@@ -287,10 +287,7 @@ void main() {
         );
 
         try {
-          final first = await DatabaseImpl.open(
-            path,
-            config: config,
-          );
+          final first = await DatabaseImpl.open(path, config: config);
           await first.schema.stamp(5);
           await first.close();
 

@@ -154,42 +154,37 @@ void main() {
     }
   });
 
-  test(
-    'independent native databases stay isolated under contention',
-    () async {
-      final dir = await Directory.systemTemp.createTemp(
-        'gecko-parallel-mixed-',
-      );
-      final paths = [
-        '${dir.path}${Platform.pathSeparator}a.redb',
-        '${dir.path}${Platform.pathSeparator}b.redb',
-        '${dir.path}${Platform.pathSeparator}mixed.redb',
-      ];
+  test('independent native databases stay isolated under contention', () async {
+    final dir = await Directory.systemTemp.createTemp('gecko-parallel-mixed-');
+    final paths = [
+      '${dir.path}${Platform.pathSeparator}a.redb',
+      '${dir.path}${Platform.pathSeparator}b.redb',
+      '${dir.path}${Platform.pathSeparator}mixed.redb',
+    ];
+    try {
+      final dbs = await Future.wait([
+        for (final p in paths)
+          Database.open(
+            p,
+            config: DatabaseConfig(nativeLibraryPath: nativePath),
+          ),
+      ]);
       try {
-        final dbs = await Future.wait([
-          for (final p in paths)
-            Database.open(
-              p,
-              config: DatabaseConfig(nativeLibraryPath: nativePath),
-            ),
+        await Future.wait([
+          _writeSentinel(dbs[0], 'native-a'),
+          _writeSentinel(dbs[1], 'native-b'),
+          _writeSentinel(dbs[2], 'native-mixed'),
         ]);
-        try {
-          await Future.wait([
-            _writeSentinel(dbs[0], 'native-a'),
-            _writeSentinel(dbs[1], 'native-b'),
-            _writeSentinel(dbs[2], 'native-mixed'),
-          ]);
-          await Future.wait([
-            _verifyIsolation(dbs[0], 'native-a'),
-            _verifyIsolation(dbs[1], 'native-b'),
-            _verifyIsolation(dbs[2], 'native-mixed'),
-          ]);
-        } finally {
-          await Future.wait([for (final db in dbs) db.close()]);
-        }
+        await Future.wait([
+          _verifyIsolation(dbs[0], 'native-a'),
+          _verifyIsolation(dbs[1], 'native-b'),
+          _verifyIsolation(dbs[2], 'native-mixed'),
+        ]);
       } finally {
-        await dir.delete(recursive: true);
+        await Future.wait([for (final db in dbs) db.close()]);
       }
-    },
-  );
+    } finally {
+      await dir.delete(recursive: true);
+    }
+  });
 }

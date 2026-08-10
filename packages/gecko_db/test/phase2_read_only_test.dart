@@ -36,10 +36,7 @@ void main() {
     );
     await expectLater(collection.delete('a'), throwsA(isA<GeckoError>()));
     await expectLater(db.bulkWrite(const []), throwsA(isA<GeckoError>()));
-    await expectLater(
-      db.writeTxn((_) async {}),
-      throwsA(isA<GeckoError>()),
-    );
+    await expectLater(db.writeTxn((_) async {}), throwsA(isA<GeckoError>()));
     await db.close();
   });
 
@@ -67,10 +64,7 @@ void main() {
       DatabaseImpl? writer;
       DatabaseImpl? reader;
       try {
-        writer = await DatabaseImpl.open(
-          path,
-          config: config,
-        );
+        writer = await DatabaseImpl.open(path, config: config);
         const codec = DefaultWireCodec();
         final key = ByteKey(codec.encode('key'));
         await writer.engine.rawPut('items', key, codec.encode({'value': 42}));

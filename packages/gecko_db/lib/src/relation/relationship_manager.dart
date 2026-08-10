@@ -157,9 +157,7 @@ class RelationshipManager {
     // transferring only matching child rows to Dart.
     final entries = await snap.queryFiltered(
       table: r.childCollection,
-      predicateBytes: encodePredicate([
-        Filter.eq(fk, parentId),
-      ], codec: _codec),
+      predicateBytes: encodePredicate([Filter.eq(fk, parentId)], codec: _codec),
     );
     return [
       for (final entry in entries)

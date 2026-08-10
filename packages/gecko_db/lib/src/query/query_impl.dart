@@ -201,7 +201,8 @@ class QueryImpl<T> implements Query<T> {
       if (f.isIndexUsable && idx.fields.contains(f.field)) {
         ranges.add(eqBounds(_table, f.field, f.value, codec: _codec));
       } else if (f.isRangeFilter &&
-          (idx.fields.contains(f.field) || idx.prefixFields.contains(f.field))) {
+          (idx.fields.contains(f.field) ||
+              idx.prefixFields.contains(f.field))) {
         ranges.add(fieldBounds(_table, f.field, codec: _codec));
       } else if (f.isPrefixFilter && idx.prefixFields.contains(f.field)) {
         ranges.add(fieldBounds(_table, f.field, codec: _codec));
@@ -298,41 +299,41 @@ class QueryImpl<T> implements Query<T> {
       // by a complete Rust predicate recheck, preserving semantic range and
       // prefix behavior despite the v1 codec's non-sortable value bytes.
       if (t != null) t.start(_QueryStage.backendRead);
-        final entries = await snap.queryIndexedMulti(
-          table: _table,
-          ranges: [
-            for (final range in nativeRanges)
-              (ByteKey(range.$1), ByteKey(range.$2)),
-          ],
-          predicateBytes: encodePredicate(_filters, codec: _codec),
-        );
-        if (t != null) t.stop(_QueryStage.backendRead);
-        final decoded = <_Decoded>[];
-        for (final entry in entries) {
-          if (t != null) {
-            t.scanned++;
-            t.start(_QueryStage.decode);
-          }
-          final row = _mapOf(_codec.decode(entry.value ?? const []));
-          if (t != null) {
-            t.stop(_QueryStage.decode);
-            t.start(_QueryStage.mapCopy);
-          }
-          if (t != null) t.stop(_QueryStage.mapCopy);
-          decoded.add(_Decoded(entry.key, row));
+      final entries = await snap.queryIndexedMulti(
+        table: _table,
+        ranges: [
+          for (final range in nativeRanges)
+            (ByteKey(range.$1), ByteKey(range.$2)),
+        ],
+        predicateBytes: encodePredicate(_filters, codec: _codec),
+      );
+      if (t != null) t.stop(_QueryStage.backendRead);
+      final decoded = <_Decoded>[];
+      for (final entry in entries) {
+        if (t != null) {
+          t.scanned++;
+          t.start(_QueryStage.decode);
         }
-        if (_sort.isNotEmpty) {
-          if (t != null) t.start(_QueryStage.sort);
-          decoded.sort(_compareDecoded);
-          if (t != null) t.stop(_QueryStage.sort);
+        final row = _mapOf(_codec.decode(entry.value ?? const []));
+        if (t != null) {
+          t.stop(_QueryStage.decode);
+          t.start(_QueryStage.mapCopy);
         }
-        if (t != null) t.start(_QueryStage.predicate);
-        for (final item in decoded) {
-          if (t != null) t.matched++;
-          yield item;
-        }
-        if (t != null) t.stopAccum(_QueryStage.predicate);
-        return;
+        if (t != null) t.stop(_QueryStage.mapCopy);
+        decoded.add(_Decoded(entry.key, row));
+      }
+      if (_sort.isNotEmpty) {
+        if (t != null) t.start(_QueryStage.sort);
+        decoded.sort(_compareDecoded);
+        if (t != null) t.stop(_QueryStage.sort);
+      }
+      if (t != null) t.start(_QueryStage.predicate);
+      for (final item in decoded) {
+        if (t != null) t.matched++;
+        yield item;
+      }
+      if (t != null) t.stopAccum(_QueryStage.predicate);
+      return;
     }
     lastPlan = IndexPlan.nativeFilteredScan;
     // Phase 2 step 2: push the predicate to Rust. The scan evaluates the
@@ -342,52 +343,52 @@ class QueryImpl<T> implements Query<T> {
     // transferring the whole table dominated 70% of a 100k-row full scan).
     // An empty predicate matches everything (matches Dart's FilterGroup).
     final predicateBytes = encodePredicate(_filters, codec: _codec);
-      if (t != null) t.start(_QueryStage.backendRead);
-      // M4: when the caller wants a window, the scan stops in Rust as soon as
-      // the window fills (matching rows beyond it are never transferred).
-      final windowed = nativeLimit != null || nativeOffset > 0;
-      final entries = windowed
-          ? await snap.queryFilteredLimited(
-              table: _table,
-              predicateBytes: predicateBytes,
-              limit: nativeLimit,
-              offset: nativeOffset,
-            )
-          : await snap.queryFiltered(
-              table: _table,
-              predicateBytes: predicateBytes,
-            );
-      if (t != null) t.stop(_QueryStage.backendRead);
-      final decoded = <_Decoded>[];
-      for (final entry in entries) {
-        if (t != null) {
-          t.scanned++;
-          t.start(_QueryStage.decode);
-        }
-        final decodedValue = _codec.decode(entry.value ?? const []);
-        if (t != null) {
-          t.stop(_QueryStage.decode);
-          t.start(_QueryStage.mapCopy);
-        }
-        final row = _mapOf(decodedValue);
-        if (t != null) t.stop(_QueryStage.mapCopy);
-        decoded.add(_Decoded(entry.key, row));
+    if (t != null) t.start(_QueryStage.backendRead);
+    // M4: when the caller wants a window, the scan stops in Rust as soon as
+    // the window fills (matching rows beyond it are never transferred).
+    final windowed = nativeLimit != null || nativeOffset > 0;
+    final entries = windowed
+        ? await snap.queryFilteredLimited(
+            table: _table,
+            predicateBytes: predicateBytes,
+            limit: nativeLimit,
+            offset: nativeOffset,
+          )
+        : await snap.queryFiltered(
+            table: _table,
+            predicateBytes: predicateBytes,
+          );
+    if (t != null) t.stop(_QueryStage.backendRead);
+    final decoded = <_Decoded>[];
+    for (final entry in entries) {
+      if (t != null) {
+        t.scanned++;
+        t.start(_QueryStage.decode);
       }
-      if (_sort.isNotEmpty) {
-        if (t != null) t.start(_QueryStage.sort);
-        decoded.sort(_compareDecoded);
-        if (t != null) t.stop(_QueryStage.sort);
+      final decodedValue = _codec.decode(entry.value ?? const []);
+      if (t != null) {
+        t.stop(_QueryStage.decode);
+        t.start(_QueryStage.mapCopy);
       }
-      // The predicate was already evaluated in Rust; re-test in Dart only when
-      // timing is armed (to populate the `predicate` stage for the breakdown).
-      if (t != null) t.start(_QueryStage.predicate);
-      for (final item in decoded) {
-        if (t != null) t.matched++;
-        // Rust already filtered; no Dart re-test needed for correctness.
-        yield item;
-      }
-      if (t != null) t.stopAccum(_QueryStage.predicate);
-      return;
+      final row = _mapOf(decodedValue);
+      if (t != null) t.stop(_QueryStage.mapCopy);
+      decoded.add(_Decoded(entry.key, row));
+    }
+    if (_sort.isNotEmpty) {
+      if (t != null) t.start(_QueryStage.sort);
+      decoded.sort(_compareDecoded);
+      if (t != null) t.stop(_QueryStage.sort);
+    }
+    // The predicate was already evaluated in Rust; re-test in Dart only when
+    // timing is armed (to populate the `predicate` stage for the breakdown).
+    if (t != null) t.start(_QueryStage.predicate);
+    for (final item in decoded) {
+      if (t != null) t.matched++;
+      // Rust already filtered; no Dart re-test needed for correctness.
+      yield item;
+    }
+    if (t != null) t.stopAccum(_QueryStage.predicate);
+    return;
   }
 
   Map<Object?, Object?> _mapOf(Object? value) =>

@@ -66,10 +66,7 @@ void main() {
 
         DatabaseImpl? db;
         try {
-          db = await DatabaseImpl.open(
-            path,
-            config: config,
-          );
+          db = await DatabaseImpl.open(path, config: config);
           final item = ChangeRecord(
             localMutationId: 0,
             recordId: 'r1',
@@ -86,10 +83,7 @@ void main() {
           await db.close();
           db = null;
 
-          final reopened = await DatabaseImpl.open(
-            path,
-            config: config,
-          );
+          final reopened = await DatabaseImpl.open(path, config: config);
           // The seen-key lives in the file, not just memory.
           expect(await reopened.sync.isDuplicate('key-abc'), isTrue);
           expect(await reopened.sync.applyRemoteTransactional([item]), isEmpty);

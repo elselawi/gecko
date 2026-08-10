@@ -39,7 +39,8 @@ _User _fromRow(Object? row) {
 
 Object? _id(_User u) => u.id;
 
-Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('query-$name');
+Future<DatabaseImpl> _open(String name) =>
+    openNativeTestDatabase('query-$name');
 
 void main() {
   group('filter / findAll', () {

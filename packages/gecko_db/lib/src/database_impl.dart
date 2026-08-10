@@ -699,9 +699,7 @@ class _CollectionImpl<T> implements Collection<T> {
     controller = StreamController<T?>(
       onListen: () {
         // Emit the current value immediately (StreamBuilder-friendly).
-        emitting = emitting.then(
-          (_) async => controller.add(await get(id)),
-        );
+        emitting = emitting.then((_) async => controller.add(await get(id)));
         sub = _db.engine.changes.stream.listen((ChangeSet change) {
           final relevant = change.changes.any(
             (entry) => entry.table == name && entry.key == id,
@@ -800,9 +798,7 @@ class _CollectionImpl<T> implements Collection<T> {
     controller = StreamController<List<T>>(
       onListen: () {
         // Emit the current full list immediately.
-        emitting = emitting.then(
-          (_) async => controller.add(await getAll()),
-        );
+        emitting = emitting.then((_) async => controller.add(await getAll()));
         sub = _db.engine.changes.stream.listen((ChangeSet change) {
           if (change.changes.any((entry) => entry.table == name)) {
             emitting = emitting.then(
