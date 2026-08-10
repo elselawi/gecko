@@ -278,7 +278,7 @@ class QueryImpl<T> implements Query<T> {
       // candidate intersection in Rust. The broad field ranges are followed
       // by a complete Rust predicate recheck, preserving semantic range and
       // prefix behavior despite the v1 codec's non-sortable value bytes.
-      if (nativeRanges != null && snap is NativeRawSnapshot) {
+      if (snap is NativeRawSnapshot) {
         if (t != null) t.start(_QueryStage.backendRead);
         final entries = await snap.queryIndexedMulti(
           table: _table,

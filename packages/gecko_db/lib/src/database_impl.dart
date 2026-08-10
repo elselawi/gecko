@@ -250,12 +250,14 @@ class DatabaseImpl implements Database {
               prefixFields: prefixFields ?? const [],
             ),
           );
-    if (index != null &&
-        _engine.backend case final DurableIndexRegistrar registrar) {
-      registrar.registerDurableIndex(name, [
-        ...index.fields,
-        ...index.prefixFields,
-      ]);
+    if (index != null) {
+      final registrar = _engine.backend;
+      if (registrar case final DurableIndexRegistrar nativeRegistrar) {
+        nativeRegistrar.registerDurableIndex(name, [
+          ...index.fields,
+          ...index.prefixFields,
+        ]);
+      }
     }
     return _CollectionImpl<T>(
       this,
@@ -839,12 +841,14 @@ class _TxnImpl implements Transaction {
               prefixFields: prefixFields ?? const [],
             ),
           );
-    if (index != null &&
-        _db.engine.backend case final DurableIndexRegistrar registrar) {
-      registrar.registerDurableIndex(name, [
-        ...index.fields,
-        ...index.prefixFields,
-      ]);
+    if (index != null) {
+      final registrar = _db.engine.backend;
+      if (registrar case final DurableIndexRegistrar nativeRegistrar) {
+        nativeRegistrar.registerDurableIndex(name, [
+          ...index.fields,
+          ...index.prefixFields,
+        ]);
+      }
     }
     return _CollectionImpl<T>(
       _db,
