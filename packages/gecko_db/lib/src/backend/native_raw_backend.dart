@@ -18,11 +18,17 @@ import 'byte_key.dart';
 import 'raw_backend.dart';
 
 /// A file-backed backend using the generated flutter_rust_bridge worker.
-class NativeRawBackend implements RawBackend {
+class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
   NativeRawBackend._(this._worker, this._readOnly);
 
   final NativeWorkerClient _worker;
   final bool _readOnly;
+  final Map<String, List<String>> _durableIndexes = <String, List<String>>{};
+
+  @override
+  void registerDurableIndex(String table, List<String> fields) {
+    _durableIndexes[table] = List<String>.unmodifiable(fields);
+  }
 
   /// Snapshot ids handed out by the worker that have not been released yet.
   /// Dropped on [close] so a closed backend never leaks MVCC read
@@ -147,7 +153,13 @@ class NativeRawBackend implements RawBackend {
       }
     }
     try {
-      await _worker.applyBatch(Op.encodeBatch(wireOps));
+      await _worker.applyBatch(
+        Op.encodeBatch(wireOps),
+        indexDefinitions: [
+          for (final entry in _durableIndexes.entries)
+            (entry.key, entry.value),
+        ],
+      );
     } catch (error) {
       throw mapNativeError(error);
     }

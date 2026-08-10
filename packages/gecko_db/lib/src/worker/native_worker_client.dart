@@ -258,8 +258,12 @@ class NativeWorkerClient {
     _isolate?.kill(priority: Isolate.immediate);
   }
 
-  Future<int> applyBatch(List<int> encodedOps) async =>
-      _asInt(await _request('applyBatch', <Object?>[encodedOps]));
+  Future<int> applyBatch(
+    List<int> encodedOps, {
+    List<(String, List<String>)> indexDefinitions = const [],
+  }) async => _asInt(
+    await _request('applyBatch', <Object?>[encodedOps, indexDefinitions]),
+  );
 
   /// M7: verifies and atomically repairs durable index entries for [table].
   Future<void> repairIndex({

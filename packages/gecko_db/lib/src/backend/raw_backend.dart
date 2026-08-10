@@ -92,6 +92,12 @@ abstract class RawSnapshot {
   Future<void> dispose() async {}
 }
 
+/// Optional capability implemented by native backends that forward durable
+/// index declarations to Rust.
+abstract class DurableIndexRegistrar {
+  void registerDurableIndex(String table, List<String> fields);
+}
+
 /// The raw write/read engine contract. Exactly one writer may run at a time;
 /// reads use snapshots for MVCC isolation.
 abstract class RawBackend {

@@ -80,6 +80,7 @@ abstract class RustLibApi extends BaseApi {
   Future<BigInt> crateApiNativeWorkerApplyBatch({
     required NativeWorker that,
     required List<int> encodedOps,
+    required List<(String, List<String>)> indexDefinitions,
   });
 
   Future<void> crateApiNativeWorkerClose({required NativeWorker that});
@@ -355,6 +356,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BigInt> crateApiNativeWorkerApplyBatch({
     required NativeWorker that,
     required List<int> encodedOps,
+    required List<(String, List<String>)> indexDefinitions,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -365,6 +367,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(encodedOps, serializer);
+          sse_encode_list_record_string_list_string(
+            indexDefinitions,
+            serializer,
+          );
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -377,7 +383,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerApplyBatchConstMeta,
-        argValues: [that, encodedOps],
+        argValues: [that, encodedOps, indexDefinitions],
         apiImpl: this,
       ),
     );
@@ -386,7 +392,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiNativeWorkerApplyBatchConstMeta =>
       const TaskConstMeta(
         debugName: "NativeWorker_apply_batch",
-        argNames: ["that", "encodedOps"],
+        argNames: ["that", "encodedOps", "indexDefinitions"],
       );
 
   @override
@@ -2100,6 +2106,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<(String, List<String>)> dco_decode_list_record_string_list_string(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_record_string_list_string)
+        .toList();
+  }
+
+  @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
@@ -2123,6 +2139,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       dco_decode_list_prim_u_8_strict(arr[0]),
       dco_decode_list_prim_u_8_strict(arr[1]),
     );
+  }
+
+  @protected
+  (String, List<String>) dco_decode_record_string_list_string(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2) {
+      throw Exception('Expected 2 elements, got ${arr.length}');
+    }
+    return (dco_decode_String(arr[0]), dco_decode_list_String(arr[1]));
   }
 
   @protected
@@ -2291,6 +2317,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<(String, List<String>)> sse_decode_list_record_string_list_string(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <(String, List<String>)>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_record_string_list_string(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -2320,6 +2360,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_field0 = sse_decode_list_prim_u_8_strict(deserializer);
     var var_field1 = sse_decode_list_prim_u_8_strict(deserializer);
+    return (var_field0, var_field1);
+  }
+
+  @protected
+  (String, List<String>) sse_decode_record_string_list_string(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_field0 = sse_decode_String(deserializer);
+    var var_field1 = sse_decode_list_String(deserializer);
     return (var_field0, var_field1);
   }
 
@@ -2498,6 +2548,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_record_string_list_string(
+    List<(String, List<String>)> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_record_string_list_string(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -2528,6 +2590,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(self.$1, serializer);
     sse_encode_list_prim_u_8_strict(self.$2, serializer);
+  }
+
+  @protected
+  void sse_encode_record_string_list_string(
+    (String, List<String>) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.$1, serializer);
+    sse_encode_list_String(self.$2, serializer);
   }
 
   @protected
@@ -2589,10 +2661,14 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
         RustLib.instance.api.rust_arc_decrement_strong_count_NativeWorkerPtr,
   );
 
-  Future<BigInt> applyBatch({required List<int> encodedOps}) => RustLib
-      .instance
-      .api
-      .crateApiNativeWorkerApplyBatch(that: this, encodedOps: encodedOps);
+  Future<BigInt> applyBatch({
+    required List<int> encodedOps,
+    required List<(String, List<String>)> indexDefinitions,
+  }) => RustLib.instance.api.crateApiNativeWorkerApplyBatch(
+    that: this,
+    encodedOps: encodedOps,
+    indexDefinitions: indexDefinitions,
+  );
 
   /// Explicitly releases the redb file handle before the Dart object is
   /// dropped. This is required for deterministic reopen on Windows.

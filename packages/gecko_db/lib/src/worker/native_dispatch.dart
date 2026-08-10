@@ -23,6 +23,12 @@ Future<Object?> dispatchNativeWorker(
     case 'applyBatch':
       return (await worker.applyBatch(
         encodedOps: List<int>.from(arguments[0] as List),
+        indexDefinitions: [
+          for (final definition in (arguments.length > 1
+              ? List<Object?>.from(arguments[1] as List)
+              : const <Object?>[]))
+            _decodeIndexDefinition(definition),
+        ],
       )).toString();
     case 'repairIndex':
       await worker.repairIndex(
@@ -249,6 +255,22 @@ Future<Object?> dispatchNativeWorker(
         'Unknown native worker operation',
       );
   }
+}
+
+(String, List<String>) _decodeIndexDefinition(Object? definition) {
+  if (definition case (final String table, final List<String> fields)) {
+    return (table, fields);
+  }
+  if (definition is List && definition.length == 2) {
+    return (
+      definition[0] as String,
+      [for (final field in definition[1] as List) field as String],
+    );
+  }
+  throw const GeckoError(
+    GeckoErrorType.invalidOperation,
+    'Malformed durable index declaration',
+  );
 }
 
 BigInt _asBigInt(Object? value) {

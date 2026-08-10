@@ -6,15 +6,23 @@
 //! atomicity or error behavior.
 
 use redb::{
-    backends::FileBackend, Database, DatabaseError, ReadOnlyDatabase, ReadTransaction,
-    ReadableDatabase, ReadableTable, TableDefinition, TableHandle,
+    backends::FileBackend,
+    Database,
+    DatabaseError,
+    ReadOnlyDatabase,
+    ReadTransaction,
+    ReadableDatabase,
+    ReadableTable,
+    TableDefinition,
+    TableHandle,
+    WriteTransaction,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{ BTreeMap, BTreeSet, HashMap };
 use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::path::{ Path, PathBuf };
 
 use crate::crypto_storage::EncryptingStorageBackend;
-use crate::wire::{Op, OpKind, WireError};
+use crate::wire::{ Op, OpKind, WireError };
 
 const TABLE_PREFIX: &str = "__gecko_user_";
 
@@ -66,8 +74,7 @@ enum WorkerDatabase {
     ReadWrite(Database),
     // On wasm32 the OPFS backend always opens read-write (the read-only flag
     // is enforced at the API layer), so this variant is unused there.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    ReadOnly(ReadOnlyDatabase),
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] ReadOnly(ReadOnlyDatabase),
 }
 
 /// A single-writer file-backed engine.
@@ -139,15 +146,17 @@ impl<T, C: Fn(&T, &T) -> std::cmp::Ordering> TopK<T, C> {
                 let left = 2 * i + 1;
                 let right = 2 * i + 2;
                 let mut largest = i;
-                if left < len
-                    && (self.cmp)(&self.items[left], &self.items[largest])
-                        == std::cmp::Ordering::Greater
+                if
+                    left < len &&
+                    (self.cmp)(&self.items[left], &self.items[largest]) ==
+                        std::cmp::Ordering::Greater
                 {
                     largest = left;
                 }
-                if right < len
-                    && (self.cmp)(&self.items[right], &self.items[largest])
-                        == std::cmp::Ordering::Greater
+                if
+                    right < len &&
+                    (self.cmp)(&self.items[right], &self.items[largest]) ==
+                        std::cmp::Ordering::Greater
                 {
                     largest = right;
                 }
@@ -176,15 +185,17 @@ impl<T, C: Fn(&T, &T) -> std::cmp::Ordering> TopK<T, C> {
                 let left = 2 * i + 1;
                 let right = 2 * i + 2;
                 let mut largest = i;
-                if left < len
-                    && (self.cmp)(&self.items[left], &self.items[largest])
-                        == std::cmp::Ordering::Greater
+                if
+                    left < len &&
+                    (self.cmp)(&self.items[left], &self.items[largest]) ==
+                        std::cmp::Ordering::Greater
                 {
                     largest = left;
                 }
-                if right < len
-                    && (self.cmp)(&self.items[right], &self.items[largest])
-                        == std::cmp::Ordering::Greater
+                if
+                    right < len &&
+                    (self.cmp)(&self.items[right], &self.items[largest]) ==
+                        std::cmp::Ordering::Greater
                 {
                     largest = right;
                 }
@@ -210,7 +221,7 @@ fn slice_offset_limit(rows: Vec<SortCandidate>, limit: Option<u64>, offset: u64)
     let len = rows.len() as u64;
     let start = offset.min(len) as usize;
     let end = match limit {
-        Some(l) => (offset.saturating_add(l)).min(len) as usize,
+        Some(l) => offset.saturating_add(l).min(len) as usize,
         None => len as usize,
     };
     rows[start..end]
@@ -225,7 +236,7 @@ fn slice_offset_limit(rows: Vec<SortCandidate>, limit: Option<u64>, offset: u64)
 fn compare_rows_from_keys(
     a: &SortCandidate,
     b: &SortCandidate,
-    specs: &[crate::sort_spec::SortSpec],
+    specs: &[crate::sort_spec::SortSpec]
 ) -> std::cmp::Ordering {
     for (i, spec) in specs.iter().enumerate() {
         match (&a.sort_key[i], &b.sort_key[i]) {
@@ -275,13 +286,13 @@ impl RedbWorker {
             let path_buf = path.as_ref().to_path_buf();
             let database = if read_only {
                 WorkerDatabase::ReadOnly(
-                    ReadOnlyDatabase::open(&path)
-                        .map_err(|error| map_open_error(error, &path_display))?,
+                    ReadOnlyDatabase::open(&path).map_err(|error|
+                        map_open_error(error, &path_display)
+                    )?
                 )
             } else {
                 WorkerDatabase::ReadWrite(
-                    Database::create(&path)
-                        .map_err(|error| map_open_error(error, &path_display))?,
+                    Database::create(&path).map_err(|error| map_open_error(error, &path_display))?
                 )
             };
             Ok(Self {
@@ -309,12 +320,16 @@ impl RedbWorker {
                 .create_with_backend(redb::backends::InMemoryBackend::new())
                 .map_err(|error| map_open_error(error, &path_display))?
         } else {
-            let handle = crate::opfs::take_handle_for_path(&path_display).ok_or_else(|| {
-                WorkerError::InvalidOperation(format!(
-                    "no OPFS sync-access handle registered for {path_display}; \
+            let handle = crate::opfs
+                ::take_handle_for_path(&path_display)
+                .ok_or_else(|| {
+                    WorkerError::InvalidOperation(
+                        format!(
+                            "no OPFS sync-access handle registered for {path_display}; \
                      the web worker must acquire and register it before opening"
-                ))
-            })?;
+                        )
+                    )
+                })?;
             let backend = crate::opfs::WasmOpfsBackend::new(handle, path_display.clone());
             Database::builder()
                 .create_with_backend(backend)
@@ -337,24 +352,28 @@ impl RedbWorker {
     pub fn open_encrypted(
         path: impl AsRef<Path>,
         key: &[u8],
-        key_gen: u8,
+        key_gen: u8
     ) -> Result<Self, WorkerError> {
         let path_display = path.as_ref().display().to_string();
         let path_buf = path.as_ref().to_path_buf();
         if key.len() != 32 {
-            return Err(WorkerError::InvalidOperation(
-                "encryption key must be exactly 32 bytes (AES-256)".into(),
-            ));
+            return Err(
+                WorkerError::InvalidOperation(
+                    "encryption key must be exactly 32 bytes (AES-256)".into()
+                )
+            );
         }
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(key);
         // Resolve any interrupted rotation before opening so the file is
         // consistent under whichever key the caller holds.
-        crate::crypto_storage::recover_rotation(path.as_ref(), key_gen).map_err(|error| {
-            WorkerError::Storage(format!(
-                "rotation recovery failed for {path_display}: {error}"
-            ))
-        })?;
+        crate::crypto_storage
+            ::recover_rotation(path.as_ref(), key_gen)
+            .map_err(|error| {
+                WorkerError::Storage(
+                    format!("rotation recovery failed for {path_display}: {error}")
+                )
+            })?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -365,13 +384,15 @@ impl RedbWorker {
                 WorkerError::Storage(format!("could not open {path_display}: {error}"))
             })?;
         let backend = EncryptingStorageBackend::new(
-            Box::new(FileBackend::new(file).map_err(|error| {
-                WorkerError::Storage(format!(
-                    "could not initialize file backend for {path_display}: {error}"
-                ))
-            })?),
+            Box::new(
+                FileBackend::new(file).map_err(|error| {
+                    WorkerError::Storage(
+                        format!("could not initialize file backend for {path_display}: {error}")
+                    )
+                })?
+            ),
             key_bytes,
-            key_gen,
+            key_gen
         );
         let database = Database::builder()
             .create_with_backend(backend)
@@ -388,97 +409,205 @@ impl RedbWorker {
 
     fn begin_read(&self) -> Result<ReadTransaction, WorkerError> {
         match &self.database {
-            WorkerDatabase::ReadWrite(database) => database
-                .begin_read()
-                .map_err(|error| WorkerError::Storage(error.to_string())),
-            WorkerDatabase::ReadOnly(database) => database
-                .begin_read()
-                .map_err(|error| WorkerError::Storage(error.to_string())),
+            WorkerDatabase::ReadWrite(database) =>
+                database.begin_read().map_err(|error| WorkerError::Storage(error.to_string())),
+            WorkerDatabase::ReadOnly(database) =>
+                database.begin_read().map_err(|error| WorkerError::Storage(error.to_string())),
         }
     }
 
-    /// Applies an entire operation batch in exactly one write transaction.
+    /// Applies an operation batch without user index declarations. This is
+    /// retained for Rust-level generic batch callers and tests.
     pub fn apply_batch(&mut self, operations: &[Op]) -> Result<u64, WorkerError> {
+        self.apply_batch_with_indexes(operations, &[])
+    }
+
+    /// Applies an entire operation batch in exactly one write transaction.
+    ///
+    /// [index_definitions] contains the native collection declarations known
+    /// to the Dart facade. Rust derives the old and new field payloads from
+    /// encoded primary rows and updates `__gecko_index` before committing the
+    /// same transaction. The operation wire format remains unchanged.
+    pub fn apply_batch_with_indexes(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)]
+    ) -> Result<u64, WorkerError> {
         if self.read_only {
-            return Err(WorkerError::InvalidOperation(
-                "database is read-only; writes are not allowed".into(),
-            ));
+            return Err(
+                WorkerError::InvalidOperation(
+                    "database is read-only; writes are not allowed".into()
+                )
+            );
         }
         let transaction = match &self.database {
-            WorkerDatabase::ReadWrite(database) => database
-                .begin_write()
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
+            WorkerDatabase::ReadWrite(database) =>
+                database.begin_write().map_err(|error| WorkerError::Storage(error.to_string()))?,
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
         };
 
         for operation in operations {
-            let definition = table_definition(&operation.table);
-            let mut table = transaction
-                .open_table(definition)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?;
-
             match operation.kind {
                 OpKind::Put => {
-                    let key = operation
-                        .key
+                    let key = operation.key
                         .as_deref()
                         .ok_or_else(|| WorkerError::InvalidOperation("put requires key".into()))?;
-                    let value = operation.value.as_deref().ok_or_else(|| {
-                        WorkerError::InvalidOperation("put requires value".into())
-                    })?;
-                    table
-                        .insert(key, value)
-                        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    let value = operation.value
+                        .as_deref()
+                        .ok_or_else(|| {
+                            WorkerError::InvalidOperation("put requires value".into())
+                        })?;
+                    let previous = {
+                        let table = transaction
+                            .open_table(table_definition(&operation.table))
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        let previous = table
+                            .get(key)
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|row| row.value().to_vec());
+                        previous
+                    };
+                    {
+                        let mut table = transaction
+                            .open_table(table_definition(&operation.table))
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        table
+                            .insert(key, value)
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    }
+                    maintain_durable_index(
+                        &transaction,
+                        &operation.table,
+                        key,
+                        previous.as_deref(),
+                        Some(value),
+                        index_definitions,
+                    )?;
                 }
                 OpKind::Delete => {
-                    let key = operation.key.as_deref().ok_or_else(|| {
-                        WorkerError::InvalidOperation("delete requires key".into())
-                    })?;
-                    table
-                        .remove(key)
-                        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    let key = operation.key
+                        .as_deref()
+                        .ok_or_else(|| {
+                            WorkerError::InvalidOperation("delete requires key".into())
+                        })?;
+                    let previous = {
+                        let table = transaction
+                            .open_table(table_definition(&operation.table))
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        let previous = table
+                            .get(key)
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|row| row.value().to_vec());
+                        previous
+                    };
+                    {
+                        let mut table = transaction
+                            .open_table(table_definition(&operation.table))
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        table.remove(key).map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    }
+                    maintain_durable_index(
+                        &transaction,
+                        &operation.table,
+                        key,
+                        previous.as_deref(),
+                        None,
+                        index_definitions,
+                    )?;
                 }
                 OpKind::DeleteRange => {
-                    let start = operation.start.as_deref().ok_or_else(|| {
-                        WorkerError::InvalidOperation("deleteRange requires start".into())
-                    })?;
-                    let end = operation.end.as_deref().ok_or_else(|| {
-                        WorkerError::InvalidOperation("deleteRange requires end".into())
-                    })?;
-                    let keys: Vec<Vec<u8>> = table
-                        .range(start..=end)
-                        .map_err(|error| WorkerError::Storage(error.to_string()))?
-                        .filter_map(|entry| entry.ok().map(|(key, _)| key.value().to_vec()))
-                        .collect();
-                    for key in keys {
-                        table
-                            .remove(key.as_slice())
+                    let start = operation.start
+                        .as_deref()
+                        .ok_or_else(|| {
+                            WorkerError::InvalidOperation("deleteRange requires start".into())
+                        })?;
+                    let end = operation.end
+                        .as_deref()
+                        .ok_or_else(|| {
+                            WorkerError::InvalidOperation("deleteRange requires end".into())
+                        })?;
+                    let rows = {
+                        let table = transaction
+                            .open_table(table_definition(&operation.table))
                             .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        table
+                            .range(start..=end)
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|entry| {
+                                entry
+                                    .map(|(key, value)| (key.value().to_vec(), value.value().to_vec()))
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))
+                            })
+                            .collect::<Result<Vec<_>, WorkerError>>()?
+                    };
+                    {
+                        let mut table = transaction
+                            .open_table(table_definition(&operation.table))
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        for (key, _) in &rows {
+                            table
+                                .remove(key.as_slice())
+                                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        }
+                    }
+                    for (key, value) in rows {
+                        maintain_durable_index(
+                            &transaction,
+                            &operation.table,
+                            &key,
+                            Some(&value),
+                            None,
+                            index_definitions,
+                        )?;
                     }
                 }
                 OpKind::Clear => {
-                    let keys: Vec<Vec<u8>> = table
-                        .iter()
-                        .map_err(|error| WorkerError::Storage(error.to_string()))?
-                        .filter_map(|entry| entry.ok().map(|(key, _)| key.value().to_vec()))
-                        .collect();
-                    for key in keys {
-                        table
-                            .remove(key.as_slice())
+                    let rows = {
+                        let table = transaction
+                            .open_table(table_definition(&operation.table))
                             .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        table
+                            .iter()
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|entry| {
+                                entry
+                                    .map(|(key, value)| (key.value().to_vec(), value.value().to_vec()))
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))
+                            })
+                            .collect::<Result<Vec<_>, WorkerError>>()?
+                    };
+                    {
+                        let mut table = transaction
+                            .open_table(table_definition(&operation.table))
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        for (key, _) in &rows {
+                            table
+                                .remove(key.as_slice())
+                                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        }
+                    }
+                    for (key, value) in rows {
+                        maintain_durable_index(
+                            &transaction,
+                            &operation.table,
+                            &key,
+                            Some(&value),
+                            None,
+                            index_definitions,
+                        )?;
                     }
                 }
                 OpKind::Get | OpKind::RangeScan => {
-                    return Err(WorkerError::InvalidOperation(
-                        "read operations cannot be committed in a write batch".into(),
-                    ));
+                    return Err(
+                        WorkerError::InvalidOperation(
+                            "read operations cannot be committed in a write batch".into()
+                        )
+                    );
                 }
             }
         }
 
-        transaction
-            .commit()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         self.commit_sequence += 1;
         Ok(self.commit_sequence)
     }
@@ -489,8 +618,12 @@ impl RedbWorker {
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let value = table
             .get(key)
@@ -516,7 +649,7 @@ impl RedbWorker {
         &self,
         snapshot: u64,
         table: &str,
-        keys: &[&[u8]],
+        keys: &[&[u8]]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.get_many_with(transaction, table, keys)
@@ -526,7 +659,7 @@ impl RedbWorker {
         &self,
         transaction: &ReadTransaction,
         table: &str,
-        keys: &[&[u8]],
+        keys: &[&[u8]]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         if keys.is_empty() {
             return Ok(Vec::new());
@@ -534,14 +667,19 @@ impl RedbWorker {
         let user_def = table_definition(table);
         let user_table = match transaction.open_table(user_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::with_capacity(keys.len());
         for key in keys {
-            if let Some(value) = user_table
-                .get(*key)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
+            if
+                let Some(value) = user_table
+                    .get(*key)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
             {
                 result.push((key.to_vec(), value.value().to_vec()));
             }
@@ -556,28 +694,27 @@ impl RedbWorker {
         &self,
         table: &str,
         start: Option<&[u8]>,
-        end: Option<&[u8]>,
+        end: Option<&[u8]>
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         let table = match transaction.open_table(table_definition(table)) {
             Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::new();
         let iterator = match (start, end) {
-            (Some(start), Some(end)) => table
-                .range(start..=end)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
-            (Some(start), None) => table
-                .range(start..)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
-            (None, Some(end)) => table
-                .range(..=end)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
-            (None, None) => table
-                .iter()
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (Some(start), Some(end)) =>
+                table.range(start..=end).map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (Some(start), None) =>
+                table.range(start..).map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (None, Some(end)) =>
+                table.range(..=end).map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (None, None) => table.iter().map_err(|error| WorkerError::Storage(error.to_string()))?,
         };
         for entry in iterator {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
@@ -608,14 +745,18 @@ impl RedbWorker {
         &self,
         id: u64,
         table: &str,
-        key: &[u8],
+        key: &[u8]
     ) -> Result<Option<Vec<u8>>, WorkerError> {
         let transaction = self.snapshot_transaction(id)?;
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let value = table
             .get(key)
@@ -630,28 +771,27 @@ impl RedbWorker {
         id: u64,
         table: &str,
         start: Option<&[u8]>,
-        end: Option<&[u8]>,
+        end: Option<&[u8]>
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(id)?;
         let table = match transaction.open_table(table_definition(table)) {
             Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::new();
         let iterator = match (start, end) {
-            (Some(start), Some(end)) => table
-                .range(start..=end)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
-            (Some(start), None) => table
-                .range(start..)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
-            (None, Some(end)) => table
-                .range(..=end)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
-            (None, None) => table
-                .iter()
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (Some(start), Some(end)) =>
+                table.range(start..=end).map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (Some(start), None) =>
+                table.range(start..).map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (None, Some(end)) =>
+                table.range(..=end).map_err(|error| WorkerError::Storage(error.to_string()))?,
+            (None, None) => table.iter().map_err(|error| WorkerError::Storage(error.to_string()))?,
         };
         for entry in iterator {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
@@ -671,35 +811,39 @@ impl RedbWorker {
     /// materialization. Index values are the encoded primary record keys.
     pub fn repair_index(&mut self, table: &str, fields: &[String]) -> Result<(), WorkerError> {
         if self.read_only {
-            return Err(WorkerError::InvalidOperation(
-                "database is read-only; index repair is not allowed".into(),
-            ));
+            return Err(
+                WorkerError::InvalidOperation(
+                    "database is read-only; index repair is not allowed".into()
+                )
+            );
         }
         let transaction = self.begin_read()?;
         let primary_def = table_definition(table);
         let primary = match transaction.open_table(primary_def) {
             Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut expected = BTreeMap::<Vec<u8>, Vec<u8>>::new();
-        for entry in primary
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
-            let (record_key, row_value) =
-                entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+        for entry in primary.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+            let (record_key, row_value) = entry.map_err(|error|
+                WorkerError::Storage(error.to_string())
+            )?;
             let record_key = record_key.value().to_vec();
             let row_bytes = row_value.value();
             for field in fields {
-                let Some((start, end)) = crate::value_codec::find_field_range(row_bytes, field)
-                    .map_err(|error| WorkerError::Storage(error.to_string()))?
-                else {
+                let Some((start, end)) = crate::value_codec
+                    ::find_field_range(row_bytes, field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                     continue;
                 };
                 expected.insert(
                     durable_index_key(table, field, &row_bytes[start..end], &record_key),
-                    record_key.clone(),
+                    record_key.clone()
                 );
             }
         }
@@ -709,12 +853,8 @@ impl RedbWorker {
         let index_def = table_definition("__gecko_index");
         let mut current = BTreeMap::<Vec<u8>, Vec<u8>>::new();
         if let Ok(index) = transaction.open_table(index_def) {
-            for entry in index
-                .iter()
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
-            {
-                let (key, value) =
-                    entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            for entry in index.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+                let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
                 let key_bytes = key.value().to_vec();
                 if durable_index_table(&key_bytes).as_deref() == Some(table) {
                     current.insert(key_bytes, value.value().to_vec());
@@ -727,18 +867,15 @@ impl RedbWorker {
         }
 
         let transaction = match &self.database {
-            WorkerDatabase::ReadWrite(database) => database
-                .begin_write()
-                .map_err(|error| WorkerError::Storage(error.to_string()))?,
+            WorkerDatabase::ReadWrite(database) =>
+                database.begin_write().map_err(|error| WorkerError::Storage(error.to_string()))?,
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
         };
         let mut index = transaction
             .open_table(index_def)
             .map_err(|error| WorkerError::Storage(error.to_string()))?;
         for key in current.keys().filter(|key| !expected.contains_key(*key)) {
-            index
-                .remove(key.as_slice())
-                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            index.remove(key.as_slice()).map_err(|error| WorkerError::Storage(error.to_string()))?;
         }
         for (key, value) in expected {
             index
@@ -746,9 +883,7 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
         }
         drop(index);
-        transaction
-            .commit()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         Ok(())
     }
 
@@ -768,7 +903,7 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         start: &[u8],
-        end: &[u8],
+        end: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_indexed_with(&transaction, table, index_table, start, end)
@@ -783,7 +918,7 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         start: &[u8],
-        end: &[u8],
+        end: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_with(transaction, table, index_table, start, end)
@@ -799,13 +934,17 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         start: &[u8],
-        end: &[u8],
+        end: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         // Collect the index entries' VALUES (the user-table row keys) in
         // ascending index-key order.
@@ -821,8 +960,12 @@ impl RedbWorker {
         let user_def = table_definition(table);
         let user_table = match transaction.open_table(user_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::with_capacity(row_keys.len());
         for row_key in row_keys {
@@ -852,7 +995,7 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_indexed_multi_with(&transaction, table, index_table, ranges, predicate_bytes)
@@ -865,7 +1008,7 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_multi_with(transaction, table, index_table, ranges, predicate_bytes)
@@ -877,18 +1020,23 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         if ranges.is_empty() {
             return Ok(Vec::new());
         }
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
 
         // A BTreeSet gives deterministic candidate order and makes each
@@ -912,15 +1060,18 @@ impl RedbWorker {
         let user_def = table_definition(table);
         let user_table = match transaction.open_table(user_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::new();
         for row_key in candidates.unwrap_or_default() {
             let Some(value) = user_table
                 .get(row_key.as_slice())
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
-            else {
+                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
             let row_bytes = value.value();
@@ -944,7 +1095,7 @@ impl RedbWorker {
     pub fn query_filtered(
         &self,
         table: &str,
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_filtered_with(&transaction, table, predicate_bytes)
@@ -956,7 +1107,7 @@ impl RedbWorker {
         &self,
         snapshot: u64,
         table: &str,
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_filtered_with(transaction, table, predicate_bytes)
@@ -966,21 +1117,23 @@ impl RedbWorker {
         &self,
         transaction: &ReadTransaction,
         table: &str,
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<Vec<ByteEntry>, WorkerError> {
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::new();
-        for entry in table
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
             // Empty predicate matches everything (matches Dart's `FilterGroup`).
@@ -999,7 +1152,7 @@ impl RedbWorker {
     pub fn query_filtered_count(
         &self,
         table: &str,
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<u64, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_filtered_count_with(&transaction, table, predicate_bytes)
@@ -1010,7 +1163,7 @@ impl RedbWorker {
         &self,
         snapshot: u64,
         table: &str,
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<u64, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_filtered_count_with(transaction, table, predicate_bytes)
@@ -1020,21 +1173,23 @@ impl RedbWorker {
         &self,
         transaction: &ReadTransaction,
         table: &str,
-        predicate_bytes: &[u8],
+        predicate_bytes: &[u8]
     ) -> Result<u64, WorkerError> {
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(0);
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut count: u64 = 0;
-        for entry in table
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             if predicate.test_bytes(value.value()) {
                 count += 1;
@@ -1054,7 +1209,7 @@ impl RedbWorker {
         &self,
         table: &str,
         predicate_bytes: &[u8],
-        field: &str,
+        field: &str
     ) -> Result<Vec<Vec<u8>>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_filtered_distinct_with(&transaction, table, predicate_bytes, field)
@@ -1066,7 +1221,7 @@ impl RedbWorker {
         snapshot: u64,
         table: &str,
         predicate_bytes: &[u8],
-        field: &str,
+        field: &str
     ) -> Result<Vec<Vec<u8>>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_filtered_distinct_with(transaction, table, predicate_bytes, field)
@@ -1077,21 +1232,23 @@ impl RedbWorker {
         transaction: &ReadTransaction,
         table: &str,
         predicate_bytes: &[u8],
-        field: &str,
+        field: &str
     ) -> Result<Vec<Vec<u8>>, WorkerError> {
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut result = Vec::new();
-        for entry in table
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
             if !predicate.test_bytes(row_bytes) {
@@ -1101,7 +1258,8 @@ impl RedbWorker {
             // value's bytes verbatim (the slice starting at the value's tag
             // byte, self-delimiting under the codec). Use find_field_offset so
             // we slice instead of allocating the decoded value.
-            let range = crate::value_codec::find_field_range(row_bytes, field)
+            let range = crate::value_codec
+                ::find_field_range(row_bytes, field)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
             let Some((start, end)) = range else {
                 continue;
@@ -1123,7 +1281,7 @@ impl RedbWorker {
         table: &str,
         predicate_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_filtered_limited_with(&transaction, table, predicate_bytes, limit, offset)
@@ -1136,7 +1294,7 @@ impl RedbWorker {
         table: &str,
         predicate_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_filtered_limited_with(transaction, table, predicate_bytes, limit, offset)
@@ -1148,32 +1306,34 @@ impl RedbWorker {
         table: &str,
         predicate_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let want = limit.map(|l| offset.saturating_add(l));
         if want == Some(0) {
             return Ok(Vec::new());
         }
         let mut result = Vec::new();
-        for entry in table
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             if !predicate.test_bytes(value.value()) {
                 continue;
             }
             result.push((key.value().to_vec(), value.value().to_vec()));
             if let Some(want) = want {
-                if result.len() as u64 >= want {
+                if (result.len() as u64) >= want {
                     break;
                 }
             }
@@ -1199,7 +1359,7 @@ impl RedbWorker {
         end: &[u8],
         predicate_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_indexed_limited_with(
@@ -1210,7 +1370,7 @@ impl RedbWorker {
             end,
             predicate_bytes,
             limit,
-            offset,
+            offset
         )
     }
 
@@ -1225,7 +1385,7 @@ impl RedbWorker {
         end: &[u8],
         predicate_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_limited_with(
@@ -1236,7 +1396,7 @@ impl RedbWorker {
             end,
             predicate_bytes,
             limit,
-            offset,
+            offset
         )
     }
 
@@ -1250,21 +1410,30 @@ impl RedbWorker {
         end: &[u8],
         predicate_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let user_def = table_definition(table);
         let user_table = match transaction.open_table(user_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let want = limit.map(|l| offset.saturating_add(l));
         if want == Some(0) {
@@ -1273,15 +1442,13 @@ impl RedbWorker {
         let mut result = Vec::new();
         for entry in index_table
             .range(start..=end)
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+            .map_err(|error| WorkerError::Storage(error.to_string()))? {
             let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_key = entry.1.value();
             let Some(row_bytes) = user_table
                 .get(row_key)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
-                .map(|v| v.value().to_vec())
-            else {
+                .map(|v| v.value().to_vec()) else {
                 continue;
             };
             if !predicate.test_bytes(&row_bytes) {
@@ -1289,7 +1456,7 @@ impl RedbWorker {
             }
             result.push((row_key.to_vec(), row_bytes));
             if let Some(want) = want {
-                if result.len() as u64 >= want {
+                if (result.len() as u64) >= want {
                     break;
                 }
             }
@@ -1315,17 +1482,10 @@ impl RedbWorker {
         predicate_bytes: &[u8],
         sort_spec_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
-        self.query_sorted_with(
-            &transaction,
-            table,
-            predicate_bytes,
-            sort_spec_bytes,
-            limit,
-            offset,
-        )
+        self.query_sorted_with(&transaction, table, predicate_bytes, sort_spec_bytes, limit, offset)
     }
 
     /// Snapshot-bound variant of [Self::query_sorted].
@@ -1336,17 +1496,10 @@ impl RedbWorker {
         predicate_bytes: &[u8],
         sort_spec_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
-        self.query_sorted_with(
-            transaction,
-            table,
-            predicate_bytes,
-            sort_spec_bytes,
-            limit,
-            offset,
-        )
+        self.query_sorted_with(transaction, table, predicate_bytes, sort_spec_bytes, limit, offset)
     }
 
     fn query_sorted_with(
@@ -1356,35 +1509,35 @@ impl RedbWorker {
         predicate_bytes: &[u8],
         sort_spec_bytes: &[u8],
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         use crate::sort_spec::decode_sort_specs;
         use crate::value_codec::RowValue;
         let specs = decode_sort_specs(sort_spec_bytes).map_err(WorkerError::Wire)?;
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         if specs.is_empty() {
             return Ok(Vec::new());
         }
-        let cap = limit
-            .map(|l| offset.saturating_add(l) as usize)
-            .unwrap_or(usize::MAX);
+        let cap = limit.map(|l| offset.saturating_add(l) as usize).unwrap_or(usize::MAX);
         let mut heap = TopK::new(cap, |a: &SortCandidate, b: &SortCandidate| {
             // M4: ties break by record key bytes (matching the durable-index
             // order and the Dart `_compareDecoded` tiebreak) so every backend
             // returns the same deterministic order.
             compare_rows_from_keys(a, b, &specs.specs).then_with(|| a.key.cmp(&b.key))
         });
-        for entry in table
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
             if !predicate.test_bytes(row_bytes) {
@@ -1393,7 +1546,8 @@ impl RedbWorker {
             // Decode ONLY the sort fields via find_field (no full row decode).
             let mut sort_key: Vec<Option<RowValue>> = Vec::with_capacity(specs.specs.len());
             for spec in &specs.specs {
-                let found = crate::value_codec::find_field(row_bytes, &spec.field)
+                let found = crate::value_codec
+                    ::find_field(row_bytes, &spec.field)
                     .map_err(|error| WorkerError::Storage(error.to_string()))?;
                 sort_key.push(found);
             }
@@ -1435,7 +1589,7 @@ impl RedbWorker {
         sort_field: &str,
         eq_bounded: bool,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_indexed_ordered_with(
@@ -1448,7 +1602,7 @@ impl RedbWorker {
             sort_field,
             eq_bounded,
             limit,
-            offset,
+            offset
         )
     }
 
@@ -1465,7 +1619,7 @@ impl RedbWorker {
         sort_field: &str,
         eq_bounded: bool,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_ordered_with(
@@ -1478,7 +1632,7 @@ impl RedbWorker {
             sort_field,
             eq_bounded,
             limit,
-            offset,
+            offset
         )
     }
 
@@ -1494,10 +1648,11 @@ impl RedbWorker {
         sort_field: &str,
         eq_bounded: bool,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         use crate::value_codec::find_field;
-        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+        let predicate = crate::predicate
+            ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
@@ -1510,27 +1665,36 @@ impl RedbWorker {
                 if eq_bounded {
                     return Ok(Vec::new());
                 }
-                let fallback_spec =
-                    crate::sort_spec::encode_sort_specs(&[crate::sort_spec::SortSpec {
-                        field: sort_field.to_string(),
-                        descending: false,
-                    }]);
+                let fallback_spec = crate::sort_spec::encode_sort_specs(
+                    &[
+                        crate::sort_spec::SortSpec {
+                            field: sort_field.to_string(),
+                            descending: false,
+                        },
+                    ]
+                );
                 return self.query_sorted_with(
                     transaction,
                     table,
                     predicate_bytes,
                     &fallback_spec,
                     limit,
-                    offset,
+                    offset
                 );
             }
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let user_def = table_definition(table);
         let user_table = match transaction.open_table(user_def) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let want = limit.map(|l| offset.saturating_add(l));
         if want == Some(0) {
@@ -1540,15 +1704,13 @@ impl RedbWorker {
         let mut matched_keys: Vec<Vec<u8>> = Vec::new();
         for entry in index_table
             .range(start..=end)
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+            .map_err(|error| WorkerError::Storage(error.to_string()))? {
             let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_key = entry.1.value();
             let Some(row_bytes) = user_table
                 .get(row_key)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
-                .map(|v| v.value().to_vec())
-            else {
+                .map(|v| v.value().to_vec()) else {
                 continue;
             };
             if !predicate.test_bytes(&row_bytes) {
@@ -1557,7 +1719,7 @@ impl RedbWorker {
             matched_keys.push(row_key.to_vec());
             matches.push((row_key.to_vec(), row_bytes));
             if let Some(want) = want {
-                if matches.len() as u64 >= want {
+                if (matches.len() as u64) >= want {
                     break;
                 }
             }
@@ -1575,10 +1737,8 @@ impl RedbWorker {
             }
             for entry in user_table
                 .iter()
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
-            {
-                let (key, value) =
-                    entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                .map_err(|error| WorkerError::Storage(error.to_string()))? {
+                let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
                 let key_bytes = key.value().to_vec();
                 if present.contains(&key_bytes) {
                     continue;
@@ -1598,7 +1758,7 @@ impl RedbWorker {
                 }
                 matches.push((key_bytes, row_bytes.to_vec()));
                 if let Some(want) = want {
-                    if matches.len() as u64 >= want {
+                    if (matches.len() as u64) >= want {
                         break;
                     }
                 }
@@ -1622,28 +1782,36 @@ impl RedbWorker {
     /// continue after it at the next LSN.
     pub fn compact(&mut self) -> Result<bool, WorkerError> {
         if self.read_only {
-            return Err(WorkerError::InvalidOperation(
-                "database is read-only; compaction is not allowed".into(),
-            ));
+            return Err(
+                WorkerError::InvalidOperation(
+                    "database is read-only; compaction is not allowed".into()
+                )
+            );
         }
         if !self.snapshots.is_empty() {
-            return Err(WorkerError::InvalidOperation(format!(
-                "compaction requires no open MVCC snapshots; {} snapshot(s) are still active",
-                self.snapshots.len()
-            )));
+            return Err(
+                WorkerError::InvalidOperation(
+                    format!(
+                        "compaction requires no open MVCC snapshots; {} snapshot(s) are still active",
+                        self.snapshots.len()
+                    )
+                )
+            );
         }
         match &mut self.database {
-            WorkerDatabase::ReadWrite(database) => database.compact().map_err(|error| {
-                use redb::CompactionError::*;
-                match &error {
-                    TransactionInProgress
-                    | PersistentSavepointExists
-                    | EphemeralSavepointExists => WorkerError::InvalidOperation(format!(
-                        "compaction could not start: {error}"
-                    )),
-                    _ => WorkerError::Storage(format!("compaction failed: {error}")),
-                }
-            }),
+            WorkerDatabase::ReadWrite(database) =>
+                database.compact().map_err(|error| {
+                    use redb::CompactionError::*;
+                    match &error {
+                        | TransactionInProgress
+                        | PersistentSavepointExists
+                        | EphemeralSavepointExists =>
+                            WorkerError::InvalidOperation(
+                                format!("compaction could not start: {error}")
+                            ),
+                        _ => WorkerError::Storage(format!("compaction failed: {error}")),
+                    }
+                }),
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
         }
     }
@@ -1652,7 +1820,8 @@ impl RedbWorker {
     /// (Workstream 5). Logical size iterates every table once in a consistent
     /// read snapshot.
     pub fn storage_stats(&self) -> Result<StorageStats, WorkerError> {
-        let physical_bytes = std::fs::metadata(&self.path)
+        let physical_bytes = std::fs
+            ::metadata(&self.path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
         let transaction = self.begin_read()?;
@@ -1674,7 +1843,7 @@ impl RedbWorker {
             };
             for entry in iter.flatten() {
                 let (key, value) = entry;
-                logical_bytes += key.value().len() as u64 + value.value().len() as u64;
+                logical_bytes += (key.value().len() as u64) + (value.value().len() as u64);
             }
         }
         Ok(StorageStats {
@@ -1692,11 +1861,7 @@ impl RedbWorker {
             .list_tables()
             .map_err(|error| WorkerError::Storage(error.to_string()))?
             .map(|table| {
-                table
-                    .name()
-                    .strip_prefix(TABLE_PREFIX)
-                    .unwrap_or(table.name())
-                    .to_owned()
+                table.name().strip_prefix(TABLE_PREFIX).unwrap_or(table.name()).to_owned()
             })
             .collect();
         Ok(tables)
@@ -1705,9 +1870,12 @@ impl RedbWorker {
 
 fn map_open_error(error: DatabaseError, path: &str) -> WorkerError {
     match error {
-        DatabaseError::DatabaseAlreadyOpen => WorkerError::DatabaseLocked(format!(
-            "database at {path} is already open; wait for the owner to close it and retry"
-        )),
+        DatabaseError::DatabaseAlreadyOpen =>
+            WorkerError::DatabaseLocked(
+                format!(
+                    "database at {path} is already open; wait for the owner to close it and retry"
+                )
+            ),
         other => WorkerError::Storage(format!("could not open database at {path}: {other}")),
     }
 }
@@ -1717,10 +1885,70 @@ fn table_definition(name: &str) -> BytesTable {
     TableDefinition::new(Box::leak(full_name.into_boxed_str()))
 }
 
+fn index_fields_for<'a>(
+    table: &str,
+    index_definitions: &'a [(String, Vec<String>)]
+) -> Option<&'a [String]> {
+    index_definitions
+        .iter()
+        .find(|(name, _)| name == table)
+        .map(|(_, fields)| fields.as_slice())
+}
+
+fn maintain_durable_index(
+    transaction: &WriteTransaction,
+    table: &str,
+    record_key: &[u8],
+    old_row: Option<&[u8]>,
+    new_row: Option<&[u8]>,
+    index_definitions: &[(String, Vec<String>)]
+) -> Result<(), WorkerError> {
+    let Some(fields) = index_fields_for(table, index_definitions) else {
+        return Ok(());
+    };
+    if fields.is_empty() || table == "__gecko_index" {
+        return Ok(());
+    }
+    let mut index = transaction
+        .open_table(table_definition("__gecko_index"))
+        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    for field in fields {
+        let old_value = match old_row {
+            Some(row) => crate::value_codec::find_field_range(row, field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .map(|(start, end)| row[start..end].to_vec()),
+            None => None,
+        };
+        let new_value = match new_row {
+            Some(row) => crate::value_codec::find_field_range(row, field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .map(|(start, end)| row[start..end].to_vec()),
+            None => None,
+        };
+        if old_value == new_value {
+            continue;
+        }
+        if let Some(value) = old_value {
+            index
+                .remove(durable_index_key(table, field, &value, record_key).as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        if let Some(value) = new_value {
+            index
+                .insert(
+                    durable_index_key(table, field, &value, record_key).as_slice(),
+                    record_key,
+                )
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
 fn durable_index_key(table: &str, field: &str, value: &[u8], record_key: &[u8]) -> Vec<u8> {
     use crate::value_codec::TAG_LIST;
     let mut out = vec![TAG_LIST];
-    out.extend_from_slice(&4u32.to_be_bytes());
+    out.extend_from_slice(&(4u32).to_be_bytes());
     out.extend_from_slice(&encode_index_string(table));
     out.extend_from_slice(&encode_index_string(field));
     out.extend_from_slice(value);
@@ -1751,13 +1979,10 @@ fn durable_index_table(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{ SystemTime, UNIX_EPOCH };
 
     fn temp_path(label: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("gecko-{label}-{nonce}.redb"))
     }
 
@@ -1777,10 +2002,12 @@ mod tests {
         let path = temp_path("worker");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         let sequence = worker
-            .apply_batch(&[
-                op(OpKind::Put, Some(vec![2]), Some(vec![20])),
-                op(OpKind::Put, Some(vec![1]), Some(vec![10])),
-            ])
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(vec![2]), Some(vec![20])),
+                    op(OpKind::Put, Some(vec![1]), Some(vec![10])),
+                ]
+            )
             .unwrap();
         assert_eq!(sequence, 1);
         assert_eq!(worker.get("items", &[1]).unwrap(), Some(vec![10]));
@@ -1788,9 +2015,7 @@ mod tests {
             worker.range_scan("items", Some(&[1]), Some(&[2])).unwrap(),
             vec![(vec![1], vec![10]), (vec![2], vec![20])]
         );
-        worker
-            .apply_batch(&[op(OpKind::Delete, Some(vec![1]), None)])
-            .unwrap();
+        worker.apply_batch(&[op(OpKind::Delete, Some(vec![1]), None)]).unwrap();
         assert_eq!(worker.get("items", &[1]).unwrap(), None);
         let _ = std::fs::remove_file(path);
     }
@@ -1810,35 +2035,42 @@ mod tests {
         let path = temp_path("range");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         worker
-            .apply_batch(&[
-                op(OpKind::Put, Some(vec![1]), Some(vec![1])),
-                op(OpKind::Put, Some(vec![2]), Some(vec![2])),
-                op(OpKind::Put, Some(vec![3]), Some(vec![3])),
-            ])
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(vec![1]), Some(vec![1])),
+                    op(OpKind::Put, Some(vec![2]), Some(vec![2])),
+                    op(OpKind::Put, Some(vec![3]), Some(vec![3])),
+                ]
+            )
             .unwrap();
         worker
-            .apply_batch(&[Op {
-                kind: OpKind::DeleteRange,
-                table: "items".into(),
-                key: None,
-                value: None,
-                start: Some(vec![1]),
-                end: Some(vec![2]),
-            }])
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::DeleteRange,
+                        table: "items".into(),
+                        key: None,
+                        value: None,
+                        start: Some(vec![1]),
+                        end: Some(vec![2]),
+                    },
+                ]
+            )
             .unwrap();
-        assert_eq!(
-            worker.range_scan("items", None, None).unwrap(),
-            vec![(vec![3], vec![3])]
-        );
+        assert_eq!(worker.range_scan("items", None, None).unwrap(), vec![(vec![3], vec![3])]);
         worker
-            .apply_batch(&[Op {
-                kind: OpKind::Clear,
-                table: "items".into(),
-                key: None,
-                value: None,
-                start: None,
-                end: None,
-            }])
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::Clear,
+                        table: "items".into(),
+                        key: None,
+                        value: None,
+                        start: None,
+                        end: None,
+                    },
+                ]
+            )
             .unwrap();
         assert!(worker.range_scan("items", None, None).unwrap().is_empty());
         let _ = std::fs::remove_file(path);
@@ -1849,19 +2081,23 @@ mod tests {
         let path = temp_path("mvcc");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         worker
-            .apply_batch(&[
-                op(OpKind::Put, Some(vec![1]), Some(vec![10])),
-                op(OpKind::Put, Some(vec![2]), Some(vec![20])),
-            ])
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(vec![1]), Some(vec![10])),
+                    op(OpKind::Put, Some(vec![2]), Some(vec![20])),
+                ]
+            )
             .unwrap();
 
         // Snapshot taken now must observe the pre-write state forever.
         let snapshot = worker.create_snapshot().unwrap();
         worker
-            .apply_batch(&[
-                op(OpKind::Put, Some(vec![1]), Some(vec![11])),
-                op(OpKind::Put, Some(vec![3]), Some(vec![30])),
-            ])
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(vec![1]), Some(vec![11])),
+                    op(OpKind::Put, Some(vec![3]), Some(vec![30])),
+                ]
+            )
             .unwrap();
 
         assert_eq!(
@@ -1875,36 +2111,28 @@ mod tests {
             "the old snapshot must not see keys written after it was taken"
         );
         assert_eq!(
-            worker
-                .snapshot_range_scan(snapshot, "items", None, None)
-                .unwrap(),
+            worker.snapshot_range_scan(snapshot, "items", None, None).unwrap(),
             vec![(vec![1], vec![10]), (vec![2], vec![20])]
         );
         assert_eq!(
-            worker
-                .snapshot_range_scan(snapshot, "items", Some(&[2]), Some(&[2]))
-                .unwrap(),
+            worker.snapshot_range_scan(snapshot, "items", Some(&[2]), Some(&[2])).unwrap(),
             vec![(vec![2], vec![20])]
         );
 
         // A fresh snapshot observes the new state.
         let fresh = worker.create_snapshot().unwrap();
-        assert_eq!(
-            worker.snapshot_get(fresh, "items", &[1]).unwrap(),
-            Some(vec![11])
-        );
-        assert_eq!(
-            worker.snapshot_get(fresh, "items", &[3]).unwrap(),
-            Some(vec![30])
-        );
+        assert_eq!(worker.snapshot_get(fresh, "items", &[1]).unwrap(), Some(vec![11]));
+        assert_eq!(worker.snapshot_get(fresh, "items", &[3]).unwrap(), Some(vec![30]));
 
         // Dropping the snapshot makes it unusable (typed error), and dropping
         // an unknown id is idempotent.
         worker.drop_snapshot(snapshot);
-        assert!(matches!(
-            worker.snapshot_get(snapshot, "items", &[1]),
-            Err(WorkerError::InvalidOperation(_))
-        ));
+        assert!(
+            matches!(
+                worker.snapshot_get(snapshot, "items", &[1]),
+                Err(WorkerError::InvalidOperation(_))
+            )
+        );
         worker.drop_snapshot(999);
         let _ = std::fs::remove_file(path);
     }
@@ -1914,10 +2142,7 @@ mod tests {
         let path = temp_path("mvcc-empty");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         let snapshot = worker.create_snapshot().unwrap();
-        assert!(worker
-            .snapshot_range_scan(snapshot, "absent", None, None)
-            .unwrap()
-            .is_empty());
+        assert!(worker.snapshot_range_scan(snapshot, "absent", None, None).unwrap().is_empty());
         assert_eq!(worker.snapshot_get(snapshot, "absent", &[1]).unwrap(), None);
         worker.drop_snapshot(snapshot);
         let _ = std::fs::remove_file(path);
@@ -1929,10 +2154,12 @@ mod tests {
         let mut worker = RedbWorker::open(&path, false).unwrap();
         // Write payloads with known total logical bytes.
         worker
-            .apply_batch(&[
-                op(OpKind::Put, Some(vec![1]), Some(vec![10, 11, 12])),
-                op(OpKind::Put, Some(vec![2]), Some(vec![20, 21])),
-            ])
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(vec![1]), Some(vec![10, 11, 12])),
+                    op(OpKind::Put, Some(vec![2]), Some(vec![20, 21])),
+                ]
+            )
             .unwrap();
         let stats = worker.storage_stats().unwrap();
         assert!(stats.physical_bytes > 0);
@@ -1944,10 +2171,7 @@ mod tests {
         assert_eq!(stats.open_snapshots, 0);
         assert_eq!(stats.commit_sequence, 1);
         // Physical file on disk matches the report.
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().len(),
-            stats.physical_bytes
-        );
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), stats.physical_bytes);
         let _ = std::fs::remove_file(path);
     }
 
@@ -1958,7 +2182,7 @@ mod tests {
         // Fill enough data that compaction has something to reclaim after
         // deletion. Values get overwritten repeatedly to churn pages.
         let mut value = Vec::with_capacity(4096);
-        value.extend(std::iter::repeat_n(0xAB, 4096));
+        value.extend(std::iter::repeat_n(0xab, 4096));
         for round in 0..40 {
             let mut batch = Vec::new();
             for i in 0..40 {
@@ -1979,14 +2203,18 @@ mod tests {
 
         // Delete everything to create reclaimable space.
         worker
-            .apply_batch(&[Op {
-                kind: OpKind::Clear,
-                table: "items".into(),
-                key: None,
-                value: None,
-                start: None,
-                end: None,
-            }])
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::Clear,
+                        table: "items".into(),
+                        key: None,
+                        value: None,
+                        start: None,
+                        end: None,
+                    },
+                ]
+            )
             .unwrap();
 
         let compacted = worker.compact().unwrap();
@@ -1996,13 +2224,8 @@ mod tests {
         assert!(after.physical_bytes <= before.physical_bytes);
         assert!(worker.range_scan("items", None, None).unwrap().is_empty());
         // LSN continuity: the next write commits at the next sequence.
-        worker
-            .apply_batch(&[op(OpKind::Put, Some(vec![9]), Some(vec![99]))])
-            .unwrap();
-        assert_eq!(
-            worker.range_scan("items", None, None).unwrap(),
-            vec![(vec![9], vec![99])]
-        );
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![9]), Some(vec![99]))]).unwrap();
+        assert_eq!(worker.range_scan("items", None, None).unwrap(), vec![(vec![9], vec![99])]);
         let _ = compacted;
         let _ = std::fs::remove_file(path);
     }
@@ -2011,37 +2234,28 @@ mod tests {
     fn compaction_rejects_open_snapshots_and_read_only() {
         let path = temp_path("compact-guard");
         let mut worker = RedbWorker::open(&path, false).unwrap();
-        worker
-            .apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![1]))])
-            .unwrap();
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![1]))]).unwrap();
         let snapshot = worker.create_snapshot().unwrap();
-        assert!(matches!(
-            worker.compact(),
-            Err(WorkerError::InvalidOperation(_))
-        ));
+        assert!(matches!(worker.compact(), Err(WorkerError::InvalidOperation(_))));
         worker.drop_snapshot(snapshot);
         assert!(worker.compact().is_ok());
 
         // Read-only databases refuse compaction.
         let ro_path = temp_path("compact-ro");
         let mut ro = RedbWorker::open(&ro_path, false).unwrap();
-        ro.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![1]))])
-            .unwrap();
+        ro.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![1]))]).unwrap();
         drop(ro);
         let ro = RedbWorker::open(&ro_path, true).unwrap();
         let mut ro = ro;
-        assert!(matches!(
-            ro.compact(),
-            Err(WorkerError::InvalidOperation(_))
-        ));
+        assert!(matches!(ro.compact(), Err(WorkerError::InvalidOperation(_))));
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(ro_path);
     }
 
     #[test]
     fn query_filtered_returns_only_matching_rows() {
-        use crate::predicate::{self, Filter};
-        use crate::value_codec::{RowValue, TAG_BOOL, TAG_INT64, TAG_MAP, TAG_STRING};
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::{ RowValue, TAG_BOOL, TAG_INT64, TAG_MAP, TAG_STRING };
 
         // Minimal row map encoder: 0x07 | u32(count) | (key string | value)…
         fn row(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
@@ -2075,19 +2289,39 @@ mod tests {
         let rows = [
             (
                 b"k0".to_vec(),
-                row(&[("g", string("g0")), ("age", int64(10))]),
+                row(
+                    &[
+                        ("g", string("g0")),
+                        ("age", int64(10)),
+                    ]
+                ),
             ),
             (
                 b"k1".to_vec(),
-                row(&[("g", string("g0")), ("age", int64(20))]),
+                row(
+                    &[
+                        ("g", string("g0")),
+                        ("age", int64(20)),
+                    ]
+                ),
             ),
             (
                 b"k2".to_vec(),
-                row(&[("g", string("g1")), ("age", int64(30))]),
+                row(
+                    &[
+                        ("g", string("g1")),
+                        ("age", int64(30)),
+                    ]
+                ),
             ),
             (
                 b"k3".to_vec(),
-                row(&[("g", string("g1")), ("age", int64(40))]),
+                row(
+                    &[
+                        ("g", string("g1")),
+                        ("age", int64(40)),
+                    ]
+                ),
             ),
         ];
         let ops: Vec<Op> = rows
@@ -2104,25 +2338,25 @@ mod tests {
         worker.apply_batch(&ops).unwrap();
 
         // Predicate: g == "g0" AND age >= 15 → only k1 (g0, age 20).
-        let pred_bytes = predicate::encode_predicate(&[
-            Filter::Equals {
-                field: "g".into(),
-                value: RowValue::String("g0".into()),
-            },
-            Filter::Range {
-                field: "age".into(),
-                min: Some(RowValue::Int64(15)),
-                max: None,
-            },
-        ]);
+        let pred_bytes = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "g".into(),
+                    value: RowValue::String("g0".into()),
+                },
+                Filter::Range {
+                    field: "age".into(),
+                    min: Some(RowValue::Int64(15)),
+                    max: None,
+                },
+            ]
+        );
         let matched = worker.query_filtered("items", &pred_bytes).unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].0, b"k1");
 
         // Empty predicate matches all 4.
-        let all = worker
-            .query_filtered("items", &predicate::encode_predicate(&[]))
-            .unwrap();
+        let all = worker.query_filtered("items", &predicate::encode_predicate(&[])).unwrap();
         assert_eq!(all.len(), 4);
 
         // A missing table is an empty result, never an error.
@@ -2135,7 +2369,7 @@ mod tests {
     // M3: shared row/encoder helpers used by the new aggregate + get_many
     // tests. Keeps the test rows byte-identical to the query_filtered suite.
     fn encode_test_row(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
-        use crate::value_codec::{TAG_MAP, TAG_STRING};
+        use crate::value_codec::{ TAG_MAP, TAG_STRING };
         let mut out = vec![TAG_MAP];
         out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
         for (k, v) in entries {
@@ -2161,6 +2395,119 @@ mod tests {
         out.extend_from_slice(b);
         out
     }
+
+    fn indexed_definition() -> Vec<(String, Vec<String>)> {
+        vec![("items".into(), vec!["age".into(), "name".into()])]
+    }
+
+    fn index_value(worker: &RedbWorker, field: &str, value: &[u8], id: &[u8]) -> Option<Vec<u8>> {
+        worker
+            .get(
+                "__gecko_index",
+                durable_index_key("items", field, value, id).as_slice(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn native_index_maintenance_put_update_missing_and_delete() {
+        let path = temp_path("native-index-mutations");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = indexed_definition();
+        let old = encode_test_row(&[
+            ("age", encode_test_int64(10)),
+            ("name", encode_test_string("old")),
+        ]);
+        let updated = encode_test_row(&[("age", encode_test_int64(20))]);
+        worker
+            .apply_batch_with_indexes(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k1".to_vec()),
+                    Some(old.clone()),
+                )],
+                &indexes,
+            )
+            .unwrap();
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(10), b"k1"), Some(b"k1".to_vec()));
+        assert_eq!(index_value(&worker, "name", &encode_test_string("old"), b"k1"), Some(b"k1".to_vec()));
+
+        worker
+            .apply_batch_with_indexes(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k1".to_vec()),
+                    Some(updated),
+                )],
+                &indexes,
+            )
+            .unwrap();
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(10), b"k1"), None);
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(20), b"k1"), Some(b"k1".to_vec()));
+        assert_eq!(index_value(&worker, "name", &encode_test_string("old"), b"k1"), None);
+
+        worker
+            .apply_batch_with_indexes(
+                &[op_with_table(OpKind::Delete, "items", Some(b"k1".to_vec()), None)],
+                &indexes,
+            )
+            .unwrap();
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(20), b"k1"), None);
+        assert_eq!(worker.get("items", b"k1").unwrap(), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_index_maintenance_bulk_is_sequential_and_atomic() {
+        let path = temp_path("native-index-bulk");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = indexed_definition();
+        let ops = vec![
+            op_with_table(
+                OpKind::Put,
+                "items",
+                Some(b"k1".to_vec()),
+                Some(encode_test_row(&[("age", encode_test_int64(1))])),
+            ),
+            op_with_table(
+                OpKind::Put,
+                "items",
+                Some(b"k1".to_vec()),
+                Some(encode_test_row(&[("age", encode_test_int64(2))])),
+            ),
+        ];
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(1), b"k1"), None);
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(2), b"k1"), Some(b"k1".to_vec()));
+
+        let invalid = vec![
+            op_with_table(
+                OpKind::Put,
+                "items",
+                Some(b"k2".to_vec()),
+                Some(encode_test_row(&[("age", encode_test_int64(3))])),
+            ),
+            op_with_table(OpKind::Put, "items", Some(b"k3".to_vec()), None),
+        ];
+        assert!(worker.apply_batch_with_indexes(&invalid, &indexes).is_err());
+        assert_eq!(worker.get("items", b"k2").unwrap(), None);
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(3), b"k2"), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn op_with_table(kind: OpKind, table: &str, key: Option<Vec<u8>>, value: Option<Vec<u8>>) -> Op {
+        Op {
+            kind,
+            table: table.into(),
+            key,
+            value,
+            start: None,
+            end: None,
+        }
+    }
+
     // Seeds the same 4 rows used by `query_filtered_returns_only_matching_rows`
     // (g0/g0/g1/g1, ages 10/20/30/40) into `items` and returns the file path
     // so the caller can clean up.
@@ -2170,31 +2517,39 @@ mod tests {
         let rows = [
             (
                 b"k0".to_vec(),
-                encode_test_row(&[
-                    ("g", encode_test_string("g0")),
-                    ("age", encode_test_int64(10)),
-                ]),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g0")),
+                        ("age", encode_test_int64(10)),
+                    ]
+                ),
             ),
             (
                 b"k1".to_vec(),
-                encode_test_row(&[
-                    ("g", encode_test_string("g0")),
-                    ("age", encode_test_int64(20)),
-                ]),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g0")),
+                        ("age", encode_test_int64(20)),
+                    ]
+                ),
             ),
             (
                 b"k2".to_vec(),
-                encode_test_row(&[
-                    ("g", encode_test_string("g1")),
-                    ("age", encode_test_int64(30)),
-                ]),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g1")),
+                        ("age", encode_test_int64(30)),
+                    ]
+                ),
             ),
             (
                 b"k3".to_vec(),
-                encode_test_row(&[
-                    ("g", encode_test_string("g1")),
-                    ("age", encode_test_int64(40)),
-                ]),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g1")),
+                        ("age", encode_test_int64(40)),
+                    ]
+                ),
             ),
         ];
         let ops: Vec<Op> = rows
@@ -2241,35 +2596,39 @@ mod tests {
 
     #[test]
     fn query_filtered_count_counts_matches_without_transfer() {
-        use crate::predicate::{self, Filter};
+        use crate::predicate::{ self, Filter };
         use crate::value_codec::RowValue;
         let (path, mut worker) = seed_aggregate_fixture("qfc");
         // g == "g0" AND age >= 15 → 1 row (k1).
-        let pred = predicate::encode_predicate(&[
-            Filter::Equals {
-                field: "g".into(),
-                value: RowValue::String("g0".into()),
-            },
-            Filter::Range {
-                field: "age".into(),
-                min: Some(RowValue::Int64(15)),
-                max: None,
-            },
-        ]);
+        let pred = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "g".into(),
+                    value: RowValue::String("g0".into()),
+                },
+                Filter::Range {
+                    field: "age".into(),
+                    min: Some(RowValue::Int64(15)),
+                    max: None,
+                },
+            ]
+        );
         assert_eq!(worker.query_filtered_count("items", &pred).unwrap(), 1);
 
         // g == "g1" → 2 rows (k2, k3).
-        let g1 = predicate::encode_predicate(&[Filter::Equals {
-            field: "g".into(),
-            value: RowValue::String("g1".into()),
-        }]);
+        let g1 = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "g".into(),
+                    value: RowValue::String("g1".into()),
+                },
+            ]
+        );
         assert_eq!(worker.query_filtered_count("items", &g1).unwrap(), 2);
 
         // Empty predicate matches all 4.
         assert_eq!(
-            worker
-                .query_filtered_count("items", &predicate::encode_predicate(&[]))
-                .unwrap(),
+            worker.query_filtered_count("items", &predicate::encode_predicate(&[])).unwrap(),
             4
         );
         // A missing table counts as zero, never an error.
@@ -2277,28 +2636,21 @@ mod tests {
 
         // Snapshot-bound variant agrees with the live count.
         let snap = worker.create_snapshot().unwrap();
-        assert_eq!(
-            worker
-                .snapshot_query_filtered_count(snap, "items", &g1)
-                .unwrap(),
-            2
-        );
+        assert_eq!(worker.snapshot_query_filtered_count(snap, "items", &g1).unwrap(), 2);
         worker.drop_snapshot(snap);
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn query_filtered_distinct_emits_only_field_bytes() {
-        use crate::predicate::{self, Filter};
-        use crate::value_codec::{self, RowValue};
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::{ self, RowValue };
         let (path, mut worker) = seed_aggregate_fixture("qfd");
         // Distinct `g` across all rows → {g0, g1}. The distinct pushdown
         // emits the encoded value bytes per matching row; check the decoded
         // set is exactly {g0, g1} and is unsorted (the caller dedups).
         let empty_pred = predicate::encode_predicate(&[]);
-        let field_bytes = worker
-            .query_filtered_distinct("items", &empty_pred, "g")
-            .unwrap();
+        let field_bytes = worker.query_filtered_distinct("items", &empty_pred, "g").unwrap();
         // M3 contract: the pushdown emits the field's bytes for EACH
         // matching row (NOT deduped) — the Dart caller dedups. With 4 seeded
         // rows that all have `g`, we get 4 byte slices that decode to
@@ -2313,24 +2665,28 @@ mod tests {
                 RowValue::String("g0".into()),
                 RowValue::String("g0".into()),
                 RowValue::String("g1".into()),
-                RowValue::String("g1".into()),
+                RowValue::String("g1".into())
             ]
         );
 
         // Distinct `age` for g0 → {10, 20}.
-        let g0_pred = predicate::encode_predicate(&[Filter::Equals {
-            field: "g".into(),
-            value: RowValue::String("g0".into()),
-        }]);
-        let age_bytes = worker
-            .query_filtered_distinct("items", &g0_pred, "age")
-            .unwrap();
+        let g0_pred = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "g".into(),
+                    value: RowValue::String("g0".into()),
+                },
+            ]
+        );
+        let age_bytes = worker.query_filtered_distinct("items", &g0_pred, "age").unwrap();
         // g0 has 2 rows (ages 10, 20) — both emitted, undeduped.
         let mut ages: Vec<i64> = age_bytes
             .iter()
-            .map(|b| match value_codec::decode_value(b).unwrap() {
-                RowValue::Int64(n) => n,
-                _ => panic!("expected int64"),
+            .map(|b| {
+                match value_codec::decode_value(b).unwrap() {
+                    RowValue::Int64(n) => n,
+                    _ => panic!("expected int64"),
+                }
             })
             .collect();
         ages.sort();
@@ -2340,30 +2696,26 @@ mod tests {
         // missing field is not a distinct value). Seed a row without `g`.
         let no_g_row = encode_test_row(&[("age", encode_test_int64(99))]);
         worker
-            .apply_batch(&[Op {
-                kind: OpKind::Put,
-                table: "items".into(),
-                key: Some(b"k4".to_vec()),
-                value: Some(no_g_row),
-                start: None,
-                end: None,
-            }])
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::Put,
+                        table: "items".into(),
+                        key: Some(b"k4".to_vec()),
+                        value: Some(no_g_row),
+                        start: None,
+                        end: None,
+                    },
+                ]
+            )
             .unwrap();
         // Distinct `g` now still emits 5 byte slices (4 with g + the
         // missing-field row is skipped), verifying the missing-field skip.
-        let after_missing = worker
-            .query_filtered_distinct("items", &empty_pred, "g")
-            .unwrap();
-        assert_eq!(
-            after_missing.len(),
-            4,
-            "missing-field row skipped, 4 rows with g remain"
-        );
+        let after_missing = worker.query_filtered_distinct("items", &empty_pred, "g").unwrap();
+        assert_eq!(after_missing.len(), 4, "missing-field row skipped, 4 rows with g remain");
 
         // A missing table is an empty result, never an error.
-        let missing_table = worker
-            .query_filtered_distinct("nope", &empty_pred, "g")
-            .unwrap();
+        let missing_table = worker.query_filtered_distinct("nope", &empty_pred, "g").unwrap();
         assert!(missing_table.is_empty());
         let _ = std::fs::remove_file(path);
     }
@@ -2375,7 +2727,7 @@ mod tests {
     fn index_key(table: &str, field: &str, value: &[u8], record_id: &[u8]) -> Vec<u8> {
         use crate::value_codec::TAG_LIST;
         let mut out = vec![TAG_LIST];
-        out.extend_from_slice(&4u32.to_be_bytes());
+        out.extend_from_slice(&(4u32).to_be_bytes());
         out.extend_from_slice(&encode_test_string(table));
         out.extend_from_slice(&encode_test_string(field));
         out.extend_from_slice(value);
@@ -2396,12 +2748,17 @@ mod tests {
             (b"k2".to_vec(), encode_test_int64(30)),
             (b"k3".to_vec(), encode_test_int64(40)),
         ]
-        .iter()
-        .map(|(k, age)| {
-            let row = encode_test_row(&[("age", age.clone()), ("nick", encode_test_string("g0"))]);
-            (k.clone(), age.clone(), row)
-        })
-        .collect();
+            .iter()
+            .map(|(k, age)| {
+                let row = encode_test_row(
+                    &[
+                        ("age", age.clone()),
+                        ("nick", encode_test_string("g0")),
+                    ]
+                );
+                (k.clone(), age.clone(), row)
+            })
+            .collect();
         // k4 has a nick but NO age (missing-field row).
         let missing_row = encode_test_row(&[("nick", encode_test_string("g1"))]);
         let mut ops: Vec<Op> = rows
@@ -2435,12 +2792,7 @@ mod tests {
             });
         }
         // Also index nick so M5 tests can intersect two different fields.
-        for k in [
-            b"k0".to_vec(),
-            b"k1".to_vec(),
-            b"k2".to_vec(),
-            b"k3".to_vec(),
-        ] {
+        for k in [b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()] {
             ops.push(Op {
                 kind: OpKind::Put,
                 table: "__gecko_index".into(),
@@ -2470,13 +2822,13 @@ mod tests {
             "items",
             "age",
             &[crate::value_codec::TAG_NULL],
-            &[crate::value_codec::TAG_NULL],
+            &[crate::value_codec::TAG_NULL]
         );
         // strip two trailing null tag bytes to get the shared 2-element prefix
         let prefix = full[0..full.len() - 2].to_vec();
         let mut end = prefix.clone();
         let mut i = end.len() - 1;
-        while i > 0 && end[i] == 0xFF {
+        while i > 0 && end[i] == 0xff {
             end.pop();
             i -= 1;
         }
@@ -2489,31 +2841,25 @@ mod tests {
     fn repair_index_rebuilds_durable_entries_from_primary_rows() {
         let (path, mut worker) = seed_indexed_age_fixture("repair-index");
         let (start, end) = age_field_bounds();
-        let before = worker
-            .query_indexed("items", "__gecko_index", &start, &end)
-            .unwrap();
+        let before = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
         assert_eq!(before.len(), 4);
         worker
-            .apply_batch(&[Op {
-                kind: OpKind::Delete,
-                table: "__gecko_index".into(),
-                key: Some(index_key("items", "age", &encode_test_int64(20), b"k1")),
-                value: None,
-                start: None,
-                end: None,
-            }])
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::Delete,
+                        table: "__gecko_index".into(),
+                        key: Some(index_key("items", "age", &encode_test_int64(20), b"k1")),
+                        value: None,
+                        start: None,
+                        end: None,
+                    },
+                ]
+            )
             .unwrap();
-        assert_eq!(
-            worker
-                .query_indexed("items", "__gecko_index", &start, &end)
-                .unwrap()
-                .len(),
-            3
-        );
+        assert_eq!(worker.query_indexed("items", "__gecko_index", &start, &end).unwrap().len(), 3);
         worker.repair_index("items", &["age".to_string()]).unwrap();
-        let after = worker
-            .query_indexed("items", "__gecko_index", &start, &end)
-            .unwrap();
+        let after = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
         assert_eq!(after.len(), 4);
         assert!(after.iter().any(|entry| entry.0 == b"k1"));
         let _ = std::fs::remove_file(path);
@@ -2521,7 +2867,7 @@ mod tests {
 
     #[test]
     fn query_filtered_limited_skips_and_stops_early() {
-        use crate::predicate::{self, Filter};
+        use crate::predicate::{ self, Filter };
         use crate::value_codec::RowValue;
         let (path, worker) = seed_aggregate_fixture("qfl");
         // Empty predicate; limit 2, offset 1 → k1, k2 (skip k0, take 2).
@@ -2542,87 +2888,90 @@ mod tests {
             .unwrap();
         assert!(beyond.is_empty());
         // With a predicate: g0 → k0,k1; limit 1 → k0.
-        let g0 = predicate::encode_predicate(&[Filter::Equals {
-            field: "g".into(),
-            value: RowValue::String("g0".into()),
-        }]);
-        let one = worker
-            .query_filtered_limited("items", &g0, Some(1), 0)
-            .unwrap();
+        let g0 = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "g".into(),
+                    value: RowValue::String("g0".into()),
+                },
+            ]
+        );
+        let one = worker.query_filtered_limited("items", &g0, Some(1), 0).unwrap();
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].0, b"k0");
         // Missing table → empty.
-        assert!(worker
-            .query_filtered_limited("nope", &predicate::encode_predicate(&[]), Some(1), 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            worker
+                .query_filtered_limited("nope", &predicate::encode_predicate(&[]), Some(1), 0)
+                .unwrap()
+                .is_empty()
+        );
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn query_sorted_topk_matches_dart_order() {
-        use crate::sort_spec::{encode_sort_specs, SortSpec};
+        use crate::sort_spec::{ encode_sort_specs, SortSpec };
         let (path, worker) = seed_indexed_age_fixture("qsorted");
         let empty_pred = crate::predicate::encode_predicate(&[]);
         // Sort ascending by age: k0(10), k1(20), k2(30), k3(40), then k4(missing).
-        let asc = encode_sort_specs(&[SortSpec {
-            field: "age".into(),
-            descending: false,
-        }]);
-        let got = worker
-            .query_sorted("items", &empty_pred, &asc, Some(5), 0)
-            .unwrap();
-        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
-        assert_eq!(
-            keys,
-            vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]
+        let asc = encode_sort_specs(
+            &[
+                SortSpec {
+                    field: "age".into(),
+                    descending: false,
+                },
+            ]
         );
+        let got = worker.query_sorted("items", &empty_pred, &asc, Some(5), 0).unwrap();
+        let keys: Vec<&[u8]> = got
+            .iter()
+            .map(|e| e.0.as_slice())
+            .collect();
+        assert_eq!(keys, vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]);
         // limit 2 → k0, k1; offset 2 → k2, k3.
-        let lim = worker
-            .query_sorted("items", &empty_pred, &asc, Some(2), 0)
-            .unwrap();
+        let lim = worker.query_sorted("items", &empty_pred, &asc, Some(2), 0).unwrap();
         assert_eq!(lim.len(), 2);
         assert_eq!(lim[0].0, b"k0");
         assert_eq!(lim[1].0, b"k1");
-        let off = worker
-            .query_sorted("items", &empty_pred, &asc, Some(2), 2)
-            .unwrap();
+        let off = worker.query_sorted("items", &empty_pred, &asc, Some(2), 2).unwrap();
         assert_eq!(off[0].0, b"k2");
         assert_eq!(off[1].0, b"k3");
         // Descending: missing (k4) FIRST, then 40, 30, 20, 10.
-        let desc = encode_sort_specs(&[SortSpec {
-            field: "age".into(),
-            descending: true,
-        }]);
-        let d = worker
-            .query_sorted("items", &empty_pred, &desc, Some(5), 0)
-            .unwrap();
-        let dkeys: Vec<&[u8]> = d.iter().map(|e| e.0.as_slice()).collect();
-        assert_eq!(
-            dkeys,
-            vec![&b"k4"[..], &b"k3"[..], &b"k2"[..], &b"k1"[..], &b"k0"[..]]
+        let desc = encode_sort_specs(
+            &[
+                SortSpec {
+                    field: "age".into(),
+                    descending: true,
+                },
+            ]
         );
+        let d = worker.query_sorted("items", &empty_pred, &desc, Some(5), 0).unwrap();
+        let dkeys: Vec<&[u8]> = d
+            .iter()
+            .map(|e| e.0.as_slice())
+            .collect();
+        assert_eq!(dkeys, vec![&b"k4"[..], &b"k3"[..], &b"k2"[..], &b"k1"[..], &b"k0"[..]]);
         // Predicate filter: age > 15 → k1,k2,k3 sorted asc (k4 has no age → filtered out).
-        let gt15 = crate::predicate::encode_predicate(&[crate::predicate::Filter::Range {
-            field: "age".into(),
-            min: Some(crate::value_codec::RowValue::Int64(16)),
-            max: None,
-        }]);
-        let g = worker
-            .query_sorted("items", &gt15, &asc, Some(5), 0)
-            .unwrap();
-        let gkeys: Vec<&[u8]> = g.iter().map(|e| e.0.as_slice()).collect();
+        let gt15 = crate::predicate::encode_predicate(
+            &[
+                crate::predicate::Filter::Range {
+                    field: "age".into(),
+                    min: Some(crate::value_codec::RowValue::Int64(16)),
+                    max: None,
+                },
+            ]
+        );
+        let g = worker.query_sorted("items", &gt15, &asc, Some(5), 0).unwrap();
+        let gkeys: Vec<&[u8]> = g
+            .iter()
+            .map(|e| e.0.as_slice())
+            .collect();
         assert_eq!(gkeys, vec![&b"k1"[..], &b"k2"[..], &b"k3"[..]]);
         // limit 0 → empty.
-        assert!(worker
-            .query_sorted("items", &empty_pred, &asc, Some(0), 0)
-            .unwrap()
-            .is_empty());
+        assert!(worker.query_sorted("items", &empty_pred, &asc, Some(0), 0).unwrap().is_empty());
         // Missing table → empty.
-        assert!(worker
-            .query_sorted("nope", &empty_pred, &asc, Some(1), 0)
-            .unwrap()
-            .is_empty());
+        assert!(worker.query_sorted("nope", &empty_pred, &asc, Some(1), 0).unwrap().is_empty());
         let _ = std::fs::remove_file(path);
     }
 
@@ -2642,14 +2991,14 @@ mod tests {
                 "age",
                 false,
                 Some(5),
-                0,
+                0
             )
             .unwrap();
-        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
-        assert_eq!(
-            keys,
-            vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]
-        );
+        let keys: Vec<&[u8]> = got
+            .iter()
+            .map(|e| e.0.as_slice())
+            .collect();
+        assert_eq!(keys, vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]);
         // Early-stop: limit 2 → k0, k1 (no missing append needed).
         let lim = worker
             .query_indexed_ordered(
@@ -2661,7 +3010,7 @@ mod tests {
                 "age",
                 false,
                 Some(2),
-                0,
+                0
             )
             .unwrap();
         assert_eq!(lim.len(), 2);
@@ -2678,7 +3027,7 @@ mod tests {
                 "age",
                 false,
                 Some(2),
-                2,
+                2
             )
             .unwrap();
         assert_eq!(off[0].0, b"k2");
@@ -2688,7 +3037,7 @@ mod tests {
 
     #[test]
     fn query_indexed_multi_intersects_and_rechecks_predicate() {
-        use crate::predicate::{self, Filter};
+        use crate::predicate::{ self, Filter };
         use crate::value_codec::RowValue;
         let (path, worker) = seed_indexed_age_fixture("qmulti");
         let age_bounds = age_field_bounds();
@@ -2696,29 +3045,31 @@ mod tests {
             "items",
             "nick",
             &[crate::value_codec::TAG_NULL],
-            &[crate::value_codec::TAG_NULL],
+            &[crate::value_codec::TAG_NULL]
         );
         let nick_start = nick_full[..nick_full.len() - 2].to_vec();
         let mut nick_end = nick_start.clone();
         let last = nick_end.pop().unwrap();
         nick_end.push(last + 1);
-        let predicate = predicate::encode_predicate(&[
-            Filter::Range {
-                field: "age".into(),
-                min: Some(RowValue::Int64(15)),
-                max: Some(RowValue::Int64(35)),
-            },
-            Filter::Equals {
-                field: "nick".into(),
-                value: RowValue::String("g0".into()),
-            },
-        ]);
+        let predicate = predicate::encode_predicate(
+            &[
+                Filter::Range {
+                    field: "age".into(),
+                    min: Some(RowValue::Int64(15)),
+                    max: Some(RowValue::Int64(35)),
+                },
+                Filter::Equals {
+                    field: "nick".into(),
+                    value: RowValue::String("g0".into()),
+                },
+            ]
+        );
         let got = worker
             .query_indexed_multi(
                 "items",
                 "__gecko_index",
                 &[age_bounds, (nick_start, nick_end)],
-                &predicate,
+                &predicate
             )
             .unwrap();
         assert_eq!(got.len(), 2);
@@ -2729,7 +3080,7 @@ mod tests {
 
     #[test]
     fn query_indexed_limited_windows_an_eq_bound() {
-        use crate::predicate::{self, Filter};
+        use crate::predicate::{ self, Filter };
         use crate::value_codec::RowValue;
         let (path, worker) = seed_indexed_age_fixture("qil");
         // Eq bound for age == 20 (only k1).
@@ -2737,25 +3088,27 @@ mod tests {
             "items",
             "age",
             &encode_test_int64(20),
-            &[crate::value_codec::TAG_NULL],
+            &[crate::value_codec::TAG_NULL]
         );
         full.pop(); // strip trailing null → shared prefix
         let mut end = full.clone();
         let mut i = end.len() - 1;
-        while i > 0 && end[i] == 0xFF {
+        while i > 0 && end[i] == 0xff {
             end.pop();
             i -= 1;
         }
         let last = end.pop().unwrap();
         end.push(last + 1);
-        let eq_pred = predicate::encode_predicate(&[Filter::Equals {
-            field: "age".into(),
-            value: RowValue::Int64(20),
-        }]);
+        let eq_pred = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "age".into(),
+                    value: RowValue::Int64(20),
+                },
+            ]
+        );
         // Sanity: the plain M2 join over the same bounds must find k1.
-        let joined = worker
-            .query_indexed("items", "__gecko_index", &full, &end)
-            .unwrap();
+        let joined = worker.query_indexed("items", "__gecko_index", &full, &end).unwrap();
         assert_eq!(joined.len(), 1, "index bounds must reach the age=20 entry");
         assert_eq!(joined[0].0, b"k1");
         let got = worker
@@ -2764,10 +3117,12 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, b"k1");
         // limit 0 → empty.
-        assert!(worker
-            .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, Some(0), 0,)
-            .unwrap()
-            .is_empty());
+        assert!(
+            worker
+                .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, Some(0), 0)
+                .unwrap()
+                .is_empty()
+        );
         let _ = std::fs::remove_file(path);
     }
 }

@@ -4,16 +4,19 @@
 //! generated Dart bindings do not need to hold Rust transaction handles.
 
 use crate::compatibility::CompatibilityHandshake;
-use crate::worker::{ByteEntry, RedbWorker, StorageStats, WorkerError};
+use crate::worker::{ ByteEntry, RedbWorker, StorageStats, WorkerError };
 
 const NATIVE_BUILD_ID: &str = concat!(env!("CARGO_PKG_VERSION"), "+rust");
 
 fn encode_worker_error(error: WorkerError) -> String {
     let details = match &error {
-        WorkerError::DatabaseLocked(message) => Some(serde_json::json!({
+        WorkerError::DatabaseLocked(message) =>
+            Some(
+                serde_json::json!({
             "reason": message,
             "retryable": true,
-        })),
+        })
+            ),
         _ => None,
     };
     let kind = match &error {
@@ -59,28 +62,32 @@ impl NativeWorker {
         path: String,
         old_key: Vec<u8>,
         new_key: Vec<u8>,
-        old_gen: u8,
+        old_gen: u8
     ) -> Result<(), String> {
         if old_key.len() != 32 || new_key.len() != 32 {
-            return Err(crate::error::GeckoErrorEnvelope::new(
-                crate::error::GeckoErrorType::InvalidOperation,
-                "encryption keys must be exactly 32 bytes (AES-256)",
-            )
-            .encode());
+            return Err(
+                crate::error::GeckoErrorEnvelope
+                    ::new(
+                        crate::error::GeckoErrorType::InvalidOperation,
+                        "encryption keys must be exactly 32 bytes (AES-256)"
+                    )
+                    .encode()
+            );
         }
         let mut old = [0u8; 32];
         let mut new = [0u8; 32];
         old.copy_from_slice(&old_key);
         new.copy_from_slice(&new_key);
-        crate::crypto_storage::rekey_file(std::path::Path::new(&path), old, new, old_gen).map_err(
-            |error| {
-                crate::error::GeckoErrorEnvelope::new(
-                    crate::error::GeckoErrorType::Unknown,
-                    format!("key rotation failed: {error}"),
-                )
-                .encode()
-            },
-        )
+        crate::crypto_storage
+            ::rekey_file(std::path::Path::new(&path), old, new, old_gen)
+            .map_err(|error| {
+                crate::error::GeckoErrorEnvelope
+                    ::new(
+                        crate::error::GeckoErrorType::Unknown,
+                        format!("key rotation failed: {error}")
+                    )
+                    .encode()
+            })
     }
 
     /// Returns the compatibility handshake before callers use the worker.
@@ -90,16 +97,20 @@ impl NativeWorker {
             .expect("compatibility handshake constants must encode")
     }
 
-    pub async fn apply_batch(&mut self, encoded_ops: Vec<u8>) -> Result<u64, String> {
-        let operations = crate::wire::Op::decode_batch(&encoded_ops).map_err(|error| {
-            crate::error::GeckoErrorEnvelope::new(
-                crate::error::GeckoErrorType::InvalidOperation,
-                error.to_string(),
-            )
-            .encode()
-        })?;
+    pub async fn apply_batch(
+        &mut self,
+        encoded_ops: Vec<u8>,
+        index_definitions: Vec<(String, Vec<String>)>
+    ) -> Result<u64, String> {
+        let operations = crate::wire::Op
+            ::decode_batch(&encoded_ops)
+            .map_err(|error| {
+                crate::error::GeckoErrorEnvelope
+                    ::new(crate::error::GeckoErrorType::InvalidOperation, error.to_string())
+                    .encode()
+            })?;
         self.worker
-            .apply_batch(&operations)
+            .apply_batch_with_indexes(&operations, &index_definitions)
             .map_err(encode_worker_error)
     }
 
@@ -111,7 +122,7 @@ impl NativeWorker {
         &self,
         table: String,
         start: Option<Vec<u8>>,
-        end: Option<Vec<u8>>,
+        end: Option<Vec<u8>>
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .range_scan(&table, start.as_deref(), end.as_deref())
@@ -125,12 +136,13 @@ impl NativeWorker {
     pub async fn get_many(
         &self,
         table: String,
-        keys: Vec<Vec<u8>>,
+        keys: Vec<Vec<u8>>
     ) -> Result<Vec<ByteEntry>, String> {
-        let borrowed: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
-        self.worker
-            .get_many(&table, &borrowed)
-            .map_err(encode_worker_error)
+        let borrowed: Vec<&[u8]> = keys
+            .iter()
+            .map(|k| k.as_slice())
+            .collect();
+        self.worker.get_many(&table, &borrowed).map_err(encode_worker_error)
     }
 
     /// Snapshot-bound variant of [Self::get_many]: every read observes one
@@ -139,12 +151,13 @@ impl NativeWorker {
         &self,
         snapshot: u64,
         table: String,
-        keys: Vec<Vec<u8>>,
+        keys: Vec<Vec<u8>>
     ) -> Result<Vec<ByteEntry>, String> {
-        let borrowed: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
-        self.worker
-            .snapshot_get_many(snapshot, &table, &borrowed)
-            .map_err(encode_worker_error)
+        let borrowed: Vec<&[u8]> = keys
+            .iter()
+            .map(|k| k.as_slice())
+            .collect();
+        self.worker.snapshot_get_many(snapshot, &table, &borrowed).map_err(encode_worker_error)
     }
 
     /// Creates a point-in-time MVCC snapshot handle (a held redb read
@@ -158,11 +171,9 @@ impl NativeWorker {
         &self,
         snapshot: u64,
         table: String,
-        key: Vec<u8>,
+        key: Vec<u8>
     ) -> Result<Option<Vec<u8>>, String> {
-        self.worker
-            .snapshot_get(snapshot, &table, &key)
-            .map_err(encode_worker_error)
+        self.worker.snapshot_get(snapshot, &table, &key).map_err(encode_worker_error)
     }
 
     pub async fn snapshot_range_scan(
@@ -170,7 +181,7 @@ impl NativeWorker {
         snapshot: u64,
         table: String,
         start: Option<Vec<u8>>,
-        end: Option<Vec<u8>>,
+        end: Option<Vec<u8>>
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_range_scan(snapshot, &table, start.as_deref(), end.as_deref())
@@ -185,9 +196,7 @@ impl NativeWorker {
     /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
     /// M7: verifies and atomically repairs durable index entries for [table].
     pub async fn repair_index(&mut self, table: String, fields: Vec<String>) -> Result<(), String> {
-        self.worker
-            .repair_index(&table, &fields)
-            .map_err(encode_worker_error)
+        self.worker.repair_index(&table, &fields).map_err(encode_worker_error)
     }
 
     pub async fn query_indexed(
@@ -195,11 +204,9 @@ impl NativeWorker {
         table: String,
         index_table: String,
         start: Vec<u8>,
-        end: Vec<u8>,
+        end: Vec<u8>
     ) -> Result<Vec<ByteEntry>, String> {
-        self.worker
-            .query_indexed(&table, &index_table, &start, &end)
-            .map_err(encode_worker_error)
+        self.worker.query_indexed(&table, &index_table, &start, &end).map_err(encode_worker_error)
     }
 
     /// Snapshot-bound variant of [Self::query_indexed]: reads through an
@@ -211,7 +218,7 @@ impl NativeWorker {
         table: String,
         index_table: String,
         start: Vec<u8>,
-        end: Vec<u8>,
+        end: Vec<u8>
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_indexed(snapshot, &table, &index_table, &start, &end)
@@ -227,7 +234,7 @@ impl NativeWorker {
         table: String,
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
-        predicate_bytes: Vec<u8>,
+        predicate_bytes: Vec<u8>
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_indexed_multi(snapshot, &table, &index_table, &ranges, &predicate_bytes)
@@ -242,11 +249,9 @@ impl NativeWorker {
     pub async fn query_filtered(
         &self,
         table: String,
-        predicate_bytes: Vec<u8>,
+        predicate_bytes: Vec<u8>
     ) -> Result<Vec<ByteEntry>, String> {
-        self.worker
-            .query_filtered(&table, &predicate_bytes)
-            .map_err(encode_worker_error)
+        self.worker.query_filtered(&table, &predicate_bytes).map_err(encode_worker_error)
     }
 
     /// M4: full-scan + predicate with an early LIMIT/OFFSET — skips the first
@@ -258,7 +263,7 @@ impl NativeWorker {
         table: String,
         predicate_bytes: Vec<u8>,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .query_filtered_limited(&table, &predicate_bytes, limit, offset)
@@ -272,7 +277,7 @@ impl NativeWorker {
         table: String,
         predicate_bytes: Vec<u8>,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_filtered_limited(snapshot, &table, &predicate_bytes, limit, offset)
@@ -292,7 +297,7 @@ impl NativeWorker {
         end: Vec<u8>,
         predicate_bytes: Vec<u8>,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .query_indexed_limited(
@@ -302,7 +307,7 @@ impl NativeWorker {
                 &end,
                 &predicate_bytes,
                 limit,
-                offset,
+                offset
             )
             .map_err(encode_worker_error)
     }
@@ -318,7 +323,7 @@ impl NativeWorker {
         end: Vec<u8>,
         predicate_bytes: Vec<u8>,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_indexed_limited(
@@ -329,7 +334,7 @@ impl NativeWorker {
                 &end,
                 &predicate_bytes,
                 limit,
-                offset,
+                offset
             )
             .map_err(encode_worker_error)
     }
@@ -344,7 +349,7 @@ impl NativeWorker {
         predicate_bytes: Vec<u8>,
         sort_spec_bytes: Vec<u8>,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .query_sorted(&table, &predicate_bytes, &sort_spec_bytes, limit, offset)
@@ -359,7 +364,7 @@ impl NativeWorker {
         predicate_bytes: Vec<u8>,
         sort_spec_bytes: Vec<u8>,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_sorted(
@@ -368,7 +373,7 @@ impl NativeWorker {
                 &predicate_bytes,
                 &sort_spec_bytes,
                 limit,
-                offset,
+                offset
             )
             .map_err(encode_worker_error)
     }
@@ -392,7 +397,7 @@ impl NativeWorker {
         sort_field: String,
         eq_bounded: bool,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .query_indexed_ordered(
@@ -404,7 +409,7 @@ impl NativeWorker {
                 &sort_field,
                 eq_bounded,
                 limit,
-                offset,
+                offset
             )
             .map_err(encode_worker_error)
     }
@@ -422,7 +427,7 @@ impl NativeWorker {
         sort_field: String,
         eq_bounded: bool,
         limit: Option<u64>,
-        offset: u64,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_indexed_ordered(
@@ -435,7 +440,7 @@ impl NativeWorker {
                 &sort_field,
                 eq_bounded,
                 limit,
-                offset,
+                offset
             )
             .map_err(encode_worker_error)
     }
@@ -446,7 +451,7 @@ impl NativeWorker {
         &self,
         snapshot: u64,
         table: String,
-        predicate_bytes: Vec<u8>,
+        predicate_bytes: Vec<u8>
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
             .snapshot_query_filtered(snapshot, &table, &predicate_bytes)
@@ -460,11 +465,9 @@ impl NativeWorker {
     pub async fn query_filtered_count(
         &self,
         table: String,
-        predicate_bytes: Vec<u8>,
+        predicate_bytes: Vec<u8>
     ) -> Result<u64, String> {
-        self.worker
-            .query_filtered_count(&table, &predicate_bytes)
-            .map_err(encode_worker_error)
+        self.worker.query_filtered_count(&table, &predicate_bytes).map_err(encode_worker_error)
     }
 
     /// Snapshot-bound variant of [Self::query_filtered_count].
@@ -472,7 +475,7 @@ impl NativeWorker {
         &self,
         snapshot: u64,
         table: String,
-        predicate_bytes: Vec<u8>,
+        predicate_bytes: Vec<u8>
     ) -> Result<u64, String> {
         self.worker
             .snapshot_query_filtered_count(snapshot, &table, &predicate_bytes)
@@ -489,7 +492,7 @@ impl NativeWorker {
         &self,
         table: String,
         predicate_bytes: Vec<u8>,
-        field: String,
+        field: String
     ) -> Result<Vec<Vec<u8>>, String> {
         self.worker
             .query_filtered_distinct(&table, &predicate_bytes, &field)
@@ -502,7 +505,7 @@ impl NativeWorker {
         snapshot: u64,
         table: String,
         predicate_bytes: Vec<u8>,
-        field: String,
+        field: String
     ) -> Result<Vec<Vec<u8>>, String> {
         self.worker
             .snapshot_query_filtered_distinct(snapshot, &table, &predicate_bytes, &field)

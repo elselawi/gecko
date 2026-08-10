@@ -132,6 +132,8 @@ class DatabaseImpl implements Database {
 
   RawEngine get engine => _engine;
 
+  bool get _usesNativeDurableIndexes => _engine.backend is NativeRawBackend;
+
   static const _codec = DefaultWireCodec();
 
   Object? _decode(List<int> bytes) => _codec.decode(bytes);
@@ -273,9 +275,15 @@ class DatabaseImpl implements Database {
             ),
           );
     if (index != null) {
-      // M7: native index verification/repair runs in Rust from the durable
-      // primary rows; only the transitional in-memory backend rebuilds the
+      // M7.1: Rust receives the declaration and owns native durable-index
+      // maintenance; only the transitional in-memory backend rebuilds the
       // Dart reference index.
+      if (_engine.backend case final DurableIndexRegistrar registrar) {
+        registrar.registerDurableIndex(
+          name,
+          [...index.secondary.fields, ...index.secondary.prefixFields],
+        );
+      }
       unawaited(_prepareIndex(name, index));
     }
     return _CollectionImpl<T>(
@@ -443,7 +451,7 @@ class DatabaseImpl implements Database {
             previousVersion: previous,
             origin: ChangeOrigin.user,
           );
-          if (index != null) {
+          if (index != null && !_usesNativeDurableIndexes) {
             ops.addAll(_durableIndexOps(txnMutation, index));
             pendingIndexMutations.add(txnMutation);
           }
@@ -534,13 +542,15 @@ class DatabaseImpl implements Database {
     // Only after the durable commit do we reflect the batch in the in-memory
     // secondary index, so a failed commit can never leave the index ahead of
     // (or behind) its primary table.
-    for (final m in pendingIndexMutations) {
-      final index = _indexes[m.table];
-      if (index == null) continue;
-      if (m.kind == ChangeKind.delete) {
-        index.onDelete(m.recordId, m.previousVersion);
-      } else {
-        index.onPut(m.recordId, m.previousVersion, m.value);
+    if (!_usesNativeDurableIndexes) {
+      for (final m in pendingIndexMutations) {
+        final index = _indexes[m.table];
+        if (index == null) continue;
+        if (m.kind == ChangeKind.delete) {
+          index.onDelete(m.recordId, m.previousVersion);
+        } else {
+          index.onPut(m.recordId, m.previousVersion, m.value);
+        }
       }
     }
     return BulkWriteResult(sequence: lsn, mutationCount: mutations.length);
@@ -970,6 +980,14 @@ class _TxnImpl implements Transaction {
               prefixFields: prefixFields ?? const [],
             ),
           );
+    if (index != null) {
+      if (_db.engine.backend case final DurableIndexRegistrar registrar) {
+        registrar.registerDurableIndex(
+          name,
+          [...index.secondary.fields, ...index.secondary.prefixFields],
+        );
+      }
+    }
     return _CollectionImpl<T>(
       _db,
       name,
@@ -1120,10 +1138,11 @@ class _TxnImpl implements Transaction {
               _codec.encode(_recordToMap(record)),
             ),
           );
-          // Durable secondary index: maintained in the exact same redb write
-          // transaction as the primary record (WS3).
+          // Native durable secondary indexes are maintained by Rust in the
+          // same write transaction as the primary record. The in-memory
+          // backend retains the Dart reference implementation until M7.5.
           final index = _db._indexes[mutation.table];
-          if (index != null) {
+          if (index != null && !_db._usesNativeDurableIndexes) {
             ops.addAll(_durableIndexOps(mutation, index));
           }
         }
@@ -1212,6 +1231,7 @@ class _TxnImpl implements Transaction {
   }
 
   void _applyIndexMutation(_TxnMutation mutation) {
+    if (_db._usesNativeDurableIndexes) return;
     final index = _db._indexes[mutation.table];
     if (index == null) return;
     if (mutation.kind == ChangeKind.delete) {

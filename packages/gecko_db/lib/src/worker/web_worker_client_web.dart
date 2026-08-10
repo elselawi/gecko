@@ -171,8 +171,12 @@ class WebWorkerClient {
     return int.parse(value.toString());
   }
 
-  Future<int> applyBatch(List<int> encodedOps) async =>
-      _asInt(await _request('applyBatch', <Object?>[encodedOps]));
+  Future<int> applyBatch(
+    List<int> encodedOps, {
+    List<List<Object?>> indexDefinitions = const [],
+  }) async => _asInt(
+    await _request('applyBatch', <Object?>[encodedOps, indexDefinitions]),
+  );
 
   Future<List<int>?> get({
     required String table,

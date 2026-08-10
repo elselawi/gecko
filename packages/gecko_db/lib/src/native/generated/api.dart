@@ -11,7 +11,10 @@ import 'worker.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>>
 abstract class NativeWorker implements RustOpaqueInterface {
-  Future<BigInt> applyBatch({required List<int> encodedOps});
+  Future<BigInt> applyBatch({
+    required List<int> encodedOps,
+    required List<(String, List<String>)> indexDefinitions,
+  });
 
   /// Explicitly releases the redb file handle before the Dart object is
   /// dropped. This is required for deterministic reopen on Windows.

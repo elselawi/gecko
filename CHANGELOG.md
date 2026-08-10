@@ -7,6 +7,12 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M7.1 Slice 1 — Rust-owned durable index maintenance**: native batch writes now
+  pass declared indexed fields to Rust, which derives old/new values from encoded
+  primary rows and updates `__gecko_index` atomically with puts, deletes, ranges,
+  clears, and repeated-key bulk operations. Native Dart no longer emits durable
+  index `RawOp`s; the in-memory reference index remains until M7.5. Existing
+  index format and prefix query semantics are unchanged.
 - **M7 — Native execution ownership core** (ADR-0023): native collection index
   preparation now verifies and atomically repairs durable `__gecko_index`
   entries in Rust without rebuilding a duplicate Dart index. Indexed native

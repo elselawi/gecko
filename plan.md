@@ -179,9 +179,9 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6.5 done; M7 next; M7.5 follows;
-> M8–M10 open). Each milestone has a goal, concrete steps, a "done when" check, and — where it moves
-> Dart→Rust — an ROI note and the Rust tests + Dart deletions it requires.
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M6.5 done; M7 core done; M7.1 next;
+> M7.5 follows; M8–M10 open). Each milestone has a goal, concrete steps, a "done when" check, and —
+> where it moves Dart→Rust — an ROI note and the Rust tests + Dart deletions it requires.
 >
 > **Ordering.** M3 gates M4–M7 (read-path completion must finish before sort/limit/migration cleanup
 > build on it). M7 must establish the native execution boundary before M8 changes reactivity semantics.
@@ -362,7 +362,7 @@ making every native query use the same Rust path.
 and physical-format compatibility remain; logical/custom/provider surfaces are gone; encrypted native
 queries retain M4/M5 routes; all security, parity, API, coverage, and release gates pass.
 
-### M7 — Native execution ownership and Dart cleanup  ✅ core slice done (ADR-0023); remaining audit work ☐
+### M7 — Native execution ownership and Dart cleanup  ✅ core slice done (ADR-0023); remaining work moved to M7.1
 
 **Goal:** make Rust the authoritative execution engine for native databases while keeping Dart as the
 public API, model-mapping, reactive, migration-callback, and transitional in-memory reference layer.
@@ -425,7 +425,71 @@ traceability, and performance gates pass. M7.5 remains the final removal of the 
 reference backend; remaining M7 work is the route-matrix completion and M8 handoff, not a new query
 registry.
 
-### M7.5 — File-backed Rust engine consolidation  ☐ after M7
+### M7.1 — Remaining Dart→Rust migration slices  ☐ after M7 core
+
+**Goal:** complete the Dart-thinning work that M7 core intentionally left behind. These slices are
+ordered so every removal has a Rust replacement, native snapshot/error/diagnostic parity, and a focused
+before/after benchmark. M7.1 must finish before M7.5 removes the transitional Dart reference backend.
+
+**Slice 1 — Durable index maintenance ownership ✅**
+
+Moved `_durableIndexOps` and its mutation/bulk/transaction integration from Dart-generated `RawOp`s into
+Rust's atomic write path. Rust receives native index declarations, derives old/new indexed field values
+from encoded primary rows, and applies index deletes/inserts in the same redb write transaction. The
+existing wire/file format is unchanged; equality and prefix declarations retain their full-value durable
+entries and query-bound semantics. Dart keeps declarations/metadata and the temporary in-memory
+reference index, but no longer constructs durable index mutations for native writes.
+
+**Proof:** Rust tests cover put/update/delete, missing fields, repeated-key bulk sequencing, rollback on
+batch validation failure, stale repair, and index/data atomicity; focused native index/reopen/drift tests
+and the full 528-test package suite pass. Crash/reopen coverage remains in the existing native batch
+and worker qualification tests; explicit index-enabled crash injection remains follow-up coverage.
+
+**Slice 2 — Native aggregate and raw-adapter cleanup ☐**
+
+Audit `count()`/`distinct()` and `NativeRawBackend`/`NativeRawSnapshot` after M3–M7. Remove native-only
+Dart fallback loops, duplicate tuple/conversion branches, and non-snapshot paths that can reintroduce
+materialization. Preserve the in-memory reference path until M7.5, snapshot semantics, `lastPlan`,
+slow-query timings, typed errors, finalizer cleanup, read-only behavior, and Web dispatch parity.
+
+**Proof:** route matrix for unindexed, exact-eq, M5 multi-index, sorted/limited, and snapshot-bound
+aggregates; zero/full row-transfer assertions; raw-backend contract, close/finalizer, and MVCC tests.
+
+**Slice 3 — Native relationship retrieval ☐**
+
+Move the remaining expensive relationship reads to Rust where stable primitives exist:
+
+- `parent()` → snapshot-bound batched/native point read plus Rust-side FK extraction or predicate;
+- `loadAllChildren()` → one Rust indexed/predicate operation instead of a Dart full child-table scan;
+- many-to-many join retrieval → Rust snapshot-bound scan/filter where it avoids repeated Dart decoding.
+
+Dart retains relationship declarations, delete behaviors, policy decisions, model mapping, and reactive
+stream lifecycle. Rust must not execute arbitrary Dart relationship callbacks.
+
+**Proof:** native/Web parity, missing/stale FK behavior, snapshot consistency, N+1/backend-hop and
+rows-transferred benchmarks, delete-policy regression tests.
+
+**Slice 4 — Native route matrix and M8 handoff ☐**
+
+Complete the native/in-memory/Web route matrix for every read, aggregate, relationship, and raw adapter
+operation. Record plan, snapshot boundary, backend hops, transferred rows, and typed-error behavior.
+Expose only M8 handoff metadata—changed row keys, indexed fields, and batch metadata. Do not add a Rust
+query registry or move query registration/lifecycle/backpressure semantics before M8 designs them.
+
+**Slice 5 — Thin-client deletion pass ☐**
+
+After Slices 1–4 are proven, delete obsolete native Dart execution branches and comments, retain only the
+Dart public API/model mapping/migration callback/reactive layers, convert deleted tests into native/Web
+contract tests, and measure Dart LOC, native open latency, backend hops, rows transferred, memory, and
+query latency before/after.
+
+**M7.1 done when:** all five slices have Rust tests and native/Web contract coverage; native durable index
+writes and repair have one Rust authority; no native Dart materialization remains for aggregates or the
+selected relationship operations; migration callbacks and public/reactive semantics remain Dart-owned;
+the route matrix and M8 handoff are documented; coverage, parity, security, FRB, Rust, and release gates
+pass. M7.5 then removes the Dart `InMemoryBackend` and public in-memory mode.
+
+### M7.5 — File-backed Rust engine consolidation  ☐ after M7.1
 
 **Goal:** remove the Dart `InMemoryBackend` and the public in-memory database mode while preserving Web
 support through the Rust/Wasm + OPFS file-backed path. After M7.5, every supported database is backed
