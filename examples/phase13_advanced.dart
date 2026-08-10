@@ -1,9 +1,11 @@
+import 'dart:io';
+
 import 'package:gecko_db/gecko_db.dart';
 
 Future<void> main() async {
+  final dir = await Directory.systemTemp.createTemp('gecko-advanced-');
   final db = await DatabaseImpl.open(
-    'mem://phase13-advanced',
-    useInMemory: true,
+    '${dir.path}${Platform.pathSeparator}db.redb',
   );
   db.diagnostics.enable();
 
@@ -36,4 +38,5 @@ Future<void> main() async {
   );
 
   await db.close();
+  await dir.delete(recursive: true);
 }

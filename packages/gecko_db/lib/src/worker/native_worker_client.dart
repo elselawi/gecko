@@ -144,22 +144,20 @@ class NativeWorkerClient {
       // File-backed web databases persist in the Origin Private File System.
       // Sync access handles are worker-only, so outside a Worker (or in a
       // non-secure context) this fails with a typed error before touching
-      // anything. `:memory:` needs no handle.
+      // anything.
       if (encryptionKey != null) {
         throw const GeckoError(
           GeckoErrorType.invalidOperation,
           'Physical encryption is not supported on Web',
         );
       }
-      if (path != ':memory:') {
-        final opfsError = await registerOpfsHandle(path);
-        if (opfsError != null) {
-          throw GeckoError(
-            GeckoErrorType.invalidOperation,
-            opfsError,
-            details: <String, Object?>{'path': path},
-          );
-        }
+      final opfsError = await registerOpfsHandle(path);
+      if (opfsError != null) {
+        throw GeckoError(
+          GeckoErrorType.invalidOperation,
+          opfsError,
+          details: <String, Object?>{'path': path},
+        );
       }
       final worker = encryptionKey == null
           ? await NativeWorker.open(path: path, readOnly: readOnly)

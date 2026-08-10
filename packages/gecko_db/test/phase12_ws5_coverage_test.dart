@@ -13,7 +13,6 @@ import 'package:gecko_db/src/namespaces.dart'
         geckoMaintenanceCompacting,
         geckoMaintenanceStateKey,
         geckoMaintenanceTable;
-import 'package:gecko_db/src/query/secondary_index.dart';
 import 'package:test/test.dart';
 
 String _repoRoot() {
@@ -53,7 +52,6 @@ void main() {
   test('maintenance toStrings are human readable', () async {
     final db = await DatabaseImpl.open(
       path,
-      useInMemory: false,
       config: DatabaseConfig(
         nativeLibraryPath: nativePath,
         slowQueryThresholdMicros: 1,
@@ -82,7 +80,6 @@ void main() {
     await expectLater(
       DatabaseImpl.open(
         path,
-        useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
           encryptionKey: const [1, 2],
@@ -102,7 +99,6 @@ void main() {
   test('recover() clears a failed compaction state', () async {
     final db = await DatabaseImpl.open(
       path,
-      useInMemory: false,
       config: DatabaseConfig(
         nativeLibraryPath: nativePath,
         compactionSnapshotDrainTimeout: const Duration(milliseconds: 50),
@@ -138,7 +134,6 @@ void main() {
       // Write a `compacting` marker, close, reopen read-only.
       final db = await DatabaseImpl.open(
         path,
-        useInMemory: false,
         config: DatabaseConfig(nativeLibraryPath: nativePath),
       );
       const codec = DefaultWireCodec();
@@ -155,7 +150,6 @@ void main() {
 
       final ro = await DatabaseImpl.open(
         path,
-        useInMemory: false,
         config: DatabaseConfig(nativeLibraryPath: nativePath, readOnly: true),
       );
       expect(ro.maintenance.state, MaintenanceState.recovering);
@@ -169,7 +163,7 @@ void main() {
   test(
     'preserved conflict with a resolution round-trips and is resolved',
     () async {
-      final db = await DatabaseImpl.open(path, useInMemory: true);
+      final db = await DatabaseImpl.open(path);
       const codec = DefaultWireCodec();
       // Write a preserved conflict that already carries a concrete resolution
       // (as produced by an external resolver), then read it back.
@@ -221,41 +215,4 @@ void main() {
       await db.close();
     },
   );
-
-  group('secondary index edge paths', () {
-    test('remove/replace handle absent fields and fresh ids', () {
-      final idx = SecondaryIndex(
-        fields: const ['name', 'age'],
-        prefixFields: const ['name'],
-      );
-      idx.insert('a', {'name': 'alice', 'age': 30});
-      idx.insert('b', {'name': 'bob'});
-      // replace on an id with an empty old row and no current entry -> insert.
-      idx.replace('c', const {}, {'name': 'carol', 'age': 25});
-      expect(idx.lookupEq({'name': 'carol'}), contains('c'));
-      // replace an existing id.
-      idx.replace('a', {'name': 'alice', 'age': 30}, {'name': 'alicia'});
-      expect(idx.lookupEq({'name': 'alice'}), isEmpty);
-      expect(idx.lookupEq({'name': 'alicia'}), contains('a'));
-      // remove a row whose value lacks some indexed fields.
-      idx.remove('b', {'name': 'bob'});
-      idx.remove('c', {'name': 'carol', 'age': 25});
-      // lookupRange with no bounds returns everything; empty field -> empty.
-      final range = idx.lookupRange('name');
-      expect(range, contains('a'));
-      expect(idx.lookupRange('age'), isEmpty);
-      // prefix lookups and removals.
-      expect(idx.lookupPrefix('name', 'ali'), contains('a'));
-      expect(idx.lookupRange('missing'), isNull);
-      expect(idx.lookupPrefix('missing', 'x'), isNull);
-    });
-
-    test('empty index reports empty range and clears for rebuild', () {
-      final idx = SecondaryIndex(fields: const ['name']);
-      expect(idx.lookupRange('name', min: 'a', max: 'z'), isEmpty);
-      idx.insert('a', {'name': 'alice'});
-      idx.clearForRebuild();
-      expect(idx.lookupEq({'name': 'alice'}), isEmpty);
-    });
-  });
 }

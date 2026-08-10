@@ -4,9 +4,13 @@ Live browser validation of the web target (ADR-0013). Two suites:
 
 | Suite | Entry | Marker | What it proves |
 |---|---|---|---|
-| Main-thread engine | `web_smoke.dart` | `WEB-SMOKE-OK` | `Database.open(':memory:')` runs the **redb engine on wasm** on the main thread: put/get/getAll/writeTxn through the public API. |
 | OPFS worker | `opfs_worker.dart` | `OPFS-SMOKE-OK` | In a real **Web Worker**: glue loaded via `importScripts`, FRB initialized, OPFS `FileSystemSyncAccessHandle` acquired + registered, `NativeWorker.open` over OPFS, applyBatch/get round-trip, deterministic close, reopen. |
 | Reusable worker client | `web_worker_smoke.dart` + `gecko_db_worker_test.html` | `GECKO-WORKER-OK` | Main-thread `WebWorkerClient` spawns the **in-package** worker (`packages/gecko_db/web/gecko_db_worker.dart`) and drives the full protocol over OPFS: open → applyBatch → get → tables → close → reopen. |
+
+> M7.5: there is no in-memory or `:memory:` mode. Every supported web store is
+> an OPFS file opened from inside a Web Worker (OPFS sync access handles are
+> worker-only). The public `Database` API is exercised on the VM/native suites;
+> these smokes validate the wasm engine + OPFS persistence path end-to-end.
 
 ## Prerequisites
 
@@ -34,7 +38,6 @@ This emits `build/native/gecko_db_rust.js` + `gecko_db_rust_bg.wasm`
 ## Compiling the suites
 
 ```powershell
-dart compile js tool/web_smoke/web_smoke.dart -o build/web_smoke/app.js
 dart compile js tool/web_smoke/opfs_worker.dart -o build/web_smoke/opfs_worker.js
 dart compile js tool/web_smoke/web_worker_smoke.dart -o build/web_smoke/web_worker_smoke.js
 dart compile js packages/gecko_db/web/gecko_db_worker.dart -o build/web_smoke/gecko_db_worker.js
@@ -67,7 +70,6 @@ Remove-Item build/cdp_profile -Recurse -ErrorAction SilentlyContinue
   --user-data-dir=C:\Users\alias\Coding\gecko\build\cdp_profile about:blank
 
 # 2. Drive each suite (exit 0 on the marker):
-node tool/web_smoke/cdp_drive.mjs http://localhost:8080/ WEB-SMOKE-OK WEB-SMOKE-FAIL
 node tool/web_smoke/cdp_drive.mjs http://localhost:8080/opfs_test.html OPFS-SMOKE-OK OPFS-SMOKE-FAIL
 node tool/web_smoke/cdp_drive.mjs http://localhost:8080/gecko_db_worker_test.html GECKO-WORKER-OK GECKO-WORKER-FAIL
 ```

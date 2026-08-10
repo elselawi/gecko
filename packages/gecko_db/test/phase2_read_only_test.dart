@@ -3,8 +3,6 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-import 'support/native_database.dart';
-
 void main() {
   test('native read-only database rejects all write entry points', () async {
     final directory = await Directory.systemTemp.createTemp('gecko-readonly-');
@@ -64,7 +62,6 @@ void main() {
       try {
         writer = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: config,
         );
         const codec = DefaultWireCodec();
@@ -75,7 +72,6 @@ void main() {
 
         reader = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(nativeLibraryPath: nativePath, readOnly: true),
         );
         expect(reader.isReadOnly, isTrue);

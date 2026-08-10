@@ -105,7 +105,6 @@ void main() {
   Future<int> durableBatches(String path) async {
     final db = await DatabaseImpl.open(
       path,
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
     try {

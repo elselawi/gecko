@@ -1,6 +1,8 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _User {
   _User(this.id, this.name, this.age);
   final String id;
@@ -22,10 +24,7 @@ Object? _id(_User user) => user.id;
 
 void main() {
   test('Phase 13 quickstart example compiles and runs', () async {
-    final db = await DatabaseImpl.open(
-      'mem://p13-doc-quick',
-      useInMemory: true,
-    );
+    final db = await openNativeTestDatabase('p13-quick');
     final users = db.collection<_User>(
       'users',
       toRow: _toRow,
@@ -41,10 +40,7 @@ void main() {
   });
 
   test('Phase 13 advanced example compiles and runs', () async {
-    final db = await DatabaseImpl.open(
-      'mem://p13-doc-advanced',
-      useInMemory: true,
-    );
+    final db = await openNativeTestDatabase('p13-advanced');
     db.diagnostics.enable();
     final bulk = await db.bulkWrite([
       const BulkMutation.put(

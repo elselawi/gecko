@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:gecko_db/gecko_db.dart';
 
 class User {
@@ -21,9 +23,9 @@ User userFromRow(Object? row) {
 Object? userId(User user) => user.id;
 
 Future<void> main() async {
+  final dir = await Directory.systemTemp.createTemp('gecko-example-');
   final db = await DatabaseImpl.open(
-    'mem://phase13-example',
-    useInMemory: true,
+    '${dir.path}${Platform.pathSeparator}db.redb',
   );
   final users = db.collection<User>(
     'users',
@@ -42,4 +44,5 @@ Future<void> main() async {
   if (adults.isEmpty) throw StateError('Expected at least one adult');
 
   await db.close();
+  await dir.delete(recursive: true);
 }

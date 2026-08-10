@@ -1,6 +1,8 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _Rec {
   _Rec(this.id, this.name, [this.age, this.nick]);
   final String id;
@@ -38,7 +40,7 @@ void main() {
     late DatabaseImpl db;
 
     setUp(() async {
-      db = await DatabaseImpl.open('mem://p3', useInMemory: true);
+      db = await openNativeTestDatabase('p3');
     });
 
     tearDown(() async {
@@ -95,7 +97,7 @@ void main() {
     late DatabaseImpl db;
 
     setUp(() async {
-      db = await DatabaseImpl.open('mem://p3b', useInMemory: true);
+      db = await openNativeTestDatabase('p3b');
     });
 
     tearDown(() async {
@@ -200,7 +202,7 @@ void main() {
 
   group('Phase 3: auto-assigned ids', () {
     test('are unique across a large batch of inserts', () async {
-      final db = await DatabaseImpl.open('mem://p3c', useInMemory: true);
+      final db = await openNativeTestDatabase('p3c');
       final col = db.collection<_Rec>(
         't',
         toRow: _toRow,
@@ -219,7 +221,7 @@ void main() {
 
   group('Phase 3: unknown stored fields survive round-trip', () {
     test('fields absent from fromRow mapping are preserved on write', () async {
-      final db = await DatabaseImpl.open('mem://p3d', useInMemory: true);
+      final db = await openNativeTestDatabase('p3d');
       final col = db.collection<_Rec>(
         't',
         toRow: _toRow,

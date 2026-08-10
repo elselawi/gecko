@@ -166,8 +166,9 @@ jobs:
         run: dart run tool/build_artifacts.dart verify --artifact=build/native/gecko_db_rust_bg.wasm --manifest=build/native/wasm32.json
       - name: Compile web smoke suites
         run: |
-          dart compile js tool/web_smoke/web_smoke.dart -o build/web_smoke/app.js
           dart compile js tool/web_smoke/opfs_worker.dart -o build/web_smoke/opfs_worker.js
+          dart compile js tool/web_smoke/web_worker_smoke.dart -o build/web_smoke/web_worker_smoke.js
+          dart compile js packages/gecko_db/web/gecko_db_worker.dart -o build/web_smoke/gecko_db_worker.js
       - name: Run web smoke (headless Chromium via CDP)
         env:
           CHROME_BIN: ${{ steps.setup-chromium.outputs.chrome-path }}
@@ -183,12 +184,12 @@ jobs:
             curl -sf http://127.0.0.1:9222/json/version >/dev/null && break
             sleep 1
           done
-          node tool/web_smoke/cdp_drive.mjs http://localhost:8080/ WEB-SMOKE-OK WEB-SMOKE-FAIL 90000
-          MAIN=$?
           node tool/web_smoke/cdp_drive.mjs http://localhost:8080/opfs_test.html OPFS-SMOKE-OK OPFS-SMOKE-FAIL 90000
           OPFS=$?
+          node tool/web_smoke/cdp_drive.mjs http://localhost:8080/gecko_db_worker_test.html GECKO-WORKER-OK GECKO-WORKER-FAIL 90000
+          WORKER=$?
           kill $CHROME_PID $SERVER_PID 2>/dev/null || true
-          [ $MAIN -eq 0 ] && [ $OPFS -eq 0 ]
+          [ $OPFS -eq 0 ] && [ $WORKER -eq 0 ]
       - uses: actions/upload-artifact@v4
         with:
           name: artifact-wasm32

@@ -39,8 +39,7 @@ class WebWorkerClient {
   bool _closed = false;
 
   /// Spawns [workerUrl] as a Dedicated Worker, opens the database at [path]
-  /// inside it (persisting via OPFS unless the path is `:memory:`), and waits
-  /// for the `ready` handshake.
+  /// inside it (persisting via OPFS), and waits for the `ready` handshake.
   static Future<WebWorkerClient> open({
     required String workerUrl,
     required String path,

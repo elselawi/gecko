@@ -1,12 +1,10 @@
 // gecko_db local benchmark harness (stopgap; not the Phase 13 comparative
-// suite). Measures real, per-operation numbers for the in-memory and native
-// file backends: single-insert throughput, bulk insert, hot/cold point reads,
-// range scans, filtered queries, watch latency, and transaction commit.
+// suite). Measures real, per-operation numbers for the native file backend:
+// single-insert throughput, bulk insert, hot/cold point reads, range scans,
+// filtered queries, watch latency, and transaction commit.
 //
 // Run from the repo root:
-//   dart run benchmark/bench.dart            # both backends
-//   dart run benchmark/bench.dart --mem      # in-memory only
-//   dart run benchmark/bench.dart --native   # native file only
+//   dart run benchmark/bench.dart            # native file backend
 //   dart run benchmark/bench.dart --json     # machine-readable JSON on stdout
 //
 // The native backend needs the release artifact built:
@@ -23,10 +21,6 @@ import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
 
-// Sizes are modest because the in-memory backend uses full-state
-// copy-on-write (O(n) per commit), so large in-memory write workloads would
-// take minutes. The native file backend (redb, true MVCC) is the production
-// path and the primary subject here.
 const int _seedRows = 1000;
 const int _insertOps = 500;
 const int _bulkPerCall = 500;
@@ -88,15 +82,7 @@ final List<Directory> _tempDirs = <Directory>[];
 Future<void> main(List<String> args) async {
   final root = _repoRoot();
   final nativePath = _nativeLibraryPath(root);
-  final runMemory = !args.contains('--native');
-  final runNative = !args.contains('--mem');
   final emitJson = args.contains('--json');
-  if (!runMemory && !runNative) {
-    stderr.writeln('pass --mem, --native, or nothing (both).');
-    exitCode = 2;
-    return;
-  }
-
   if (!emitJson) {
     stdout.writeln('=== gecko_db benchmark (local stopgap harness) ===');
     stdout.writeln(
@@ -110,26 +96,14 @@ Future<void> main(List<String> args) async {
       'watch=$_watchOps txn=$_txnOps',
     );
     stdout.writeln('change-log pruning: disabled (measures the storage path)');
-    stdout.writeln(
-      'note: the in-memory backend deep-copies the whole store per write '
-      '(MVCC copy-on-write), so its write ops are O(n) and not the '
-      'production path; the native file backend is the real target.',
-    );
     stdout.writeln();
   }
 
   final results = <_Result>[];
-  // Native (production path) first so partial runs show the interesting data.
-  if (runNative) {
-    results.addAll(
-      await _benchmark('native file', () => _openNative(nativePath), emitJson),
-    );
-  }
-  if (runMemory) {
-    results.addAll(
-      await _benchmark('in-memory', () => _openMemory(), emitJson),
-    );
-  }
+  // Native (production path).
+  results.addAll(
+    await _benchmark('native file', () => _openNative(nativePath), emitJson),
+  );
 
   for (final dir in _tempDirs) {
     try {
@@ -151,17 +125,10 @@ Future<void> main(List<String> args) async {
   );
 }
 
-Future<DatabaseImpl> _openMemory() => DatabaseImpl.open(
-  'mem://bench',
-  useInMemory: true,
-  config: DatabaseConfig(changeLogMaxEntries: _changeLogMaxEntries),
-);
-
 Future<DatabaseImpl> _openNative(String nativePath) async {
   final dir = await Directory.systemTemp.createTemp('gecko-bench-');
   final db = await DatabaseImpl.open(
     '${dir.path}${Platform.pathSeparator}db.redb',
-    useInMemory: false,
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
       changeLogMaxEntries: _changeLogMaxEntries,

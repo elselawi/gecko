@@ -3,8 +3,6 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-import 'support/native_database.dart';
-
 void main() {
   test(
     'failed native startup can be retried after the bad library path',
@@ -15,7 +13,6 @@ void main() {
         await expectLater(
           DatabaseImpl.open(
             path,
-            useInMemory: false,
             config: const DatabaseConfig(
               nativeLibraryPath: 'missing-native.dll',
             ),

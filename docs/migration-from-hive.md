@@ -27,8 +27,7 @@ import.
 ```dart
 import 'package:gecko_db/gecko_db.dart';
 
-// The public entry point (native file backend by default; pass
-// `DatabaseConfig(inMemory: true)` for an ephemeral test database).
+// The public entry point (native file backend; there is no in-memory mode).
 final db = await Database.open('app_data/app.db');
 
 final users = db.collection<User>(

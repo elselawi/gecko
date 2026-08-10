@@ -17,7 +17,6 @@ export: src/api/schema.dart show: SchemaApi, MigrationStep, MigrationPlan, Migra
 export: src/api/sync_state.dart show: SyncState, SyncPhase
 export: src/api/transaction.dart show: Transaction
 export: src/backend/byte_key.dart show: ByteKey
-export: src/backend/in_memory_backend.dart show: InMemoryBackend
 export: src/backend/native_raw_backend.dart show: NativeRawBackend, NativeRawSnapshot
 export: src/backend/raw_backend.dart show: RawBackend, RawSnapshot, RawOp, RawPut, RawDelete, RawDeleteRange, RawClear, RawEntry, RawBatch, keyNotFoundError
 export: src/cache/lru_cache.dart show: LruCache
@@ -33,7 +32,7 @@ export: src/native/generated/frb_generated.dart show: RustLib
 export: src/native/native_resolver.dart show: NativeArtifact, NativeResolver, ResolverStorage, ResolverDownloader, LocalResolverStorage, IoResolverDownloader, bundledArtifactPath, bundledNativeDir, bundledWebGluePrefix, isWeb, nativeArtifactSha256, nativeArtifactManifest
 export: src/native/opfs.dart show: registerOpfsHandle
 export: src/query/filter.dart show: Filter, FilterGroup
-export: src/query/query_impl.dart show: QueryImpl, IndexDefinition
+export: src/query/query_impl.dart show: QueryImpl
 export: src/query/sorting.dart show: compareRows
 export: src/raw/raw_engine.dart show: RawEngine, RawWriteMode
 export: src/reactive/change_bus.dart show: ChangeBus, ChangeBusOverflowError

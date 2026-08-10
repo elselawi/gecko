@@ -86,7 +86,6 @@ Future<void> _profileSize(int size, String nativePath) async {
   try {
     final db = await DatabaseImpl.open(
       dbPath,
-      useInMemory: false,
       config: DatabaseConfig(
         nativeLibraryPath: nativePath,
         changeLogMaxEntries: 0,

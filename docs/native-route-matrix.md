@@ -1,28 +1,30 @@
-# Native, Web, and in-memory route matrix
+# Native and Web route matrix
 
 M7.1 records the current execution boundary without introducing a persistent
 Rust query registry. Public API/model mapping, migration callbacks, reactive
-lifecycle, and relationship policy remain Dart-owned.
+lifecycle, and relationship policy remain Dart-owned. M7.5 removed the
+transitional in-memory backend; every route below is the native file / Web-Wasm
+OPFS route.
 
-| Operation | Native file / Web-Wasm OPFS | Transitional in-memory | Snapshot boundary | Rows transferred to Dart |
-|---|---|---|---|---|
-| Raw put/delete/batch | Dart `RawEngine` → native worker → Rust/redb | Dart `RawEngine` → `InMemoryBackend` | One write transaction | None; affected keys only |
-| Indexed equality query | Rust durable index join | Dart `SecondaryIndex` + point reads | One native/in-memory snapshot | Matching rows |
-| Indexed range/prefix/multi-eq | Rust durable-index intersection + predicate recheck | Dart reference index + Dart predicate | One snapshot | Matching rows |
-| Unindexed query | Rust predicate pushdown | Dart full scan/predicate | One snapshot | Matching rows |
-| Sorted/limited query | Rust index-ordered or top-K route | Dart materialization/sort | One snapshot | Window rows |
-| Unindexed `count()` | Rust predicate count | Dart scan/count | One snapshot | Scalar only |
-| Indexed `count()` | Rust durable-index candidate count + predicate recheck | Dart scan/count | One snapshot | Scalar only |
-| Unindexed `distinct()` | Rust field-byte extraction; Dart decode/dedup | Dart scan/dedup | One snapshot | Matching field bytes |
-| Indexed `distinct()` | Rust durable-index candidate field extraction; Dart decode/dedup | Dart scan/dedup | One snapshot | Matching field bytes |
-| Relationship `parent()` | Rust child FK extraction + parent point read | Dart snapshot point reads | One snapshot | Parent row only |
-| Relationship `children()` | Rust durable-index lookup or FK predicate push | Dart index lookup or full scan | One snapshot | Matching child rows |
-| `loadAllChildren()` | Rust union of indexed FK ranges or Rust FK matching | Dart full child scan | One snapshot | Matching child rows |
-| Many-to-many IDs | Rust snapshot join scan/filter | Dart join scan/filter | One snapshot | Matching encoded IDs |
-| Relationship delete policy | Dart policy, callbacks, change-feed events; Rust atomic batch | Dart policy and atomic batch | One write transaction | No query rows beyond policy inputs |
-| Raw inclusive scan | Worker snapshot range scan | In-memory snapshot scan | Caller snapshot | Requested rows |
-| Raw exclusive scan | Dart compatibility filtering over snapshot result | Dart snapshot filtering | Caller snapshot | Requested rows |
-| Web worker protocol | Shared native dispatch; JSON-safe byte/list conversion | Not applicable | Worker-owned snapshot ID | Same as native route |
+| Operation | Native file / Web-Wasm OPFS | Snapshot boundary | Rows transferred to Dart |
+|---|---|---|---|
+| Raw put/delete/batch | Dart `RawEngine` → native worker → Rust/redb | One write transaction | None; affected keys only |
+| Indexed equality query | Rust durable index join | One native snapshot | Matching rows |
+| Indexed range/prefix/multi-eq | Rust durable-index intersection + predicate recheck | One snapshot | Matching rows |
+| Unindexed query | Rust predicate pushdown | One snapshot | Matching rows |
+| Sorted/limited query | Rust index-ordered or top-K route | One snapshot | Window rows |
+| Unindexed `count()` | Rust predicate count | One snapshot | Scalar only |
+| Indexed `count()` | Rust durable-index candidate count + predicate recheck | One snapshot | Scalar only |
+| Unindexed `distinct()` | Rust field-byte extraction; Dart decode/dedup | One snapshot | Matching field bytes |
+| Indexed `distinct()` | Rust durable-index candidate field extraction; Dart decode/dedup | One snapshot | Matching field bytes |
+| Relationship `parent()` | Rust child FK extraction + parent point read | One snapshot | Parent row only |
+| Relationship `children()` | Rust durable-index lookup or FK predicate push | One snapshot | Matching child rows |
+| `loadAllChildren()` | Rust union of indexed FK ranges or Rust FK matching | One snapshot | Matching child rows |
+| Many-to-many IDs | Rust snapshot join scan/filter | One snapshot | Matching encoded IDs |
+| Relationship delete policy | Dart policy, callbacks, change-feed events; Rust atomic batch | One write transaction | No query rows beyond policy inputs |
+| Raw inclusive scan | Worker snapshot range scan | Caller snapshot | Requested rows |
+| Raw exclusive scan | Dart compatibility filtering over snapshot result | Caller snapshot | Requested rows |
+| Web worker protocol | Shared native dispatch; JSON-safe byte/list conversion | Worker-owned snapshot ID | Same as native route |
 
 ## Diagnostics and M8 handoff
 
@@ -42,6 +44,6 @@ lifecycle, and relationship policy remain Dart-owned.
 ## Typed errors and parity
 
 Native worker errors are mapped through the existing `GeckoErrorEnvelope`.
-Missing tables/rows use the established empty/missing contracts. Native and
-in-memory relationship tests cover missing parent/child behavior, indexed and
-unindexed child retrieval, join IDs, delete policies, and reactive behavior.
+Missing tables/rows use the established empty/missing contracts. Native
+relationship tests cover missing parent/child behavior, indexed and unindexed
+child retrieval, join IDs, delete policies, and reactive behavior.

@@ -32,8 +32,8 @@ const List<TraceEntry> kTraceability = [
       'put/update/insert-only/update-only/delete/clear',
     ),
     (
-      'packages/gecko_db/test/in_memory_backend_test.dart',
-      'get on missing key returns null',
+      'packages/gecko_db/test/raw_backend_contract_test.dart',
+      'put/read/delete sequence is deterministic',
     ),
   ]),
   TraceEntry(3, 'A local mutation auto-updates all affected live queries', [
@@ -93,10 +93,10 @@ const List<TraceEntry> kTraceability = [
     ),
     ('packages/gecko_db/test/phase5_index_ws3_test.dart', 'scan'),
   ]),
-  TraceEntry(10, 'Tests use isolated in-memory databases', [
+  TraceEntry(10, 'Tests use isolated native file databases', [
     (
-      'packages/gecko_db/test/in_memory_backend_test.dart',
-      'empty, tiny, and multi-megabyte values',
+      'packages/gecko_db/test/raw_backend_contract_test.dart',
+      'range ordering and bounds are shared backend semantics',
     ),
     (
       'packages/gecko_db/test/phase2_differential_test.dart',

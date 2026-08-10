@@ -57,7 +57,11 @@ void main() {
     test(
       'a delayed backend holds at most the in-flight bound of writes',
       () async {
-        final backend = _DelayedBackend(const Duration(milliseconds: 30));
+        final db = await openNativeTestDatabase('bounds-delay');
+        final backend = _DelayedBackend(
+          db.engine.backend,
+          const Duration(milliseconds: 30),
+        );
         final engine = RawEngine(backend, inFlightBatchLimit: 2);
         final futures = <Future<void>>[
           for (var i = 0; i < 20; i++) engine.rawPut('t', ByteKey([i]), [i]),
@@ -74,9 +78,9 @@ void main() {
 }
 
 class _DelayedBackend implements RawBackend {
-  _DelayedBackend(this.delay);
+  _DelayedBackend(this.delegate, this.delay);
+  final RawBackend delegate;
   final Duration delay;
-  final InMemoryBackend delegate = InMemoryBackend();
 
   @override
   bool get isReadOnly => false;

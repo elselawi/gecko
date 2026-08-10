@@ -17,6 +17,8 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 /// Deterministic xorshift64 PRNG — specified behavior, identical on every
 /// platform (unlike `dart:math Random`, whose stream is an implementation
 /// detail).
@@ -97,10 +99,7 @@ void main() {
       };
       var expectedWrites = 0;
 
-      final db = await Database.open(
-        'mem://ws8-random-$seed',
-        config: const DatabaseConfig(inMemory: true),
-      );
+      final db = await openNativeTestDatabase('random-$seed');
       final watchCounts = <String, int>{for (final c in kCollections) c: 0};
       final subscriptions = <StreamSubscription<List<_Row>>>[];
 

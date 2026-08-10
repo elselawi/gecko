@@ -88,7 +88,6 @@ void main() {
     int keyGeneration = initialPhysicalKeyGeneration,
   }) => DatabaseImpl.open(
     path,
-    useInMemory: false,
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
       encryptionKey: key,
@@ -248,7 +247,6 @@ void main() {
       await expectLater(
         DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             encryptionKey: const [1, 2],
@@ -281,7 +279,6 @@ void main() {
     test('two tenants cannot read each other files', () async {
       final tenantA = await DatabaseImpl.open(
         path,
-        useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
           encryptionKey: _keyA(),
@@ -293,7 +290,6 @@ void main() {
       final otherPath = '${tempDir.path}${Platform.pathSeparator}other.redb';
       final tenantB = await DatabaseImpl.open(
         otherPath,
-        useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
           encryptionKey: _keyB(),
@@ -306,7 +302,6 @@ void main() {
       await expectLater(
         DatabaseImpl.open(
           otherPath,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             encryptionKey: _keyA(),
@@ -317,7 +312,6 @@ void main() {
       await expectLater(
         DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             encryptionKey: _keyB(),
@@ -360,7 +354,6 @@ void main() {
         // New key (generation 2) works.
         final reopened = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             encryptionKey: _keyB(),
@@ -393,7 +386,6 @@ void main() {
           '${tempDir.path}${Platform.pathSeparator}sibling.redb';
       final dbB = await DatabaseImpl.open(
         siblingPath,
-        useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
           encryptionKey: _keyB(),
@@ -414,7 +406,6 @@ void main() {
       // Opening with the NEW key (generation 2) rolls forward.
       final reopened = await DatabaseImpl.open(
         path,
-        useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
           encryptionKey: _keyB(),
@@ -477,29 +468,11 @@ void main() {
         final plainPath = '${tempDir.path}${Platform.pathSeparator}plain.redb';
         final plain = await DatabaseImpl.open(
           plainPath,
-          useInMemory: false,
           config: DatabaseConfig(nativeLibraryPath: nativePath),
         );
         await exercise(plain);
         await plain.close();
       },
     );
-
-    test('in-memory backend rejects an encryption key', () async {
-      await expectLater(
-        DatabaseImpl.open(
-          path,
-          useInMemory: true,
-          config: DatabaseConfig(encryptionKey: _keyA()),
-        ),
-        throwsA(
-          isA<GeckoError>().having(
-            (e) => e.type,
-            'type',
-            GeckoErrorType.invalidOperation,
-          ),
-        ),
-      );
-    });
   });
 }

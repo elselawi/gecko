@@ -29,7 +29,6 @@ Future<void> main() async {
       '${Platform.pathSeparator}gecko_db_rust.dll';
   final db = await DatabaseImpl.open(
     '${dir.path}${Platform.pathSeparator}db.redb',
-    useInMemory: false,
     config: DatabaseConfig(nativeLibraryPath: nativePath),
   );
   final col = db.collection<Map<String, Object?>>(

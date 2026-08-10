@@ -1,11 +1,11 @@
-// Workstream 8 — randomized native/in-memory differential replay.
+// Workstream 8 — randomized native differential replay.
 //
-// Replays the identical seeded pseudo-random operation script against the
-// in-memory engine and the native file-backed engine (redb via the worker
-// isolate) using the shared differential harness, and asserts byte-equal
-// snapshots, identical results/errors, identical LSNs, and identical change
-// feeds after every step. A seed sweep catches backend-vs-backend semantic
-// drift before it reaches 100k-record scale.
+// Replays the identical seeded pseudo-random operation script against two
+// independent native file-backed engines (redb via the worker isolate) using
+// the shared differential harness, and asserts byte-equal snapshots,
+// identical results/errors, identical LSNs, and identical change feeds after
+// every step. A seed sweep catches semantic drift before it reaches 100k-
+// record scale.
 //
 // The seed set is fixed so a regression reproduces; set `GECKO_LONG_TEST=1`
 // (nightly) to sweep more seeds and more steps per seed.
@@ -65,19 +65,25 @@ void main() {
   for (var seed = 1; seed <= _seeds; seed++) {
     test('differential replay seed=$seed ($_steps steps)', () async {
       final tempDir = await Directory.systemTemp.createTemp('gecko-diff-');
-      final nativeDbPath = '${tempDir.path}${Platform.pathSeparator}db.redb';
-      final memoryEngine = RawEngine(InMemoryBackend());
-      final nativeEngine = RawEngine(
+      final firstDbPath = '${tempDir.path}${Platform.pathSeparator}db.redb';
+      final secondDbPath = '${tempDir.path}${Platform.pathSeparator}db2.redb';
+      final firstEngine = RawEngine(
         await NativeRawBackend.open(
-          nativeDbPath,
+          firstDbPath,
+          nativeLibraryPath: nativePath,
+        ),
+      );
+      final secondEngine = RawEngine(
+        await NativeRawBackend.open(
+          secondDbPath,
           nativeLibraryPath: nativePath,
         ),
       );
       try {
         final steps = _generate(SeededRandom(seed * 0x85EBCA6B), _steps);
         final outcome = await runDifferential(
-          memoryEngine,
-          nativeEngine,
+          firstEngine,
+          secondEngine,
           steps,
         );
         expect(
@@ -86,8 +92,8 @@ void main() {
           reason: 'seed=$seed diverged:\n${outcome.mismatches.join('\n')}',
         );
       } finally {
-        await memoryEngine.dispose();
-        await nativeEngine.dispose();
+        await firstEngine.dispose();
+        await secondEngine.dispose();
         await tempDir.delete(recursive: true);
       }
     });

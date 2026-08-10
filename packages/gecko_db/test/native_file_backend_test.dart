@@ -26,7 +26,7 @@ void main() {
 
       DatabaseImpl? db;
       try {
-        db = await DatabaseImpl.open(path, useInMemory: false, config: config);
+        db = await DatabaseImpl.open(path, config: config);
         const codec = DefaultWireCodec();
         final key = ByteKey(codec.encode('key'));
         await db.engine.rawPut('items', key, codec.encode({'value': 42}));
@@ -41,7 +41,6 @@ void main() {
 
         final reopened = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: config,
         );
         final reopenedRaw = await reopened.rawGet('items', key);

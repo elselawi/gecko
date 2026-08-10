@@ -1,11 +1,10 @@
 // Milestone 3 — read-path completion + getMany (ADR-0018).
 //
-// The shared suite runs against both the in-memory and native file backends
-// and locks the M3 contracts:
+// The suite runs against the native file backend and locks the M3 contracts:
 //   1. `iterate()` routes through the native fast path (indexed eq + predicate
 //      push) instead of the old per-id `snap.read` loop.
 //   2. `count()` / `distinct()` push the aggregate to Rust on native
-//      (no row transfer), with results identical to the in-memory path.
+//      (no row transfer).
 //   3. `getMany(ids)` is a batched point-read (one native hop) returning rows
 //      in input order, skipping absent ids, and observing the transaction
 //      overlay inside a transaction.
@@ -311,7 +310,6 @@ void main() {
     });
     return DatabaseImpl.open(
       '${dir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
   });
@@ -328,7 +326,6 @@ void main() {
       });
       final db = await DatabaseImpl.open(
         '${dir.path}${Platform.pathSeparator}db.redb',
-        useInMemory: false,
         config: DatabaseConfig(nativeLibraryPath: nativePath),
       );
       await _seed(db, 't');

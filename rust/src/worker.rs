@@ -309,32 +309,26 @@ impl RedbWorker {
     /// Opens a database over an OPFS sync-access handle (wasm32 only). See the
     /// module-level docs on `crate::opfs` for the acquisition protocol.
     ///
-    /// The special path `:memory:` opens a native redb database backed by an
-    /// in-memory backend (no OPFS handle required) — useful on the web before
-    /// a Worker-provided OPFS handle is available.
+    /// M7.5: there is no in-memory or `:memory:` mode. Every supported web
+    /// store is an OPFS file, so the worker must have an OPFS sync-access
+    /// handle registered for the path before opening.
     #[cfg(target_arch = "wasm32")]
     fn open_wasm_opfs(path: &Path, read_only: bool) -> Result<Self, WorkerError> {
         let path_display = path.display().to_string();
-        let database = if path_display == ":memory:" {
-            Database::builder()
-                .create_with_backend(redb::backends::InMemoryBackend::new())
-                .map_err(|error| map_open_error(error, &path_display))?
-        } else {
-            let handle = crate::opfs
-                ::take_handle_for_path(&path_display)
-                .ok_or_else(|| {
-                    WorkerError::InvalidOperation(
-                        format!(
-                            "no OPFS sync-access handle registered for {path_display}; \
-                     the web worker must acquire and register it before opening"
-                        )
+        let handle = crate::opfs
+            ::take_handle_for_path(&path_display)
+            .ok_or_else(|| {
+                WorkerError::InvalidOperation(
+                    format!(
+                        "no OPFS sync-access handle registered for {path_display}; \
+                 the web worker must acquire and register it before opening"
                     )
-                })?;
-            let backend = crate::opfs::WasmOpfsBackend::new(handle, path_display.clone());
-            Database::builder()
-                .create_with_backend(backend)
-                .map_err(|error| map_open_error(error, &path_display))?
-        };
+                )
+            })?;
+        let backend = crate::opfs::WasmOpfsBackend::new(handle, path_display.clone());
+        let database = Database::builder()
+            .create_with_backend(backend)
+            .map_err(|error| map_open_error(error, &path_display))?;
         Ok(Self {
             database: WorkerDatabase::ReadWrite(database),
             path: path.to_path_buf(),

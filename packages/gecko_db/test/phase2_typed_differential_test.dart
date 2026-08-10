@@ -4,9 +4,9 @@
 // layer is byte-equivalent. This suite additionally replays higher-level,
 // deterministic typed scenarios (schema/defaults/generated ids/unknown-field
 // preservation, transactions, change tracking + sync transitions, bulk
-// writes, diagnostics) through `DatabaseImpl` on both the in-memory and
-// native file backends and asserts identical public results, identical change
-// feeds, and byte-equivalent final snapshots.
+// writes, diagnostics) through `DatabaseImpl` on two independent native file
+// backends and asserts identical public results, identical change feeds, and
+// byte-equivalent final snapshots.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -97,33 +97,35 @@ void main() {
     final dir = await Directory.systemTemp.createTemp('gecko-typed-');
     final db = await DatabaseImpl.open(
       '${dir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath, clock: _fixedClock),
     );
     return (db, dir);
   }
 
-  Future<DatabaseImpl> openMemory(String tag) => DatabaseImpl.open(
-    'mem://typed-$tag',
-    useInMemory: true,
-    config: DatabaseConfig(clock: _fixedClock),
-  );
+  Future<(DatabaseImpl, Directory)> openSecond(String tag) async {
+    final dir = await Directory.systemTemp.createTemp('gecko-typed-$tag-');
+    final db = await DatabaseImpl.open(
+      '${dir.path}${Platform.pathSeparator}db.redb',
+      config: DatabaseConfig(nativeLibraryPath: nativePath, clock: _fixedClock),
+    );
+    return (db, dir);
+  }
 
   Future<void> expectTypedDifferential(
     String label,
     Future<Map<String, Object?>> Function(DatabaseImpl db) scenario,
   ) async {
-    final memDb = await openMemory(label);
+    final (secondDb, secondDir) = await openSecond(label);
     final (nativeDb, dir) = await openNative();
     try {
-      final a = await scenario(memDb);
+      final a = await scenario(secondDb);
       final b = await scenario(nativeDb);
       expect(
         canonical(a),
         canonical(b),
         reason: 'typed differential ($label): public results diverged',
       );
-      final snapA = await _typedDump(memDb);
+      final snapA = await _typedDump(secondDb);
       final snapB = await _typedDump(nativeDb);
       expect(
         canonical(snapA),
@@ -131,9 +133,10 @@ void main() {
         reason: 'typed differential ($label): final snapshots diverged',
       );
     } finally {
-      await memDb.close();
+      await secondDb.close();
       await nativeDb.close();
       await dir.delete(recursive: true);
+      await secondDir.delete(recursive: true);
     }
   }
 

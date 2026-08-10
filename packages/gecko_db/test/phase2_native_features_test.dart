@@ -5,7 +5,7 @@
 // stamping, diagnostics, and read-only guards — against the *native* file
 // backend. This both proves the features work on the production storage path
 // and deterministically exercises branches the phase suites only hit on the
-// in-memory backend.
+// native backend.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -49,7 +49,6 @@ void main() {
     path = '${tempDir.path}${Platform.pathSeparator}db.redb';
     db = await DatabaseImpl.open(
       path,
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
   });
@@ -279,9 +278,35 @@ void main() {
 
 /// A backend whose writes always fail, to exercise the engine's write-failure
 /// accounting paths deterministically.
-class _ThrowingBatchBackend extends InMemoryBackend {
+class _ThrowingBatchBackend implements RawBackend {
+  @override
+  bool get isReadOnly => false;
+
   @override
   Future<Set<(String, ByteKey)>> applyBatch(RawBatch ops) async {
     throw const GeckoError(GeckoErrorType.invalidOperation, 'boom');
   }
+
+  @override
+  Future<RawSnapshot> snapshot() async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> tableExists(String table) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<List<String>> tables() async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<int> lastCommitSeq() async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> close() async {}
 }

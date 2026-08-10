@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 String _nativeLibraryPath() {
   final root = Directory.current.path.endsWith('gecko_db')
       ? Directory.current.parent.parent.path
@@ -38,7 +40,7 @@ Future<void> _waitFor(bool Function() condition) async {
 void main() {
   group('Phase 12 bulk writes', () {
     test('bulkWrite commits atomically and emits one feed batch', () async {
-      final db = await DatabaseImpl.open('mem://p12-bulk', useInMemory: true);
+      final db = await openNativeTestDatabase('p12-bulk');
       final item = db.collection<_Item>(
         'items',
         toRow: _toRow,
@@ -78,7 +80,6 @@ void main() {
         try {
           final db = await DatabaseImpl.open(
             path,
-            useInMemory: false,
             config: DatabaseConfig(nativeLibraryPath: _nativeLibraryPath()),
           );
           final item = db.collection<_Item>(
@@ -136,7 +137,6 @@ void main() {
           await db.close();
           final db2 = await DatabaseImpl.open(
             path,
-            useInMemory: false,
             config: DatabaseConfig(nativeLibraryPath: _nativeLibraryPath()),
           );
           try {
@@ -169,7 +169,7 @@ void main() {
     test(
       'disabled diagnostics stay zero; enabled diagnostics observe work',
       () async {
-        final db = await DatabaseImpl.open('mem://p12-diag', useInMemory: true);
+        final db = await openNativeTestDatabase('p12-diag');
         final item = db.collection<_Item>(
           'items',
           toRow: _toRow,
@@ -198,7 +198,7 @@ void main() {
 
   group('Phase 12 per-row diff watch', () {
     test('diff mode reports added, updated, and removed rows', () async {
-      final db = await DatabaseImpl.open('mem://p12-diff', useInMemory: true);
+      final db = await openNativeTestDatabase('p12-diff');
       final item = db.collection<_Item>(
         'items',
         toRow: _toRow,

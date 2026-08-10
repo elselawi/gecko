@@ -103,7 +103,7 @@ export 'src/native/generated/api.dart' show NativeWorker;
 export 'src/native/generated/frb_generated.dart' show RustLib;
 export 'src/raw/raw_engine.dart' show RawEngine, RawWriteMode;
 export 'src/query/filter.dart' show Filter, FilterGroup;
-export 'src/query/query_impl.dart' show QueryImpl, IndexDefinition;
+export 'src/query/query_impl.dart' show QueryImpl;
 export 'src/query/sorting.dart' show compareRows;
 export 'src/relation/relationship.dart'
     show Relationship, RelationshipType, DeleteBehavior;

@@ -1,7 +1,7 @@
 // Workstream 3 — durable indexes, range-index support, and the snapshot-bound
-// cursor contract. The shared suite runs against both the in-memory and
-// native file backends; the durable close/reopen and drift-repair tests are
-// native-only (they require real persistence).
+// cursor contract. The shared suite runs against the native file backend;
+// the durable close/reopen and drift-repair tests are native-only (they
+// require real persistence).
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -370,7 +370,6 @@ void main() {
     });
     return DatabaseImpl.open(
       '${dir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
   });
@@ -394,7 +393,6 @@ void main() {
 
     Future<DatabaseImpl> openNative() => DatabaseImpl.open(
       path,
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
 
@@ -521,7 +519,6 @@ void main() {
     Future<DatabaseImpl> openNative({int slowQueryThreshold = 0}) =>
         DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             slowQueryThresholdMicros: slowQueryThreshold,
@@ -570,7 +567,7 @@ void main() {
     });
 
     test(
-      'indexed equality with a sort still agrees with the in-memory plan',
+      'indexed equality with a sort still agrees across native stores',
       () async {
         final db = await openNative();
         final col = _coll(db, 't', indexFields: ['nick']);
@@ -586,11 +583,11 @@ void main() {
         }
         final ages = result.map((r) => r.age!).toList();
         expect(ages, equals(ages..sort()));
-        // Re-run without the fast path (in-memory backend) and compare the id
-        // set — plans must agree across backends.
+        // Re-run against a second native file and compare the id set — the
+        // result set must be identical across independent stores.
         final db2 = await DatabaseImpl.open(
-          'mem://phase2-parity',
-          useInMemory: true,
+          '${dir.path}${Platform.pathSeparator}db2.redb',
+          config: DatabaseConfig(nativeLibraryPath: nativePath),
         );
         final col2 = _coll(db2, 't', indexFields: ['nick']);
         for (var i = 0; i < 200; i++) {

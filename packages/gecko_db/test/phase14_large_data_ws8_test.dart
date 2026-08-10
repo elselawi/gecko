@@ -349,9 +349,10 @@ void main() {
   );
 
   test('hundreds of attachments with blob de-duplication', () async {
+    final dir = await Directory.systemTemp.createTemp('gecko-ws8-att-');
     final db = await Database.open(
-      'mem://ws8-attachments',
-      config: const DatabaseConfig(inMemory: true),
+      '${dir.path}${Platform.pathSeparator}db.redb',
+      config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
     final coll = db.collection<Map<String, Object?>>(
       'parents',
@@ -395,6 +396,7 @@ void main() {
       records ~/ sharedBlobs - 1,
     );
     await db.close();
+    await dir.delete(recursive: true);
   });
 
   test(

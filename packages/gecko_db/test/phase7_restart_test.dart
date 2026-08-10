@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 /// A backend that fails a batch exactly once to simulate a crash/abort at the
 /// commit boundary — nothing before or after the failed batch is applied.
 class _FailingBackend implements RawBackend {
@@ -66,7 +68,6 @@ void main() {
         try {
           db = await DatabaseImpl.open(
             path,
-            useInMemory: false,
             config: config,
           );
           final item = ChangeRecord(
@@ -87,7 +88,6 @@ void main() {
 
           final reopened = await DatabaseImpl.open(
             path,
-            useInMemory: false,
             config: config,
           );
           // The seen-key lives in the file, not just memory.
@@ -103,8 +103,8 @@ void main() {
     );
 
     test('a failed commit leaves neither data nor its change record', () async {
-      final inner = InMemoryBackend();
-      final failing = _FailingBackend(inner);
+      final db = await openNativeTestDatabase('p7-fail');
+      final failing = _FailingBackend(db.engine.backend);
       final engine = RawEngine(failing);
       // The commitBatch seam is exactly where the data row and its
       // change-tracking record are written in one batch.
@@ -123,7 +123,7 @@ void main() {
           ),
         ),
       );
-      final snap = await inner.snapshot();
+      final snap = await db.engine.backend.snapshot();
       expect(await snap.read('items', ByteKey([1])), isNull);
       expect(await snap.scanAll('__gecko_change_log'), isEmpty);
 
@@ -135,8 +135,9 @@ void main() {
         ],
       );
       expect(lsn, greaterThan(0));
-      final fresh = await inner.snapshot();
+      final fresh = await db.engine.backend.snapshot();
       expect(await fresh.read('items', ByteKey([2])), [7]);
+      await db.close();
     });
   });
 }

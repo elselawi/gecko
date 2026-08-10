@@ -323,7 +323,6 @@ void main() {
     });
     return DatabaseImpl.open(
       '${dir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
   });

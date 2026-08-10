@@ -19,8 +19,8 @@
 //      work in this glue).
 //   4. Initializes FRB with an explicit `ExternalLibrary` (skips the
 //      document-based loader).
-//   5. On `open`: acquires + registers an OPFS `FileSystemSyncAccessHandle`
-//      (unless the path is `:memory:`), opens the redb engine over it.
+//   5. On `open`: acquires + registers an OPFS `FileSystemSyncAccessHandle`,
+//      opens the redb engine over it.
 //   6. Services `request` (the `dispatchNativeWorker` operation set) and
 //      `close` over `postMessage` using the JSON protocol.
 library;
@@ -152,8 +152,8 @@ Future<void> main() async {
   }
 }
 
-/// Handles an `open` request: registers the OPFS handle (unless `:memory:` or
-/// a physical key is supplied) and opens the redb engine, replying `ready`.
+/// Handles an `open` request: registers the OPFS handle (unless a physical
+/// key is supplied) and opens the redb engine, replying `ready`.
 Future<void> _handleOpen(
   Map<String, Object?> message,
   void Function(Map<String, Object?> response) post,
@@ -174,16 +174,14 @@ Future<void> _handleOpen(
     if (encryptionKey != null) {
       fail(
         'physical encryption is not supported on the web; '
-        'use OPFS (no key) or :memory:',
+        'use OPFS (no key)',
       );
       return;
     }
-    if (path != ':memory:') {
-      final opfsError = await registerOpfsHandle(path);
-      if (opfsError != null) {
-        fail(opfsError);
-        return;
-      }
+    final opfsError = await registerOpfsHandle(path);
+    if (opfsError != null) {
+      fail(opfsError);
+      return;
     }
     final worker = await NativeWorker.open(path: path, readOnly: readOnly);
     final handshake = await worker.compatibilityHandshake();

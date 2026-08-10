@@ -1,6 +1,8 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 ConflictVersion _v(Map<String, Object?> value, {int? sequence}) =>
     ConflictVersion(value: value, sequence: sequence);
 

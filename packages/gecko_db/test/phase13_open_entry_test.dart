@@ -1,14 +1,12 @@
 // Workstream 6: `Database.open` is the supported public entry point.
 //
 // Verifies the seam: `Database.open` delegates to the concrete implementation
-// (file-backed by default, in-memory when `config.inMemory` is set), and the
-// returned handle is the public `Database` abstraction.
+// (file-backed native by default), and the returned handle is the public
+// `Database` abstraction.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
-
-import 'support/native_database.dart';
 
 String _repoRoot() {
   if (Directory.current.path.endsWith(

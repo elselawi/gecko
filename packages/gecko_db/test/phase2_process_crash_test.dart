@@ -102,7 +102,6 @@ void main() {
   Future<DatabaseImpl> reopen(String path, {bool readOnly = false}) =>
       DatabaseImpl.open(
         path,
-        useInMemory: false,
         config: DatabaseConfig(
           nativeLibraryPath: nativePath,
           readOnly: readOnly,

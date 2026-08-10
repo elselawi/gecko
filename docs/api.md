@@ -10,18 +10,20 @@ maintainer/consumer orientation guide.
 ## Entry point
 
 - **`Database.open(path, {DatabaseConfig config})`** — the supported public
-  entry point. File-backed by default; `DatabaseConfig(inMemory: true)` for
-  ephemeral databases (tests/examples).
-- **Web.** The native redb engine runs on wasm: `Database.open(':memory:')`
-  works on the main thread, and file-backed paths persist through OPFS inside
-  a Web Worker (see [ADR-0013](adr/0013-web-runtime-frb-glue-and-opfs.md) and
+  entry point. File-backed (native/redb on desktop/mobile, OPFS on Web); there
+  is no in-memory mode.
+- **Web.** The native redb engine runs on wasm: every database is an OPFS file
+  opened from inside a Web Worker (OPFS sync access handles are worker-only).
+  The reusable in-package worker (`packages/gecko_db/web/gecko_db_worker.dart`)
+  and `WebWorkerClient` drive the worker path (see
+  [ADR-0013](adr/0013-web-runtime-frb-glue-and-opfs.md) and
   `tool/web_smoke/` for the worker bootstrap pattern). On the web
   `DatabaseConfig.nativeLibraryPath` is interpreted as the glue URL prefix.
-- **`DatabaseConfig`** — read-only, in-memory, optional native physical
-  encryption key, native library path, LRU bounds, backpressure, change-log
-  retention, schema gate, slow-query threshold, compaction snapshot-drain
-  timeout. M6.5 simplifies encryption to one optional raw 32-byte key; the
-  target contract has no logical encryption, custom crypto, or key providers.
+- **`DatabaseConfig`** — read-only, optional native physical encryption key,
+  native library path, LRU bounds, backpressure, change-log retention, schema
+  gate, slow-query threshold, compaction snapshot-drain timeout. M6.5
+  simplifies encryption to one optional raw 32-byte key; the target contract
+  has no logical encryption, custom crypto, or key providers.
 
 ## Tier 1 — collections (boxes)
 

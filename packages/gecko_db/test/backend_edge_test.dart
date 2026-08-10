@@ -26,18 +26,12 @@ void main() {
   });
 
   group('Internal helpers (test/diagnostic surface)', () {
-    test('seedForTest and debugRead seed and read raw state', () async {
-      final b = InMemoryBackend();
-      b.seedForTest('users', [1, 2], [9, 9]);
-      expect(await b.debugRead('users', ByteKey([1, 2])), [9, 9]);
-      expect(await b.debugRead('users', ByteKey([9])), isNull);
-      expect(await b.debugRead('missing', ByteKey([1])), isNull);
-    });
-
-    test('RawEngine exposes its backend', () {
-      final b = InMemoryBackend();
+    test('RawEngine exposes its backend', () async {
+      final db = await openNativeTestDatabase('edge-backend');
+      final b = db.engine.backend;
       final e = RawEngine(b);
       expect(identical(e.backend, b), isTrue);
+      await db.close();
     });
   });
 
@@ -50,7 +44,7 @@ void main() {
           // Host has no bundled artifact (unsupported platform); the open must
           // still fail with a typed error, never hang or crash.
           await expectLater(
-            DatabaseImpl.open('file://x', useInMemory: false),
+            DatabaseImpl.open('file://x'),
             throwsA(isA<GeckoError>()),
           );
           return;
@@ -60,7 +54,7 @@ void main() {
           final path = '${dir.path}${Platform.pathSeparator}db.redb';
           // No `nativeLibraryPath`: the resolver's bundled-artifact fallback
           // must load the worker (Workstream 7 no-build-steps path).
-          final db = await DatabaseImpl.open(path, useInMemory: false);
+          final db = await DatabaseImpl.open(path);
           const codec = DefaultWireCodec();
           await db.engine.rawPut(
             'items',
@@ -79,7 +73,6 @@ void main() {
           await expectLater(
             DatabaseImpl.open(
               'file://xxxxxxxx/nonexistent-path-for-backend-edge-test',
-              useInMemory: false,
             ),
             throwsA(isA<GeckoError>()),
           );
@@ -90,7 +83,7 @@ void main() {
     );
 
     test('writeTxn rethrows a throwing body (no silent swallow)', () async {
-      final db = await DatabaseImpl.open('mem://edge1', useInMemory: true);
+      final db = await openNativeTestDatabase('edge1');
       await expectLater(
         db.writeTxn((txn) async => throw StateError('boom')),
         throwsStateError,
@@ -100,20 +93,20 @@ void main() {
 
     test('hasLiveOpen reflects open databases', () async {
       final before = DatabaseImpl.hasLiveOpen;
-      final db = await DatabaseImpl.open('mem://edge3', useInMemory: true);
+      final db = await openNativeTestDatabase('edge3');
       expect(DatabaseImpl.hasLiveOpen, isTrue);
       await db.close();
       expect(DatabaseImpl.hasLiveOpen, before);
     });
 
     test('rawGet on the impl surfaces the engine path', () async {
-      final db = await DatabaseImpl.open('mem://edge4', useInMemory: true);
+      final db = await openNativeTestDatabase('edge4');
       await db.rawGet('t', ByteKey([1]));
       await db.close();
     });
 
     test('watch streams are reactive after Phase 4', () async {
-      final db = await DatabaseImpl.open('mem://edge5', useInMemory: true);
+      final db = await openNativeTestDatabase('edge5');
       final col = db.collection<_M>(
         'c',
         toRow: _toRow,
@@ -127,7 +120,7 @@ void main() {
     });
 
     test('patch on an existing record updates it (Phase 3)', () async {
-      final db = await DatabaseImpl.open('mem://edge6', useInMemory: true);
+      final db = await openNativeTestDatabase('edge6');
       final col = db.collection<_M>(
         'c',
         toRow: _toRow,
@@ -141,7 +134,7 @@ void main() {
     });
 
     test('where(query) builds a query after Phase 5', () async {
-      final db = await DatabaseImpl.open('mem://edge7', useInMemory: true);
+      final db = await openNativeTestDatabase('edge7');
       final col = db.collection<_M>(
         'c',
         toRow: _toRow,
@@ -155,7 +148,7 @@ void main() {
     test(
       'transaction handle exposes the collection/get/commit/rollback paths',
       () async {
-        final db = await DatabaseImpl.open('mem://edge8', useInMemory: true);
+        final db = await openNativeTestDatabase('edge8');
         final col = db.collection<_M>(
           'c',
           toRow: _toRow,

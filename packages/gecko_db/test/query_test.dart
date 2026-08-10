@@ -407,16 +407,7 @@ void main() {
     });
   });
 
-  group('diagnostics: index plan and definitions', () {
-    test('IndexDefinition exposes name, fields, and compound-ness', () {
-      const single = IndexDefinition(name: 'age', fields: ['age']);
-      const compound = IndexDefinition(name: 'a_b', fields: ['a', 'b']);
-      expect(single.isCompound, isFalse);
-      expect(compound.isCompound, isTrue);
-      expect(single.name, 'age');
-      expect(compound.fields, ['a', 'b']);
-    });
-
+  group('diagnostics: index plan', () {
     test('lastPlan defaults to full scan and is set by execution', () async {
       final db = await _open('plan');
       final col = db.collection<_User>(

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _Rec {
   _Rec(this.id, this.name, [this.age]);
   final String id;
@@ -25,7 +27,7 @@ Object? _recId(_Rec r) => r.id;
 void main() {
   group('Phase 10 schema version stamping', () {
     test('new database starts unversioned; stamp is idempotent', () async {
-      final db = await DatabaseImpl.open('mem://p10a', useInMemory: true);
+      final db = await openNativeTestDatabase('p10a');
       expect(await db.schema.readVersion(), 0);
       await db.schema.stamp(3);
       await db.schema.stamp(3); // idempotent
@@ -34,9 +36,8 @@ void main() {
     });
 
     test('requiresUpgrade flags newer-than-known versions', () async {
-      final db = await DatabaseImpl.open(
-        'mem://p10b',
-        useInMemory: true,
+      final db = await openNativeTestDatabase(
+        'p10b',
         config: const DatabaseConfig(maxKnownSchemaVersion: 4),
       );
       expect(db.schema.requiresUpgrade(3, maxKnownVersion: 4), isFalse);
@@ -49,7 +50,7 @@ void main() {
     test(
       'consecutive steps run in order to the final version and shape',
       () async {
-        final db = await DatabaseImpl.open('mem://p10c', useInMemory: true);
+        final db = await openNativeTestDatabase('p10c');
         final col = db.collection<_Rec>(
           'items',
           toRow: _toRow,
@@ -97,7 +98,7 @@ void main() {
     test(
       'a failing step rolls back only itself; prior steps stay applied',
       () async {
-        final db = await DatabaseImpl.open('mem://p10d', useInMemory: true);
+        final db = await openNativeTestDatabase('p10d');
         final col = db.collection<_Rec>(
           'items',
           toRow: _toRow,
@@ -138,7 +139,7 @@ void main() {
     );
 
     test('wrong from-version is a typed migration error', () async {
-      final db = await DatabaseImpl.open('mem://p10e', useInMemory: true);
+      final db = await openNativeTestDatabase('p10e');
       await db.schema.stamp(1);
       final step = const MigrationStep(
         name: 'skip',
@@ -162,7 +163,7 @@ void main() {
 
   group('Phase 10 chained migration and stable IDs', () {
     test('v1 to v3 chain keeps record IDs stable across a rewrite', () async {
-      final db = await DatabaseImpl.open('mem://p10i', useInMemory: true);
+      final db = await openNativeTestDatabase('p10i');
       final col = db.collection<_Rec>(
         'items',
         toRow: _toRow,
@@ -207,7 +208,7 @@ void main() {
     test(
       'additive migration bumps version without rewriting any record',
       () async {
-        final db = await DatabaseImpl.open('mem://p10f', useInMemory: true);
+        final db = await openNativeTestDatabase('p10f');
         final col = db.collection<_Rec>(
           'items',
           toRow: _toRow,
@@ -241,7 +242,7 @@ void main() {
     test(
       'old-schema record stays readable and lazily interpreted (missing field)',
       () async {
-        final db = await DatabaseImpl.open('mem://p10g', useInMemory: true);
+        final db = await openNativeTestDatabase('p10g');
         final col = db.collection<_Rec>(
           'items',
           toRow: _toRow,
@@ -288,7 +289,6 @@ void main() {
         try {
           final first = await DatabaseImpl.open(
             path,
-            useInMemory: false,
             config: config,
           );
           await first.schema.stamp(5);
@@ -296,7 +296,7 @@ void main() {
 
           // Reopen with a build that only understands up to version 2.
           await expectLater(
-            DatabaseImpl.open(path, useInMemory: false, config: config),
+            DatabaseImpl.open(path, config: config),
             throwsA(
               isA<GeckoError>().having(
                 (e) => e.type,

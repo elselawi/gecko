@@ -1,10 +1,10 @@
 // Workstream 2 — backend differential and conformance testing (raw level).
 //
-// Replays identical, deterministic operation scripts against the in-memory
-// backend and the native file-backed backend (each wrapped in a `RawEngine`)
-// and asserts byte-equivalent snapshots, identical results and typed error
-// categories, identical LSNs, and identical change-feed batches after every
-// step. See `test/support/differential.dart` for the harness.
+// Replays identical, deterministic operation scripts against two independent
+// native file-backed backends (each wrapped in a `RawEngine`) and asserts
+// byte-equivalent snapshots, identical results and typed error categories,
+// identical LSNs, and identical change-feed batches after every step. See
+// `test/support/differential.dart` for the harness.
 import 'dart:convert';
 import 'dart:io';
 
@@ -39,27 +39,31 @@ void main() {
   final nativePath = _nativeLibraryPath(root);
 
   late Directory tempDir;
-  late String nativeDbPath;
-  late RawEngine memoryEngine;
-  late RawEngine nativeEngine;
+  late String firstDbPath;
+  late String secondDbPath;
+  late RawEngine firstEngine;
+  late RawEngine secondEngine;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('gecko-diff-');
-    nativeDbPath = '${tempDir.path}${Platform.pathSeparator}db.redb';
-    memoryEngine = RawEngine(InMemoryBackend());
-    nativeEngine = RawEngine(
-      await NativeRawBackend.open(nativeDbPath, nativeLibraryPath: nativePath),
+    firstDbPath = '${tempDir.path}${Platform.pathSeparator}db.redb';
+    secondDbPath = '${tempDir.path}${Platform.pathSeparator}db2.redb';
+    firstEngine = RawEngine(
+      await NativeRawBackend.open(firstDbPath, nativeLibraryPath: nativePath),
+    );
+    secondEngine = RawEngine(
+      await NativeRawBackend.open(secondDbPath, nativeLibraryPath: nativePath),
     );
   });
 
   tearDown(() async {
-    await memoryEngine.dispose();
-    await nativeEngine.dispose();
+    await firstEngine.dispose();
+    await secondEngine.dispose();
     await tempDir.delete(recursive: true);
   });
 
   Future<void> expectDifferential(List<DiffStep> steps) async {
-    final outcome = await runDifferential(memoryEngine, nativeEngine, steps);
+    final outcome = await runDifferential(firstEngine, secondEngine, steps);
     expect(outcome.mismatches, isEmpty, reason: outcome.mismatches.join('\n'));
   }
 

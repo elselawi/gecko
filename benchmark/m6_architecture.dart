@@ -103,7 +103,6 @@ Future<void> main() async {
   try {
     final plain = await DatabaseImpl.open(
       '${plainDir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
     await measure(plain, encrypted: false);
@@ -111,7 +110,6 @@ Future<void> main() async {
 
     final encrypted = await DatabaseImpl.open(
       '${encryptedDir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(
         nativeLibraryPath: nativePath,
         encryptionKey: _key,

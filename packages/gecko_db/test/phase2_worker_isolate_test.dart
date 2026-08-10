@@ -50,7 +50,6 @@ void main() {
 
   Future<DatabaseImpl> open() => DatabaseImpl.open(
     path,
-    useInMemory: false,
     config: DatabaseConfig(nativeLibraryPath: nativePath),
   );
 

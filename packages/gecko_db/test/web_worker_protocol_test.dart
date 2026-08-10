@@ -90,7 +90,7 @@ void main() {
   group('web worker client (VM stub)', () {
     test('open throws UnsupportedError on the VM', () async {
       await expectLater(
-        () => WebWorkerClient.open(workerUrl: 'w.js', path: ':memory:'),
+        () => WebWorkerClient.open(workerUrl: 'w.js', path: 'web.db'),
         throwsUnsupportedError,
       );
     });

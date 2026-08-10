@@ -151,12 +151,13 @@ void main() {
   });
 
   test('RawEngine cache is isolated by table as well as key', () async {
-    final backend = InMemoryBackend();
-    final engine = RawEngine(backend, lruCapacity: 8);
+    final db = await openNativeTestDatabase('gap-cache');
+    final engine = RawEngine(db.engine.backend, lruCapacity: 8);
     final key = ByteKey([1]);
     await engine.rawPut('a', key, [10]);
     await engine.rawPut('b', key, [20]);
     expect(await engine.rawGet('a', key), [10]);
     expect(await engine.rawGet('b', key), [20]);
+    await db.close();
   });
 }

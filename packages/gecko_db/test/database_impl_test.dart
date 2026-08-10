@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 

@@ -6,7 +6,7 @@ SharedPreferences replacement you never have to hand-roll an observable layer fo
 widgets consume live, typed queries directly — no separate state-management
 package required.
 
-**Status: in active development (M7.5 file-backed Rust consolidation kickoff).** See
+**Status: in active development (M7.5 file-backed Rust engine consolidation).** See
 [`plan.md`](plan.md) and [`docs/m7-5-migration-plan.md`](docs/m7-5-migration-plan.md) for the
 roadmap and staged migration plan.
 
@@ -35,7 +35,7 @@ roadmap and staged migration plan.
 | Phase | What | State |
 |-------|------|-------|
 | 0 | Foundations & contracts (API, error taxonomy, wire format, ADRs, coverage gate) | ✅ |
-| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; **web engine live-validated** (`:memory:` on main thread + OPFS persistence in a Worker, ADR-0013); iOS explicitly CI-pending |
+| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS CI jobs; **web engine live-validated** (OPFS persistence in a Worker, ADR-0013); iOS explicitly CI-pending |
 | 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ⚠️ in-memory half done |
 | 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
 | 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
@@ -170,12 +170,15 @@ at declaration time with a typed `GeckoError`.
 ### Opening a database
 
 ```dart
-// In-memory (tests / ephemeral):
-final db = await DatabaseImpl.open('mem://demo', useInMemory: true);
+// File-backed (native/redb on desktop/mobile; OPFS on Web):
+final db = await DatabaseImpl.open('path/to/db.redb');
 
-// File-backed arrives with the native distribution phase (Phase 1/2).
 await db.close();
 ```
+
+> There is no in-memory mode (`mem://`, `:memory:`, `DatabaseConfig.inMemory`,
+> `useInMemory` were removed in M7.5). For ephemeral test fixtures use a
+> temporary native file (see `packages/gecko_db/test/support/native_database.dart`).
 
 > **Reserved namespace:** table names starting with `__gecko_` are reserved for
 > engine-internal metadata and are rejected with a typed `GeckoError`
@@ -248,10 +251,10 @@ The design is documented in [`plan.md`](plan.md) and in the
 - **Runs in the browser (Workstream 7 web half).** The FRB web glue
   (`gecko_db_rust.js` + `_bg.wasm`, bundled under
   `packages/gecko_db/lib/native/web/wasm32/`) lets the same redb engine run on
-  wasm: `Database.open(':memory:')` works on the main thread, and file-backed
-  databases persist durably through OPFS inside a Web Worker. The **reusable
-  in-package worker entry** (`packages/gecko_db/web/gecko_db_worker.dart`) and
-  a first-class **`WebWorkerClient`** make the worker path a one-liner
+  wasm: databases persist durably through OPFS, opened from inside a Web
+  Worker (there is no in-memory or `:memory:` mode). The **reusable in-package
+  worker entry** (`packages/gecko_db/web/gecko_db_worker.dart`) and a
+  first-class **`WebWorkerClient`** make the worker path a one-liner
   (`WebWorkerClient.open(workerUrl: 'gecko_db_worker.js', path: 'app.db')`)
   with a documented JSON protocol (see
   [ADR-0013](docs/adr/0013-web-runtime-frb-glue-and-opfs.md) and
@@ -334,7 +337,7 @@ verified by `dart run tool/traceability_check.dart`:
 | # | Criterion | Demonstrated by |
 |---|---|---|
 | 1 | Widgets consume live typed queries directly | `query_test.dart` reactive filtered watch; `phase5_index_ws3_test.dart` |
-| 2 | Local reads/writes work fully offline | `phase2_differential_test.dart`; `in_memory_backend_test.dart` |
+| 2 | Local reads/writes work fully offline | `phase2_differential_test.dart`; `raw_backend_contract_test.dart` |
 | 3 | A local mutation auto-updates all affected live queries | `query_test.dart` starts/stops-matching; `watch_test.dart` |
 | 4 | No manually maintained observable lists required | `watch_test.dart`; `phase13_examples_test.dart` |
 | 5 | Sync can read pending local changes via a small interface | `phase7_transactions_sync_test.dart` pending-record test |
@@ -342,7 +345,7 @@ verified by `dart run tool/traceability_check.dart`:
 | 7 | Local/remote changes merge deterministically | `phase8_conflict_test.dart` strategy + manual-conflict tests |
 | 8 | Attachment metadata stays consistent with record changes | `phase9_attachments_test.dart` dedupe/free tests |
 | 9 | Large datasets stay responsive | `phase14_large_data_ws8_test.dart` (100k+ rows + indexes); `phase12_performance_test.dart`; `benchmark/bench.dart` + `tool/perf_gate.dart` regression gate |
-| 10 | Tests use isolated in-memory databases | `in_memory_backend_test.dart`; `phase2_differential_test.dart` |
+| 10 | Tests use isolated native file databases | `raw_backend_contract_test.dart`; `phase2_differential_test.dart` |
 | 11 | Initialization, recovery, migrations are reliable | `phase2_process_crash_test.dart`; `phase10_migrations_test.dart` |
 | 12 | App-specific store layer shrinks substantially | `phase13_examples_test.dart`; `tool/consumer_fixture_test.dart` |
 

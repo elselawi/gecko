@@ -1,10 +1,9 @@
 /// The raw byte-level backend interface (Phase 2 core).
 ///
-/// This is the seam both the in-memory backend (`InMemoryBackend`, for tests)
-/// and the Rust `redb` worker (native) implement identically, so a single
-/// parametrized test suite can guard every backend against divergence. Per
-/// §0.5 contract 5, all metadata lives in reserved `__gecko_*` tables in the
-/// same store as the data.
+/// This is the seam the Rust `redb` worker (native) implements; a single
+/// parametrized test suite guards the backend contract. Per §0.5 contract 5,
+/// all metadata lives in reserved `__gecko_*` tables in the same store as the
+/// data.
 library;
 
 import 'byte_key.dart';

@@ -28,11 +28,10 @@ void main() {
       try {
         first = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: config,
         );
         await expectLater(
-          DatabaseImpl.open(path, useInMemory: false, config: config),
+          DatabaseImpl.open(path, config: config),
           throwsA(
             isA<GeckoError>().having(
               (error) => error.type,

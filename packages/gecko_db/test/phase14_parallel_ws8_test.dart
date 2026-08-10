@@ -1,11 +1,10 @@
 // Workstream 8 — parallel isolated databases (reliability / isolation).
 //
-// Opens many databases CONCURRENTLY (in-memory and native on distinct
-// files), interleaves writes across them, and verifies:
-//   * each instance sees only its own data (no cross-talk between backends,
-//     URIs, or files);
+// Opens many native databases CONCURRENTLY on distinct files, interleaves
+// writes across them, and verifies:
+//   * each instance sees only its own data (no cross-talk between files);
 //   * native databases on distinct paths do not contend for a file lock;
-//   * all instances survive a mixed in-memory + native run;
+//   * all instances survive a multi-file parallel run;
 //   * every native instance persists exactly its own rows across a reopen.
 //
 // Together with the runner's `--concurrency=N`, this exercises the worker
@@ -77,26 +76,36 @@ void main() {
   final root = _repoRoot();
   final nativePath = _nativeLibraryPath(root);
 
-  test('N in-memory databases run concurrently and stay isolated', () async {
+  test('N native databases on distinct files run concurrently and stay '
+      'isolated', () async {
     const n = 6;
-    final dbs = await Future.wait([
+    final dir = await Directory.systemTemp.createTemp('gecko-parallel-n-');
+    final paths = [
       for (var i = 0; i < n; i++)
-        Database.open(
-          'mem://ws8-parallel-$i',
-          config: const DatabaseConfig(inMemory: true),
-        ),
-    ]);
+        '${dir.path}${Platform.pathSeparator}db$i.redb',
+    ];
     try {
-      // Interleave writes across all instances.
-      await Future.wait([
-        for (var i = 0; i < n; i++) _writeSentinel(dbs[i], 'mem-$i'),
+      final dbs = await Future.wait([
+        for (final p in paths)
+          Database.open(
+            p,
+            config: DatabaseConfig(nativeLibraryPath: nativePath),
+          ),
       ]);
-      // Interleave reads + verification.
-      await Future.wait([
-        for (var i = 0; i < n; i++) _verifyIsolation(dbs[i], 'mem-$i'),
-      ]);
+      try {
+        // Interleave writes across all instances.
+        await Future.wait([
+          for (var i = 0; i < n; i++) _writeSentinel(dbs[i], 'native-$i'),
+        ]);
+        // Interleave reads + verification.
+        await Future.wait([
+          for (var i = 0; i < n; i++) _verifyIsolation(dbs[i], 'native-$i'),
+        ]);
+      } finally {
+        await Future.wait([for (final db in dbs) db.close()]);
+      }
     } finally {
-      await Future.wait([for (final db in dbs) db.close()]);
+      await dir.delete(recursive: true);
     }
   });
 
@@ -146,37 +155,34 @@ void main() {
   });
 
   test(
-    'mixed in-memory + native databases stay isolated under contention',
+    'independent native databases stay isolated under contention',
     () async {
       final dir = await Directory.systemTemp.createTemp(
         'gecko-parallel-mixed-',
       );
-      final nativeDbPath = '${dir.path}${Platform.pathSeparator}mixed.redb';
+      final paths = [
+        '${dir.path}${Platform.pathSeparator}a.redb',
+        '${dir.path}${Platform.pathSeparator}b.redb',
+        '${dir.path}${Platform.pathSeparator}mixed.redb',
+      ];
       try {
         final dbs = await Future.wait([
-          Database.open(
-            'mem://ws8-mixed-a',
-            config: const DatabaseConfig(inMemory: true),
-          ),
-          Database.open(
-            'mem://ws8-mixed-b',
-            config: const DatabaseConfig(inMemory: true),
-          ),
-          Database.open(
-            nativeDbPath,
-            config: DatabaseConfig(nativeLibraryPath: nativePath),
-          ),
+          for (final p in paths)
+            Database.open(
+              p,
+              config: DatabaseConfig(nativeLibraryPath: nativePath),
+            ),
         ]);
         try {
           await Future.wait([
-            _writeSentinel(dbs[0], 'mixed-mem-a'),
-            _writeSentinel(dbs[1], 'mixed-mem-b'),
-            _writeSentinel(dbs[2], 'mixed-native'),
+            _writeSentinel(dbs[0], 'native-a'),
+            _writeSentinel(dbs[1], 'native-b'),
+            _writeSentinel(dbs[2], 'native-mixed'),
           ]);
           await Future.wait([
-            _verifyIsolation(dbs[0], 'mixed-mem-a'),
-            _verifyIsolation(dbs[1], 'mixed-mem-b'),
-            _verifyIsolation(dbs[2], 'mixed-native'),
+            _verifyIsolation(dbs[0], 'native-a'),
+            _verifyIsolation(dbs[1], 'native-b'),
+            _verifyIsolation(dbs[2], 'native-mixed'),
           ]);
         } finally {
           await Future.wait([for (final db in dbs) db.close()]);

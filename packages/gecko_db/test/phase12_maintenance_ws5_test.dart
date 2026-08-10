@@ -91,7 +91,6 @@ void main() {
   Future<DatabaseImpl> openNative({DatabaseConfig? config, String? at}) =>
       DatabaseImpl.open(
         at ?? path,
-        useInMemory: false,
         config: config ?? DatabaseConfig(nativeLibraryPath: nativePath),
       );
 
@@ -251,27 +250,6 @@ void main() {
       expect(stats.commitSequence, greaterThan(0));
       // Physical file on disk agrees with the report.
       expect(File(path).lengthSync(), stats.physicalBytes);
-      await db.close();
-    });
-
-    test('in-memory backend reports stats but refuses compaction', () async {
-      final db = await DatabaseImpl.open('mem://ws5', useInMemory: true);
-      await writeRows(db, 20);
-      final stats = await db.maintenance.storageStats();
-      expect(stats.physicalBytes, stats.logicalBytes);
-      expect(stats.logicalBytes, greaterThan(0));
-      expect(stats.tableCount, greaterThanOrEqualTo(1));
-
-      await expectLater(
-        db.maintenance.compact(),
-        throwsA(
-          isA<GeckoError>().having(
-            (e) => e.type,
-            'type',
-            GeckoErrorType.invalidOperation,
-          ),
-        ),
-      );
       await db.close();
     });
 
@@ -455,7 +433,6 @@ void main() {
         const key = 0x5A;
         final db = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             encryptionKey: List<int>.filled(32, key),
@@ -467,7 +444,6 @@ void main() {
 
         final reopened = await DatabaseImpl.open(
           path,
-          useInMemory: false,
           config: DatabaseConfig(
             nativeLibraryPath: nativePath,
             encryptionKey: List<int>.filled(32, key),

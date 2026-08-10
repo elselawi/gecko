@@ -1,17 +1,15 @@
 // Milestone 4 — indexed sorting + early LIMIT (ADR-0019).
 //
-// The shared suite runs against both the in-memory and native file backends
-// and locks the M4 contracts:
+// The suite runs against the native file backend and locks the M4 contracts:
 //   1. `ORDER BY indexedField LIMIT n` streams the durable index in order on
 //      native (IndexPlan.secondaryIndex, early stop — no full scan, no Dart
-//      sort) and matches the in-memory full-sort exactly (parity).
+//      sort).
 //   2. Sorts NOT covered by an index go through the Rust top-K path on native
-//      (IndexPlan.nativeFilteredScan) — still parity-correct.
-//   3. Missing sort-field rows sort LAST for ascending / FIRST for descending
-//      on both backends.
+//      (IndexPlan.nativeFilteredScan).
+//   3. Missing sort-field rows sort LAST for ascending / FIRST for descending.
 //   4. limit/offset windows (including 0, beyond-count, descending, multi-field)
-//      match across backends.
-//   5. Non-sorted limit/offset on native stops early and matches in-memory.
+//      are covered.
+//   5. Non-sorted limit/offset on native stops early.
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
@@ -107,15 +105,10 @@ void main() {
             'g0',
             'g1',
           ]);
-          // Native streams the durable index (secondaryIndex); in-memory has no
-          // Rust and falls back to a full scan + Dart sort (still parity-correct).
-          expect(
-            q.lastPlan,
-            db.engine.backend is NativeRawBackend
-                ? IndexPlan.secondaryIndex
-                : IndexPlan.fullScan,
-          );
-          // Parity with in-memory full sort.
+          // Native streams the durable index (secondaryIndex) with early
+          // stop — no full scan, no Dart sort.
+          expect(q.lastPlan, IndexPlan.secondaryIndex);
+          // Parity with an unsorted full scan limited to the same window.
           final mem = await _coll(
             db,
             't',
@@ -295,12 +288,7 @@ void main() {
             indexFields: ['nick'],
           ).where({'nick': 'g3'}).filter('age', 13).offset(0).limit(1);
           expect(await filteredIq.findAll(), hasLength(1));
-          expect(
-            filteredIq.lastPlan,
-            db.engine.backend is NativeRawBackend
-                ? IndexPlan.secondaryIndex
-                : IndexPlan.fullScan,
-          );
+          expect(filteredIq.lastPlan, IndexPlan.secondaryIndex);
           // limit 0 → empty on both.
           expect(await _coll(db, 't').where().limit(0).findAll(), isEmpty);
           await db.close();
@@ -329,7 +317,6 @@ void main() {
     });
     return DatabaseImpl.open(
       '${dir.path}${Platform.pathSeparator}db.redb',
-      useInMemory: false,
       config: DatabaseConfig(nativeLibraryPath: nativePath),
     );
   });

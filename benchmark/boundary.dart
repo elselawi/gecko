@@ -139,7 +139,6 @@ Future<List<_Boundary>> _run(
   //    RawEngine.rawGet and worker-isolate round-trip probes.
   final seedDb = await DatabaseImpl.open(
     dbPath,
-    useInMemory: false,
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
       changeLogMaxEntries: 0,
@@ -175,7 +174,6 @@ Future<List<_Boundary>> _run(
   // 3) Reopen the original RW for the worker-isolate (full Stack) path.
   final db = await DatabaseImpl.open(
     dbPath,
-    useInMemory: false,
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
       changeLogMaxEntries: 0,
