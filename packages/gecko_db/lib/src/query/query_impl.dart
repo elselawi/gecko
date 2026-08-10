@@ -204,12 +204,11 @@ class QueryImpl<T> implements Query<T> {
     // bounds; the transitional Dart index remains authoritative only for
     // the in-memory reference backend.
     final nativeRanges = _nativeIndexedRanges(idx);
-    final candidateIds = <Object?>[];
     if (t != null) {
       if (idx != null) t.stop(_QueryStage.indexLookup);
       t.stop(_QueryStage.plan);
     }
-    if (candidateIds != null || nativeRanges != null) {
+    if (nativeRanges != null) {
       lastPlan = IndexPlan.secondaryIndex;
       // Phase 2 native fast path: when the snapshot is a NativeRawSnapshot
       // (redb file backend) and the query is a single equality filter
@@ -317,39 +316,6 @@ class QueryImpl<T> implements Query<T> {
         if (t != null) t.stopAccum(_QueryStage.predicate);
         return;
       }
-      final decoded = <_Decoded>[];
-      for (final id in candidateIds ?? const <Object?>[]) {
-        if (t != null) t.start(_QueryStage.backendRead);
-        final raw = await snap.read(_table, ByteKey(_codec.encode(id)));
-        if (raw == null) continue;
-        if (t != null) {
-          t.scanned++;
-          t.stop(_QueryStage.backendRead);
-          t.start(_QueryStage.decode);
-        }
-        final decodedValue = _codec.decode(raw);
-        if (t != null) {
-          t.stop(_QueryStage.decode);
-          t.start(_QueryStage.mapCopy);
-        }
-        final row = _mapOf(decodedValue);
-        if (t != null) t.stop(_QueryStage.mapCopy);
-        decoded.add(_Decoded(ByteKey(_codec.encode(id)), row));
-      }
-      if (_sort.isNotEmpty) {
-        if (t != null) t.start(_QueryStage.sort);
-        decoded.sort(_compareDecoded);
-        if (t != null) t.stop(_QueryStage.sort);
-      }
-      if (t != null) t.start(_QueryStage.predicate);
-      for (final item in decoded) {
-        if (_group.test(item.row)) {
-          if (t != null) t.matched++;
-          yield item;
-        }
-      }
-      if (t != null) t.stopAccum(_QueryStage.predicate);
-      return;
     }
     lastPlan = IndexPlan.nativeFilteredScan;
     // Phase 2 step 2: when the snapshot is a NativeRawSnapshot (redb file
@@ -790,7 +756,6 @@ class QueryImpl<T> implements Query<T> {
   /// concurrent writes cannot duplicate or drop records across pages.
   @override
   QueryCursor<T> cursor({int? pageSize}) {
-    final secondary = _secondary;
     final snapFuture = () async {
       return _engine.backend.snapshot();
     }();

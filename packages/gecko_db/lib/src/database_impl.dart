@@ -127,8 +127,6 @@ class DatabaseImpl implements Database {
 
   static const _codec = DefaultWireCodec();
 
-  Object? _decode(List<int> bytes) => _codec.decode(bytes);
-
   Object? _decodedId(String table, ByteKey key) {
     try {
       return _codec.decode(key.bytes);
@@ -1122,13 +1120,6 @@ class _TxnKey {
 class _TxnValue {
   const _TxnValue(this.value);
   final List<int>? value;
-}
-
-/// Sentinel distinguishing "field absent from the row" from a present `null`.
-const Object _indexFieldAbsent = _AbsentFieldSentinel();
-
-class _AbsentFieldSentinel {
-  const _AbsentFieldSentinel();
 }
 
 Map<String, Object?> _recordToMap(ChangeRecord record) => <String, Object?>{
