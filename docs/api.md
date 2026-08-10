@@ -75,7 +75,7 @@ M6.5 target contract (ADR-0022):
   the application's responsibility.
 - There is no logical value-encryption wrapper, custom crypto registry,
   provider abstraction, text key encoding, or user-supplied encryption method.
-- Encryption is native-only; Web and in-memory encryption are rejected.
+- Encryption is native-only; Web encryption is rejected.
 - Public `rotatePhysicalKey(oldKey, newKey)` remains atomic and crash-recoverable.
 
 The existing physical format and rotation implementation are documented in
@@ -109,7 +109,8 @@ The existing physical format and rotation implementation are documented in
   diagnostics.
 - Reads use MVCC snapshots; snapshot-bound cursors never duplicate/drop rows
   under concurrent writes.
-- The same conformance suite runs on in-memory and native backends.
+- The conformance suite runs on the native file backend (every supported
+  store is a Rust/redb file; Web uses OPFS).
 
 See `examples/` for runnable code and `docs/migration-from-hive.md` for
 migration guidance.
