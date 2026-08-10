@@ -239,7 +239,7 @@ void main() {
 
   group('Phase 8 database resolution', () {
     Future<DatabaseImpl> open(String name) =>
-        DatabaseImpl.open('mem://phase8-$name', useInMemory: true);
+        openNativeTestDatabase('phase8-$name');
 
     test(
       'reads both versions and atomically applies remote resolution',

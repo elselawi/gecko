@@ -1,8 +1,9 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-Future<DatabaseImpl> _open(String name) =>
-    DatabaseImpl.open('mem://rel6-$name', useInMemory: true);
+import 'support/native_database.dart';
+
+Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('rel6-$name');
 
 void main() {
   group('Phase 6 many-to-many join table', () {

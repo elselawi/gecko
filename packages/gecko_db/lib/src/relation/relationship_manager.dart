@@ -52,10 +52,6 @@ class RelationshipManager {
 
   final RawEngine _engine;
   final DefaultWireCodec _codec;
-
-  /// Resolves the secondary index declared for a collection, so FK lookups
-  /// (children of a parent, etc.) use the index instead of a full scan when
-  /// the foreign-key field is indexed. Wired by `DatabaseImpl`.
   final CollectionIndex? Function(String table)? _indexLookup;
 
   final List<Relationship> _relationships = [];
@@ -139,8 +135,8 @@ class RelationshipManager {
     if (snap is NativeRawSnapshot &&
         index != null &&
         index.fields.contains(fk)) {
-      // M7: native relationship lookup streams the durable index in Rust;
-      // the Dart secondary index is not populated on native open anymore.
+      // Native relationship lookup streams the durable index in Rust;
+      // Dart retains only the declaration metadata.
       final (start, end) = eqBounds(
         r.childCollection,
         fk,
@@ -158,10 +154,9 @@ class RelationshipManager {
         if (row[fk] == parentId) rows.add(row);
       }
       return rows;
-    }
-    if (snap is NativeRawSnapshot) {
-      // Native unindexed relationship lookup still evaluates the predicate in
-      // Rust, transferring only matching child rows to Dart.
+    } else if (snap is NativeRawSnapshot) {
+      // Native unindexed relationship lookup evaluates the predicate in Rust,
+      // transferring only matching child rows to Dart.
       final entries = await snap.queryFiltered(
         table: r.childCollection,
         predicateBytes: encodePredicate([

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _User {
   _User(this.id, this.name, this.age, [this.tags]);
   final String id;
@@ -28,8 +30,7 @@ _User _fromRow(Object? row) {
 
 Object? _id(_User u) => u.id;
 
-Future<DatabaseImpl> _open(String name) =>
-    DatabaseImpl.open('mem://p5-$name', useInMemory: true);
+Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('query-$name');
 
 void main() {
   group('filter / findAll', () {

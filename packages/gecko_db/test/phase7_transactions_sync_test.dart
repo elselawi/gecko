@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _Item {
   _Item(this.id, this.value);
   final String id;
@@ -14,9 +16,8 @@ _Item _itemFromRow(Object? row) => _Item('', (row as Map)['value'] as String);
 Object? _itemId(_Item item) => item.id;
 
 Future<DatabaseImpl> _open(String suffix, {int maxLog = 1000}) =>
-    DatabaseImpl.open(
-      'mem://phase7-$suffix',
-      useInMemory: true,
+    openNativeTestDatabase(
+      'phase7-$suffix',
       config: DatabaseConfig(changeLogMaxEntries: maxLog),
     );
 

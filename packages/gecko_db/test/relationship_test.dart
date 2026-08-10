@@ -1,8 +1,9 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-Future<DatabaseImpl> _open(String name) =>
-    DatabaseImpl.open('mem://rel-$name', useInMemory: true);
+import 'support/native_database.dart';
+
+Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('rel-$name');
 
 void main() {
   group('children / parent lookups', () {

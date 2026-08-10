@@ -1,6 +1,8 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _Parent {
   _Parent(this.id, this.name);
   final String id;
@@ -11,9 +13,7 @@ Object? _toRow(_Parent p) => {'name': p.name};
 _Parent _fromRow(Object? row) => _Parent('', (row as Map)['name'] as String);
 Object? _parentId(_Parent p) => p.id;
 
-Future<DatabaseImpl> _open(String name) =>
-    DatabaseImpl.open('mem://phase9-$name', useInMemory: true);
-
+Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('phase9-$name');
 void main() {
   group('Phase 9 attachment metadata', () {
     test('create, read, and duplicate-hash dedupe share a blob', () async {

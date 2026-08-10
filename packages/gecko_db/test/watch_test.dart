@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
+import 'support/native_database.dart';
+
 class _User {
   _User(this.id, this.name);
   final String id;
@@ -13,8 +15,7 @@ Object? _toRow(_User u) => {'name': u.name};
 _User _fromRow(Object? row) => _User('', (row as Map)['name'] as String);
 Object? _id(_User u) => u.id;
 
-Future<DatabaseImpl> _open(String name) =>
-    DatabaseImpl.open('mem://p4-$name', useInMemory: true);
+Future<DatabaseImpl> _open(String name) => openNativeTestDatabase('watch-$name');
 
 void main() {
   group('watch(id) — single record stream', () {
