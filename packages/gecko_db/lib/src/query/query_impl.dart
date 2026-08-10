@@ -20,7 +20,6 @@ import '../wire/wire_codec.dart';
 import 'durable_index_bounds.dart';
 import 'filter.dart';
 import 'predicate_codec.dart';
-import 'secondary_index.dart';
 import 'sort_spec_codec.dart';
 import 'sorting.dart';
 
@@ -31,39 +30,18 @@ class _Decoded {
   final Map<Object?, Object?> row;
 }
 
-/// A collection index declaration and its transitional readiness state.
+/// Metadata for the declared durable indexes of a collection.
 class CollectionIndex {
-  CollectionIndex({required List<String> fields, Iterable<String>? prefixFields})
-      : secondary = SecondaryIndex(
-          fields: fields,
-          prefixFields: prefixFields ?? const [],
-        ) {
-    _ready.complete();
-  }
+  CollectionIndex({
+    required List<String> fields,
+    Iterable<String>? prefixFields,
+  }) : fields = List<String>.unmodifiable(fields),
+       prefixFields = List<String>.unmodifiable(prefixFields ?? const []);
 
-  final SecondaryIndex secondary;
-  final Completer<void> _ready = Completer<void>();
-  Future<void> get ready => _ready.future;
-  bool get isReady => _ready.isCompleted;
-  void markReady() {
-    if (!_ready.isCompleted) _ready.complete();
-  }
-  void onPut(Object? id, Object? previous, Object? row) {
-    final oldMap = previous is Map
-        ? Map<Object?, Object?>.from(previous)
-        : <Object?, Object?>{};
-    final newMap = row is Map
-        ? Map<Object?, Object?>.from(row)
-        : <Object?, Object?>{};
-    if (oldMap.isNotEmpty) secondary.remove(id, oldMap);
-    secondary.insert(id, newMap);
-  }
-  void onDelete(Object? id, Object? previous) {
-    final oldMap = previous is Map
-        ? Map<Object?, Object?>.from(previous)
-        : <Object?, Object?>{};
-    secondary.remove(id, oldMap);
-  }
+  final List<String> fields;
+  final List<String> prefixFields;
+  Future<void> get ready => Future<void>.value();
+  bool get isReady => true;
 }
 
 /// The concrete [`Query`] implementation.
@@ -158,12 +136,11 @@ class QueryImpl<T> implements Query<T> {
   /// use durable Rust indexes directly.
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
-    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
       yield* _scanWith(
         snap,
-        secondary?.secondary,
+        secondary,
         null,
         nativeLimit: nativeLimit,
         nativeOffset: nativeOffset,
@@ -174,16 +151,15 @@ class QueryImpl<T> implements Query<T> {
   }
 
   /// When [idx] is non-null and the query has exactly one equality filter
-  /// covered by the index, returns `(field, value)` for the exact durable-index
-  /// range scan. Returns null for multi-eq, range, prefix, or uncovered
-  /// queries; M5 routes those through `_nativeIndexedRanges` instead.
-  (String, Object?)? _nativeEqProbe(SecondaryIndex? idx) {
+  /// covered by the durable declaration, returns `(field, value)` for the
+  /// exact Rust index range scan.
+  (String, Object?)? _nativeEqProbe(CollectionIndex? idx) {
     if (idx == null) return null;
     final eqs = <String, Object?>{
       for (final f in _filters)
         if (f.isIndexUsable) f.field: f.value,
     };
-    if (eqs.length != 1 || !idx.coversEq(eqs)) return null;
+    if (eqs.length != 1 || !eqs.keys.every(idx.fields.contains)) return null;
     // Range/prefix filters mixed with the eq would also need primitive
     // intersection in Rust; the M5 multi-index route handles those queries.
     final hasRangeOrPrefix = _filters.any(
@@ -199,56 +175,25 @@ class QueryImpl<T> implements Query<T> {
   /// prefix use the whole `(table, field)` span because DefaultWireCodec v1
   /// is not semantic-order-preserving for all supported values. Rust always
   /// rechecks the complete predicate, so broad bounds remain correct.
-  List<(List<int>, List<int>)>? _nativeIndexedRanges(SecondaryIndex? idx) {
+  List<(List<int>, List<int>)>? _nativeIndexedRanges(CollectionIndex? idx) {
     if (idx == null) return null;
     final ranges = <(List<int>, List<int>)>[];
     for (final f in _filters) {
-      if (f.isIndexUsable && idx.isIndexed(f.field)) {
+      if (f.isIndexUsable && idx.fields.contains(f.field)) {
         ranges.add(eqBounds(_table, f.field, f.value, codec: _codec));
-      } else if (f.isRangeFilter && idx.isRangeIndexed(f.field)) {
+      } else if (f.isRangeFilter &&
+          (idx.fields.contains(f.field) || idx.prefixFields.contains(f.field))) {
         ranges.add(fieldBounds(_table, f.field, codec: _codec));
-      } else if (f.isPrefixFilter && idx.isPrefixed(f.field)) {
+      } else if (f.isPrefixFilter && idx.prefixFields.contains(f.field)) {
         ranges.add(fieldBounds(_table, f.field, codec: _codec));
       }
     }
     return ranges.isEmpty ? null : ranges;
   }
 
-  /// Computes the candidate-id set from any index-usable filters (equality,
-  /// range, prefix), intersecting all of them. Returns null when no filter is
-  /// index-served (full scan required).
-  Set<Object?>? _indexCandidates(SecondaryIndex? idx) {
-    if (idx == null) return null;
-    Set<Object?>? candidates;
-    final eqs = <String, Object?>{
-      for (final f in _filters)
-        if (f.isIndexUsable) f.field: f.value,
-    };
-    if (eqs.isNotEmpty && idx.coversEq(eqs)) {
-      candidates = idx.lookupEq(eqs);
-    }
-    for (final f in _filters) {
-      if (f.isRangeFilter && idx.isRangeIndexed(f.field)) {
-        final rangeIds = idx.lookupRange(f.field, min: f.min, max: f.max)!;
-        candidates = candidates == null
-            ? rangeIds
-            : candidates.intersection(rangeIds);
-      }
-    }
-    for (final f in _filters) {
-      if (f.isPrefixFilter && idx.isPrefixed(f.field)) {
-        final prefixIds = idx.lookupPrefix(f.field, f.prefix!)!;
-        candidates = candidates == null
-            ? prefixIds
-            : candidates.intersection(prefixIds);
-      }
-    }
-    return candidates;
-  }
-
   Stream<_Decoded> _scanWith(
     RawSnapshot snap,
-    SecondaryIndex? idx,
+    CollectionIndex? idx,
     _QueryTimings? t, {
     int? nativeLimit,
     int nativeOffset = 0,
@@ -258,12 +203,8 @@ class QueryImpl<T> implements Query<T> {
     // Native routing uses collection metadata to produce durable Rust
     // bounds; the transitional Dart index remains authoritative only for
     // the in-memory reference backend.
-    final nativeRanges = snap is NativeRawSnapshot
-        ? _nativeIndexedRanges(idx)
-        : null;
-    final candidateIds = snap is NativeRawSnapshot
-        ? null
-        : _indexCandidates(idx);
+    final nativeRanges = _nativeIndexedRanges(idx);
+    final candidateIds = <Object?>[];
     if (t != null) {
       if (idx != null) t.stop(_QueryStage.indexLookup);
       t.stop(_QueryStage.plan);
@@ -551,14 +492,13 @@ class QueryImpl<T> implements Query<T> {
   /// the snapshot is not native so the caller falls back to the Dart path.
   Future<List<_Decoded>?> _nativeOrderedCollect(_QueryTimings? t) async {
     final secondary = _secondary;
-    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     if (snap is! NativeRawSnapshot) {
       await snap.dispose();
       return null;
     }
     try {
-      final idx = secondary?.secondary;
+      final idx = secondary;
       final predicateBytes = encodePredicate(_filters, codec: _codec);
       final sortBytes = encodeSortSpecs(_sort);
       final limit = _limit;
@@ -626,11 +566,11 @@ class QueryImpl<T> implements Query<T> {
   /// Returns null for multi-spec, non-indexed, or descending-without-eq sorts
   /// (those use the Rust top-K path, which handles missing-field placement).
   (String, (List<int>, List<int>), bool)? _indexCoveredSortRoute(
-    SecondaryIndex? idx,
+    CollectionIndex? idx,
   ) {
     if (idx == null || _sort.length != 1) return null;
     final spec = _sort.single;
-    if (!idx.isIndexed(spec.field)) return null;
+    if (!idx.fields.contains(spec.field)) return null;
     final eqOnField = _filters.any(
       (f) => f.isIndexUsable && f.field == spec.field,
     );
@@ -664,12 +604,11 @@ class QueryImpl<T> implements Query<T> {
       return;
     }
     final secondary = _secondary;
-    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
       yield* _scanWith(
         snap,
-        secondary?.secondary,
+        secondary,
         t,
         nativeLimit: nativeLimit,
         nativeOffset: nativeOffset,
@@ -738,10 +677,9 @@ class QueryImpl<T> implements Query<T> {
     // increment loop). Indexed-eq queries keep the existing `queryIndexed`
     // path (the result set is already small and joined in one hop).
     final secondary = _secondary;
-    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      final nativeRanges = _nativeIndexedRanges(secondary?.secondary);
+      final nativeRanges = _nativeIndexedRanges(secondary);
       if (snap is NativeRawSnapshot) {
         final predicateBytes = encodePredicate(_filters, codec: _codec);
         if (nativeRanges != null) {
@@ -762,7 +700,7 @@ class QueryImpl<T> implements Query<T> {
         );
       }
       var n = 0;
-      await for (final _ in _scanWith(snap, secondary?.secondary, null)) {
+      await for (final _ in _scanWith(snap, secondary, null)) {
         n++;
       }
       return n;
@@ -778,10 +716,9 @@ class QueryImpl<T> implements Query<T> {
     // whole row). Dart decodes + dedups. Indexed-eq queries keep the
     // `queryIndexed` path (small result set, already joined).
     final secondary = _secondary;
-    if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      final nativeRanges = _nativeIndexedRanges(secondary?.secondary);
+      final nativeRanges = _nativeIndexedRanges(secondary);
       if (snap is NativeRawSnapshot) {
         final predicateBytes = encodePredicate(_filters, codec: _codec);
         final fieldBytes = nativeRanges == null
@@ -810,7 +747,7 @@ class QueryImpl<T> implements Query<T> {
         return seen.toList();
       }
       final seen = <Object?>{};
-      await for (final item in _scanWith(snap, secondary?.secondary, null)) {
+      await for (final item in _scanWith(snap, secondary, null)) {
         if (item.row.containsKey(field)) {
           seen.add(item.row[field]);
         }
@@ -855,7 +792,6 @@ class QueryImpl<T> implements Query<T> {
   QueryCursor<T> cursor({int? pageSize}) {
     final secondary = _secondary;
     final snapFuture = () async {
-      if (secondary != null) await secondary.ready;
       return _engine.backend.snapshot();
     }();
     return _QueryCursorImpl<T>(this, snapFuture, pageSize ?? _limit);
@@ -890,7 +826,7 @@ class QueryImpl<T> implements Query<T> {
   /// snapshot-bound cursor).
   Future<List<_Decoded>> _materialize(RawSnapshot snap) async {
     final result = <_Decoded>[];
-    await for (final item in _scanWith(snap, _secondary?.secondary, null)) {
+    await for (final item in _scanWith(snap, _secondary, null)) {
       result.add(item);
     }
     return result;

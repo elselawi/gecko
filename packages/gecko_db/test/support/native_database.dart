@@ -37,9 +37,10 @@ Future<DatabaseImpl> openNativeTestDatabase(
 }
 
 String _nativeLibraryPath() {
-  final root = Directory.current.path.endsWith(
-    'packages${Platform.pathSeparator}gecko_db',
-  )
+  final root =
+      Directory.current.path.endsWith(
+        'packages${Platform.pathSeparator}gecko_db',
+      )
       ? Directory.current.parent.parent.path
       : Directory.current.path;
   final name = Platform.isWindows

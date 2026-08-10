@@ -1,8 +1,7 @@
 /// Concrete [`Database`] implementation.
 ///
 /// Wires the public API to the backend-agnostic [`RawEngine`]. Native and
-/// Web/Wasm databases use Rust/redb through the worker boundary; the temporary
-/// in-memory backend remains a semantic reference path until M7.5.
+/// Web/Wasm databases use Rust/redb through the worker boundary.
 library;
 
 import 'dart:async';
@@ -74,9 +73,6 @@ class DatabaseImpl implements Database {
   final _AsyncMutex _txnMutex = _AsyncMutex();
   final Map<String, CollectionIndex> _indexes = <String, CollectionIndex>{};
 
-  /// Tables whose in-memory reference index repair is currently in flight
-  /// (so concurrent collection calls coalesce onto one repair per table).
-  final Set<String> _rebuildingIndexes = <String>{};
   late final SyncHookApi _sync = _SyncHookImpl(this);
   late final ConflictApi _conflicts = _ConflictApiImpl(this);
   late final AttachmentApi _attachments = _AttachmentApiImpl(this);
@@ -128,8 +124,6 @@ class DatabaseImpl implements Database {
   }
 
   RawEngine get engine => _engine;
-
-  bool get _usesNativeDurableIndexes => _engine.backend is NativeRawBackend;
 
   static const _codec = DefaultWireCodec();
 
@@ -258,17 +252,12 @@ class DatabaseImpl implements Database {
               prefixFields: prefixFields ?? const [],
             ),
           );
-    if (index != null) {
-      // M7.1: Rust receives the declaration and owns native durable-index
-      // maintenance; only the transitional in-memory backend repairs its Dart
-      // reference index.
-      if (_engine.backend case final DurableIndexRegistrar registrar) {
-        registrar.registerDurableIndex(name, [
-          ...index.secondary.fields,
-          ...index.secondary.prefixFields,
-        ]);
-      }
-      unawaited(_prepareIndex(name, index));
+    if (index != null &&
+        _engine.backend case final DurableIndexRegistrar registrar) {
+      registrar.registerDurableIndex(name, [
+        ...index.fields,
+        ...index.prefixFields,
+      ]);
     }
     return _CollectionImpl<T>(
       this,
@@ -279,96 +268,6 @@ class DatabaseImpl implements Database {
       schema: schema,
       index: index,
     );
-  }
-
-  /// Prepares [index] for queries. Native uses Rust as the durable index
-  /// authority and repairs drift without materializing primary rows in Dart;
-  /// the in-memory backend keeps the transitional Dart reference repair.
-  Future<void> _prepareIndex(String name, CollectionIndex index) async {
-    if (_engine.backend is NativeRawBackend) {
-      await (_engine.backend as NativeRawBackend).repairIndex(
-        table: name,
-        fields: [...index.secondary.fields, ...index.secondary.prefixFields],
-      );
-      index.markReady();
-      return;
-    }
-    await _rebuildIndex(name, index);
-  }
-
-  /// Repairs [index] from the current table contents at collection-open.
-  /// This path is retained only for the transitional in-memory reference
-  /// backend until M7.5 removes it.
-  Future<void> _rebuildIndex(String name, CollectionIndex index) async {
-    if (!_rebuildingIndexes.add(name)) {
-      // Another repair is in flight for this table; wait for it.
-      await index.ready;
-      return;
-    }
-    try {
-      final scan = await _engine.rawScanAll(name);
-      index.secondary.clearForRebuild();
-      final expectedKeys = <ByteKey>{};
-      for (final entry in scan) {
-        final rowValue = _decode(entry.value ?? const []);
-        if (rowValue is Map) {
-          final recordId = _decodedId(name, entry.key);
-          final row = Map<Object?, Object?>.from(rowValue);
-          index.onPut(recordId, null, row);
-          for (final field in <String>[
-            ...index.secondary.fields,
-            ...index.secondary.prefixFields,
-          ]) {
-            if (row.containsKey(field)) {
-              expectedKeys.add(
-                _durableIndexKey(name, field, row[field], recordId),
-              );
-            }
-          }
-        }
-      }
-
-      // Verify the durable index table: gather the keys belonging to this
-      // table and compare with the primary-derived set.
-      final snap = await _engine.backend.snapshot();
-      List<RawEntry> durableEntries;
-      try {
-        durableEntries = await snap.scanAll(geckoIndexTable);
-      } finally {
-        await snap.dispose();
-      }
-      final durableKeys = <ByteKey>{
-        for (final entry in durableEntries)
-          if (_decodeDurableIndexKey(entry.key.bytes).$1 == name) entry.key,
-      };
-      if (!_sameByteKeySet(expectedKeys, durableKeys)) {
-        // Atomic repair: remove this table's stale keys and insert the
-        // correct entries in one backend batch (single write transaction).
-        final repairOps = <RawOp>[
-          for (final key in durableKeys) RawDelete(geckoIndexTable, key),
-          for (final key in expectedKeys)
-            RawPut(
-              geckoIndexTable,
-              key,
-              _defaultCodec.encode(_decodeDurableIndexKey(key.bytes).$4),
-            ),
-        ];
-        if (repairOps.isNotEmpty) {
-          await _engine.backend.applyBatch(repairOps);
-        }
-      }
-      index.markReady();
-    } finally {
-      _rebuildingIndexes.remove(name);
-    }
-  }
-
-  static bool _sameByteKeySet(Set<ByteKey> a, Set<ByteKey> b) {
-    if (a.length != b.length) return false;
-    for (final key in a) {
-      if (!b.contains(key)) return false;
-    }
-    return true;
   }
 
   final Map<String, int> _autoIdCounters = <String, int>{};
@@ -406,18 +305,15 @@ class DatabaseImpl implements Database {
     }
     final codec = const DefaultWireCodec();
     // A bulk write is still a local mutation: it must be change-tracked
-    // (change log + sync state) and maintain secondary indexes, all inside
-    // the SAME atomic redb transaction as the primary rows, with the
-    // in-memory index applied only after the durable commit.
+    // (change log + sync state) in the SAME atomic transaction as primary rows
+    // and Rust-owned durable indexes.
     final lsn = await _engine.commitBatch(
       (lsn, snapshot) async {
         final ops = <RawOp>[];
         for (var ordinal = 0; ordinal < mutations.length; ordinal++) {
           final mutation = mutations[ordinal];
           final keyBytes = codec.encode(mutation.key);
-          final index = _indexes[mutation.table];
-          // Read the prior row so change records + index maintenance can drop
-          // old state on updates (never left stale).
+          // Read the prior row so change records can describe updates.
           final previousRaw = await snapshot.read(
             mutation.table,
             ByteKey(keyBytes),
@@ -945,13 +841,12 @@ class _TxnImpl implements Transaction {
               prefixFields: prefixFields ?? const [],
             ),
           );
-    if (index != null) {
-      if (_db.engine.backend case final DurableIndexRegistrar registrar) {
-        registrar.registerDurableIndex(name, [
-          ...index.secondary.fields,
-          ...index.secondary.prefixFields,
-        ]);
-      }
+    if (index != null &&
+        _db.engine.backend case final DurableIndexRegistrar registrar) {
+      registrar.registerDurableIndex(name, [
+        ...index.fields,
+        ...index.prefixFields,
+      ]);
     }
     return _CollectionImpl<T>(
       _db,
@@ -1234,76 +1129,6 @@ const Object _indexFieldAbsent = _AbsentFieldSentinel();
 
 class _AbsentFieldSentinel {
   const _AbsentFieldSentinel();
-}
-
-/// The durable index key for (table, field, value, recordId). Composite keys
-/// are codec-encoded lists, so byte-order groups by table → field → value →
-/// recordId, which makes per-table and per-field range scans possible at the
-/// storage layer.
-ByteKey _durableIndexKey(
-  String table,
-  String field,
-  Object? value,
-  Object? recordId,
-) => ByteKey(_defaultCodec.encode([table, field, value, recordId]));
-
-/// Decodes a durable index key back into (table, field, value, recordId).
-(Object?, Object?, Object?, Object?) _decodeDurableIndexKey(List<int> bytes) {
-  final decoded = _defaultCodec.decode(bytes);
-  if (decoded is List && decoded.length == 4) {
-    return (decoded[0], decoded[1], decoded[2], decoded[3]);
-  }
-  return (null, null, null, null);
-}
-
-const DefaultWireCodec _defaultCodec = DefaultWireCodec();
-
-/// Builds the durable index maintenance ops for [mutation] against [index].
-///
-/// Old entries (from `previousVersion`) are removed and new entries (from
-/// `value`) are inserted, so the durable `__gecko_index` table is updated in
-/// the exact same redb write transaction as the primary record — index/data
-/// atomicity by construction.
-List<RawOp> _durableIndexOps(_TxnMutation mutation, CollectionIndex index) {
-  final fields = <String>[
-    ...index.secondary.fields,
-    ...index.secondary.prefixFields,
-  ];
-  if (fields.isEmpty) return const [];
-  final ops = <RawOp>[];
-  final oldRow = mutation.previousVersion is Map
-      ? Map<Object?, Object?>.from(mutation.previousVersion as Map)
-      : <Object?, Object?>{};
-  final newRow = mutation.value is Map
-      ? Map<Object?, Object?>.from(mutation.value as Map)
-      : <Object?, Object?>{};
-  for (final field in fields) {
-    final oldValue = oldRow.containsKey(field)
-        ? oldRow[field]
-        : _indexFieldAbsent;
-    final newValue = newRow.containsKey(field)
-        ? newRow[field]
-        : _indexFieldAbsent;
-    if (identical(oldValue, newValue) || oldValue == newValue) continue;
-    if (!identical(oldValue, _indexFieldAbsent)) {
-      ops.add(
-        RawDelete(
-          geckoIndexTable,
-          _durableIndexKey(mutation.table, field, oldValue, mutation.recordId),
-        ),
-      );
-    }
-    if (!identical(newValue, _indexFieldAbsent)) {
-      ops.add(
-        RawPut(
-          geckoIndexTable,
-          _durableIndexKey(mutation.table, field, newValue, mutation.recordId),
-          _defaultCodec.encode(mutation.recordId),
-        ),
-      );
-    }
-  }
-  return ops;
 }
 
 Map<String, Object?> _recordToMap(ChangeRecord record) => <String, Object?>{

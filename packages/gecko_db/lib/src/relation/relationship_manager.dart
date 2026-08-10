@@ -138,7 +138,7 @@ class RelationshipManager {
     final index = _indexLookup?.call(r.childCollection);
     if (snap is NativeRawSnapshot &&
         index != null &&
-        index.secondary.isIndexed(fk)) {
+        index.fields.contains(fk)) {
       // M7: native relationship lookup streams the durable index in Rust;
       // the Dart secondary index is not populated on native open anymore.
       final (start, end) = eqBounds(
@@ -172,18 +172,6 @@ class RelationshipManager {
         for (final entry in entries)
           _mapOf(_codec.decode(entry.value ?? const [])),
       ];
-    }
-    if (index != null && index.secondary.isIndexed(fk)) {
-      final ids = index.secondary.lookupEq({fk: parentId})!;
-      final entries = await snap.getMany(r.childCollection, [
-        for (final id in ids) _byteOf(id),
-      ]);
-      final rows = <Map<Object?, Object?>>[];
-      for (final entry in entries) {
-        final row = _mapOf(_codec.decode(entry.value ?? const []));
-        if (row[fk] == parentId) rows.add(row);
-      }
-      return rows;
     }
     final entries = await snap.scanAll(r.childCollection);
     return [
@@ -245,7 +233,7 @@ class RelationshipManager {
       if (snap case final NativeRawSnapshot native) {
         final index = _indexLookup?.call(relationship.childCollection);
         final ranges = <(ByteKey, ByteKey)>[];
-        if (index != null && index.secondary.isIndexed(fk)) {
+        if (index != null && index.fields.contains(fk)) {
           for (final parentId in parentIds) {
             final (start, end) = eqBounds(
               relationship.childCollection,
