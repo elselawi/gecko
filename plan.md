@@ -174,7 +174,7 @@ the already-done Phases 1–3 of Wave A). **All done.**
 ## 2. What's Open — the Milestones roadmap
 
 > **Naming note.** Earlier versions called these "Phase 1–8" in an appendix, which collided with the
-> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M3 done; M4–M10 open). Each milestone
+> already-done Phases 1–13 in §1. They are now **Milestones** (M1–M4 done; M5–M10 open). Each milestone
 > has a goal, concrete steps, a "done when" check, and — where it moves Dart→Rust — an ROI note and the
 > Rust tests + Dart deletions it requires.
 >
@@ -222,32 +222,35 @@ native use the Rust path (asserted via `IndexPlan.nativeFilteredScan` + parity t
 loads use `getMany` (no per-id reads in a profiler); parity tests pass
 (`packages/gecko_db/test/m3_read_path_test.dart`).
 
-### M4 — Indexed sorting and early LIMIT  ⏳ next
+### M4 — Indexed sorting and early LIMIT  ✅ done (ADR-0019)
 
 **Goal:** `WHERE … ORDER BY indexedField LIMIT 20` on 100k rows < 5 ms — no materialization, no sort.
 
 **Steps:**
-1. **Sort push to Rust:** when sort fields are covered by an index, stream keys from the durable index
-   in order (the composite keys are already byte-ordered). Rust's `query_indexed` already preserves
-   index-key order; extend it to accept a `limit`/`offset` and stop early. For non-indexed sorts, add
-   a Rust-side `compareRows` over `RowValue` (mirroring Dart's `sorting.dart`) + a top-K heap.
-2. **`limit`/`offset` during scan** — add `limit`/`offset` params to `query_filtered`/`query_indexed`;
-   Rust stops scanning at the limit (streaming top-K), never materializes the full set.
-3. **Dart sort elimination on native:** when the sort is index-covered, Dart receives pre-sorted +
-   limited results — `compareRows` / `decoded.sort` in `query_impl.dart` become a no-op on native
-   (keep for in-memory).
+1. ✅ **Sort push to Rust:** when sort fields are covered by an index, stream keys from the durable index
+   in order (the composite keys are already byte-ordered). Rust's `query_indexed_ordered` streams the
+   index window in order and stops early; for non-indexed sorts, `query_sorted` runs a Rust-side
+   `sort_compare` (port of Dart `compareFieldValues`) + a bounded top-K heap (`offset + limit`).
+2. ✅ **`limit`/`offset` during scan** — `query_filtered_limited`/`query_indexed_limited`/`query_sorted`/
+   `query_indexed_ordered` accept `limit`/`offset`; Rust stops scanning at the limit, never materializes
+   the full set.
+3. ✅ **Dart sort elimination on native:** when the sort is index-covered, Dart receives pre-sorted +
+   limited results from `_nativeOrderedCollect` — `compareRows` / `decoded.sort` are bypassed on native
+   (kept for in-memory parity). All Dart `decoded.sort` call sites now use a record-key tie-break so
+   native index order, Rust top-K, and in-memory sort agree exactly.
 
 **Dart deletions enabled:** `compareRows` / `decoded.sort` in the index-covered-sort path (native only);
-the `_collectOrdered` materialize-then-slice can be replaced with a streaming limit on native.
+the `_collectOrdered` materialize-then-slice is replaced with the native streaming limit on native.
 
-**Rust tests required:** indexed-sort returns ascending/descending order + early-stop at limit; top-K
-correctness vs a Dart full-sort oracle; limit/offset edge cases (0, negative, > result count).
+**Rust tests required:** ✅ `sort_spec` wire round-trip + `compare_rows`; indexed-ordered asc/desc
+early-stop + missing-field append; top-K vs a Dart full-sort oracle; limit/offset edge cases (0,
+negative, > result count).
 
-**Done when:** `ORDER BY indexedField LIMIT 20` on 100k < 5ms; ordered/limited queries no longer
-materialize the full candidate set; results match the current Dart plans exactly (parity test vs
-in-memory full-sort).
+**Done when:** ✅ `ORDER BY indexedField LIMIT 20` on 100k = **110–209 µs** (< 5ms); ordered/limited
+queries no longer materialize the full candidate set; results match the current Dart plans exactly
+(parity test vs in-memory full-sort — 14 new tests in `m4_sort_limit_test.dart`).
 
-### M5 — Range/prefix/multi-eq indexed fast path  ☐
+### M5 — Range/prefix/multi-eq indexed fast path  ⏳ next
 
 **Goal:** extend the M2 indexed-eq fast path to the remaining index-usable filters, so they skip the
 full scan instead of going through `query_filtered`.
@@ -298,7 +301,7 @@ AND (b) the Rust port has stronger test coverage than the Dart it replaces.**
 
 | Move | Why | Dart deleted | Rust tests added |
 |---|---|---|---|
-| **Sort + limit/offset** (part of M4) | Hot path (`ORDER BY … LIMIT`) | Dart `compareRows`/`decoded.sort` on native (index-covered) | top-K heap + indexed-order streaming |
+| **Sort + limit/offset** (✅ done in M4/ADR-0019) | Hot path (`ORDER BY … LIMIT`) | Dart `compareRows`/`decoded.sort` on native (index-covered) — native routes through `_nativeOrderedCollect`; Dart sort retained for in-memory parity only | top-K heap + indexed-order streaming (`query_sorted` + `query_indexed_ordered`) |
 | **`SecondaryIndex` rebuild-at-open → lazy/optional** | On native open, Dart reads the *whole* `__gecko_index` table to rebuild the in-memory index (a full-table scan). If Rust serves all index lookups via the durable table (M3+M5 done), the in-memory index becomes a pure cache; rebuild can be lazy/optional. | `_indexCandidates` + `SecondaryIndex.lookup*` on native (keep for in-memory) | durable-index scan + intersection in Rust |
 | **Change-feed affected-query computation** (ties to M8) | A write currently broadcasts to *all* live queries, each re-evaluating in Dart. Rust could compute which queries a batch affects (via the durable index) and emit only affected-query signals. | Dart per-query re-eval fan-out | affected-query set computation in Rust |
 | **`count`/`distinct` aggregates** (part of M3) | Materialize-then-count in Dart → count-only in Rust | Dart `count()`/`distinct()` scan loops on native | aggregate pushdown tests |

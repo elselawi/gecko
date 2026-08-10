@@ -43,6 +43,28 @@ import '../wire/wire_codec.dart';
   return (prefix, end);
 }
 
+/// The byte bounds covering EVERY durable-index key for the given (table,
+/// field) pair, regardless of value or recordId — i.e. the range
+/// `[table, field, *, *]`. Used by the M4 index-ordered sort to stream all
+/// values of a sort field in index-key order (values sort by their codec
+/// bytes, then recordId, matching the durable index layout).
+///
+/// The shared prefix is the 4-element list header + `encode(table)` +
+/// `encode(field)`: built by encoding `[table, field, null, null]` and
+/// stripping the two trailing null tag bytes (each null is one 0x00 byte).
+/// The upper bound is the incremented last byte (with carry), so every real
+/// key extending the prefix sorts in `[start, end]`.
+(List<int>, List<int>) fieldBounds(
+  String table,
+  String field, {
+  WireCodec codec = const DefaultWireCodec(),
+}) {
+  final full = codec.encode([table, field, null, null]);
+  final prefix = List<int>.of(full.sublist(0, full.length - 2));
+  final end = _incrementLastByte(prefix);
+  return (prefix, end);
+}
+
 /// Increments the last byte of [bytes] with carry: produces a byte sequence
 /// that sorts immediately after every longer key sharing the prefix. Trailing
 /// 0xFF bytes carry by being dropped (a shorter upper bound still sorts after

@@ -21,6 +21,7 @@ import 'durable_index_bounds.dart';
 import 'filter.dart';
 import 'predicate_codec.dart';
 import 'secondary_index.dart';
+import 'sort_spec_codec.dart';
 import 'sorting.dart';
 
 /// A decoded row plus its raw key, carried during query evaluation.
@@ -177,12 +178,18 @@ class QueryImpl<T> implements Query<T> {
 
   /// Lazy iteration over matching decoded rows in sort order, consulting the
   /// optional secondary index when the equality filters are covered.
-  Stream<_Decoded> _scan() async* {
+  Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      yield* _scanWith(snap, secondary?.secondary, null);
+      yield* _scanWith(
+        snap,
+        secondary?.secondary,
+        null,
+        nativeLimit: nativeLimit,
+        nativeOffset: nativeOffset,
+      );
     } finally {
       await snap.dispose();
     }
@@ -245,8 +252,10 @@ class QueryImpl<T> implements Query<T> {
   Stream<_Decoded> _scanWith(
     RawSnapshot snap,
     SecondaryIndex? idx,
-    _QueryTimings? t,
-  ) async* {
+    _QueryTimings? t, {
+    int? nativeLimit,
+    int nativeOffset = 0,
+  }) async* {
     if (t != null) t.start(_QueryStage.plan);
     if (t != null && idx != null) t.start(_QueryStage.indexLookup);
     final candidateIds = _indexCandidates(idx);
@@ -267,11 +276,23 @@ class QueryImpl<T> implements Query<T> {
         final (field, value) = nativeEq;
         final (start, end) = eqBounds(_table, field, value, codec: _codec);
         if (t != null) t.start(_QueryStage.backendRead);
-        final entries = await snap.queryIndexed(
-          table: _table,
-          start: ByteKey(start),
-          end: ByteKey(end),
-        );
+        // M4: when the caller wants a window, the index scan applies the full
+        // predicate in Rust and stops early (never transfers rows beyond it).
+        final windowed = nativeLimit != null || nativeOffset > 0;
+        final entries = windowed
+            ? await snap.queryIndexedLimited(
+                table: _table,
+                start: ByteKey(start),
+                end: ByteKey(end),
+                predicateBytes: encodePredicate(_filters, codec: _codec),
+                limit: nativeLimit,
+                offset: nativeOffset,
+              )
+            : await snap.queryIndexed(
+                table: _table,
+                start: ByteKey(start),
+                end: ByteKey(end),
+              );
         if (t != null) t.stop(_QueryStage.backendRead);
         final decoded = <_Decoded>[];
         for (final entry in entries) {
@@ -290,7 +311,7 @@ class QueryImpl<T> implements Query<T> {
         }
         if (_sort.isNotEmpty) {
           if (t != null) t.start(_QueryStage.sort);
-          decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+          decoded.sort(_compareDecoded);
           if (t != null) t.stop(_QueryStage.sort);
         }
         if (t != null) t.start(_QueryStage.predicate);
@@ -324,7 +345,7 @@ class QueryImpl<T> implements Query<T> {
       }
       if (_sort.isNotEmpty) {
         if (t != null) t.start(_QueryStage.sort);
-        decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+        decoded.sort(_compareDecoded);
         if (t != null) t.stop(_QueryStage.sort);
       }
       if (t != null) t.start(_QueryStage.predicate);
@@ -348,10 +369,20 @@ class QueryImpl<T> implements Query<T> {
     if (snap is NativeRawSnapshot) {
       final predicateBytes = encodePredicate(_filters, codec: _codec);
       if (t != null) t.start(_QueryStage.backendRead);
-      final entries = await snap.queryFiltered(
-        table: _table,
-        predicateBytes: predicateBytes,
-      );
+      // M4: when the caller wants a window, the scan stops in Rust as soon as
+      // the window fills (matching rows beyond it are never transferred).
+      final windowed = nativeLimit != null || nativeOffset > 0;
+      final entries = windowed
+          ? await snap.queryFilteredLimited(
+              table: _table,
+              predicateBytes: predicateBytes,
+              limit: nativeLimit,
+              offset: nativeOffset,
+            )
+          : await snap.queryFiltered(
+              table: _table,
+              predicateBytes: predicateBytes,
+            );
       if (t != null) t.stop(_QueryStage.backendRead);
       final decoded = <_Decoded>[];
       for (final entry in entries) {
@@ -370,7 +401,7 @@ class QueryImpl<T> implements Query<T> {
       }
       if (_sort.isNotEmpty) {
         if (t != null) t.start(_QueryStage.sort);
-        decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+        decoded.sort(_compareDecoded);
         if (t != null) t.stop(_QueryStage.sort);
       }
       // The predicate was already evaluated in Rust; re-test in Dart only when
@@ -406,7 +437,7 @@ class QueryImpl<T> implements Query<T> {
     }
     if (_sort.isNotEmpty) {
       if (t != null) t.start(_QueryStage.sort);
-      decoded.sort((a, b) => compareRows(a.row, b.row, _sort));
+      decoded.sort(_compareDecoded);
       if (t != null) t.stop(_QueryStage.sort);
     }
     if (t != null) t.start(_QueryStage.predicate);
@@ -422,33 +453,175 @@ class QueryImpl<T> implements Query<T> {
   Map<Object?, Object?> _mapOf(Object? value) =>
       value is Map ? Map<Object?, Object?>.from(value) : <Object?, Object?>{};
 
+  /// M4: the query-engine sort comparator. Rows are ordered by [compareRows]
+  /// (Dart's documented field ordering); ties are then broken by the record
+  /// key bytes so the result is DETERMINISTIC and matches the durable index's
+  /// `(value, recordId)` order (which the native index-ordered fast path and
+  /// the Rust top-K use). Dart's `List.sort` is not stable, so without this
+  /// tiebreak equal-key results would be arbitrary and differ per backend.
+  int _compareDecoded(_Decoded a, _Decoded b) {
+    final c = compareRows(a.row, b.row, _sort);
+    return c != 0 ? c : a.key.compareTo(b.key);
+  }
+
   /// Applies limit/offset after an already-ordered stream.
   Future<List<_Decoded>> _collectOrdered({_QueryTimings? t}) async {
+    // M4: sorted + limited queries on the native backend route to the Rust
+    // top-K / index-ordered path — no full materialization, no Dart sort.
+    if (_sort.isNotEmpty && (_limit != null || (_offset ?? 0) > 0)) {
+      final native = await _nativeOrderedCollect(t);
+      if (native != null) return native;
+    }
     final matching = <_Decoded>[];
-    await for (final item in _scanTimed(t)) {
+    // Pass the window (offset + limit) to the native early-stop so only the
+    // rows that can appear in the result cross the boundary; the Dart slice
+    // below applies the offset uniformly (in-memory ignores the window).
+    final start = _offset ?? 0;
+    final windowEnd = _limit == null ? null : start + _limit!;
+    await for (final item in _scanTimed(
+      t,
+      nativeLimit: windowEnd,
+      nativeOffset: 0,
+    )) {
       matching.add(item);
     }
-    var start = _offset ?? 0;
+    var sliceStart = start;
     var end = matching.length;
-    if (_limit != null) end = start + _limit!;
-    if (start > matching.length) start = matching.length;
+    if (_limit != null) end = sliceStart + _limit!;
+    if (sliceStart > matching.length) sliceStart = matching.length;
     if (end > matching.length) end = matching.length;
-    return matching.sublist(start, end);
+    return matching.sublist(sliceStart, end);
+  }
+
+  /// M4: routes a sorted + limited query on the native backend through the
+  /// Rust top-K or index-ordered path, returning the fully-ordered window
+  /// (predicate + sort + limit/offset all applied in Rust). Returns null when
+  /// the snapshot is not native so the caller falls back to the Dart path.
+  Future<List<_Decoded>?> _nativeOrderedCollect(_QueryTimings? t) async {
+    final secondary = _secondary;
+    if (secondary != null) await secondary.ready;
+    final snap = await _engine.backend.snapshot();
+    if (snap is! NativeRawSnapshot) {
+      await snap.dispose();
+      return null;
+    }
+    try {
+      final idx = secondary?.secondary;
+      final predicateBytes = encodePredicate(_filters, codec: _codec);
+      final sortBytes = encodeSortSpecs(_sort);
+      final limit = _limit;
+      final offset = _offset ?? 0;
+      final route = _indexCoveredSortRoute(idx);
+      final List<RawEntry> entries;
+      if (route != null) {
+        // Index-covered: stream the durable index in order and stop early.
+        lastPlan = IndexPlan.secondaryIndex;
+        final (field, (start, end), eqBounded) = route;
+        if (t != null) t.start(_QueryStage.backendRead);
+        entries = await snap.queryIndexedOrdered(
+          table: _table,
+          start: ByteKey(start),
+          end: ByteKey(end),
+          predicateBytes: predicateBytes,
+          sortField: field,
+          eqBounded: eqBounded,
+          limit: limit,
+          offset: offset,
+        );
+        if (t != null) t.stop(_QueryStage.backendRead);
+      } else {
+        // Non-index-covered sort: Rust top-K (never materializes the full set).
+        lastPlan = IndexPlan.nativeFilteredScan;
+        if (t != null) t.start(_QueryStage.backendRead);
+        entries = await snap.querySorted(
+          table: _table,
+          predicateBytes: predicateBytes,
+          sortSpecBytes: sortBytes,
+          limit: limit,
+          offset: offset,
+        );
+        if (t != null) t.stop(_QueryStage.backendRead);
+      }
+      final decoded = <_Decoded>[];
+      for (final entry in entries) {
+        if (t != null) {
+          t.scanned++;
+          t.start(_QueryStage.decode);
+        }
+        final row = _mapOf(_codec.decode(entry.value ?? const []));
+        if (t != null) {
+          t.stop(_QueryStage.decode);
+          t.start(_QueryStage.mapCopy);
+        }
+        if (t != null) t.stop(_QueryStage.mapCopy);
+        decoded.add(_Decoded(entry.key, row));
+      }
+      // Rust already filtered + sorted; only the timing predicate stage runs.
+      if (t != null) t.start(_QueryStage.predicate);
+      for (final _ in decoded) {
+        if (t != null) t.matched++;
+      }
+      if (t != null) t.stopAccum(_QueryStage.predicate);
+      return decoded;
+    } finally {
+      await snap.dispose();
+    }
+  }
+
+  /// M4: returns `(sortField, (start, end), eqBounded)` when the query's
+  /// single sort spec is covered by a single-field durable index, so index-key
+  /// order matches the sort and Rust can stream the index with an early stop.
+  /// Returns null for multi-spec, non-indexed, or descending-without-eq sorts
+  /// (those use the Rust top-K path, which handles missing-field placement).
+  (String, (List<int>, List<int>), bool)? _indexCoveredSortRoute(
+    SecondaryIndex? idx,
+  ) {
+    if (idx == null || _sort.length != 1) return null;
+    final spec = _sort.single;
+    if (!idx.isIndexed(spec.field)) return null;
+    final eqOnField = _filters.any(
+      (f) => f.isIndexUsable && f.field == spec.field,
+    );
+    if (eqOnField) {
+      // Every matching row has the same value, so index-key (recordId) order
+      // is exactly the stable Dart order for either direction.
+      final value = _filters
+          .firstWhere((f) => f.isIndexUsable && f.field == spec.field)
+          .value;
+      final (start, end) = eqBounds(_table, spec.field, value, codec: _codec);
+      return (spec.field, (start, end), true);
+    }
+    // Descending without an eq on the field sorts missing rows FIRST; that
+    // needs the top-K path (which handles missing-first correctly).
+    if (spec.order == SortOrder.descending) return null;
+    final (start, end) = fieldBounds(_table, spec.field, codec: _codec);
+    return (spec.field, (start, end), false);
   }
 
   /// [Iterable] timed scan: wraps [_scan] so the per-stage accumulator [t]
   /// (when non-null) is threaded into [_scanWith]. When null, behaves exactly
-  /// like [_scan] and pays no timing overhead.
-  Stream<_Decoded> _scanTimed(_QueryTimings? t) async* {
+  /// like [_scan] and pays no timing overhead. [nativeLimit]/[nativeOffset]
+  /// forward the query window to the native early-stop (ignored in-memory).
+  Stream<_Decoded> _scanTimed(
+    _QueryTimings? t, {
+    int? nativeLimit,
+    int nativeOffset = 0,
+  }) async* {
     if (t == null) {
-      yield* _scan();
+      yield* _scan(nativeLimit: nativeLimit, nativeOffset: nativeOffset);
       return;
     }
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
     final snap = await _engine.backend.snapshot();
     try {
-      yield* _scanWith(snap, secondary?.secondary, t);
+      yield* _scanWith(
+        snap,
+        secondary?.secondary,
+        t,
+        nativeLimit: nativeLimit,
+        nativeOffset: nativeOffset,
+      );
     } finally {
       await snap.dispose();
     }

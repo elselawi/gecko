@@ -430,11 +430,13 @@ class NativeWorkerClient {
     required String table,
     required List<int> predicateBytes,
   }) async {
-    return _asInt(await _request('snapshotQueryFilteredCount', <Object?>[
-      snapshot,
-      table,
-      predicateBytes,
-    ]));
+    return _asInt(
+      await _request('snapshotQueryFilteredCount', <Object?>[
+        snapshot,
+        table,
+        predicateBytes,
+      ]),
+    );
   }
 
   /// M3: aggregate pushdown, snapshot-bound — emits only the bytes of [field]
@@ -448,14 +450,120 @@ class NativeWorkerClient {
     required List<int> predicateBytes,
     required String field,
   }) async {
-    final result =
-        await _request('snapshotQueryFilteredDistinct', <Object?>[
-          snapshot,
-          table,
-          predicateBytes,
-          field,
-        ]);
+    final result = await _request('snapshotQueryFilteredDistinct', <Object?>[
+      snapshot,
+      table,
+      predicateBytes,
+      field,
+    ]);
     return [for (final b in (result as List)) List<int>.from(b as List)];
+  }
+
+  /// M4: full-scan + predicate with an early LIMIT/OFFSET (snapshot-bound).
+  /// Returns at most [limit] matching rows after skipping [offset], stopping
+  /// the scan as soon as the window fills.
+  Future<List<(List<int>, List<int>)>> snapshotQueryFilteredLimited({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    final result = await _request('snapshotQueryFilteredLimited', <Object?>[
+      snapshot,
+      table,
+      predicateBytes,
+      limit,
+      offset,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  /// M4: index-served query with an early LIMIT/OFFSET (snapshot-bound).
+  Future<List<(List<int>, List<int>)>> snapshotQueryIndexedLimited({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    final result = await _request('snapshotQueryIndexedLimited', <Object?>[
+      snapshot,
+      table,
+      indexTable,
+      start,
+      end,
+      predicateBytes,
+      limit,
+      offset,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  /// M4: full-scan + top-K sort (snapshot-bound). Returns the
+  /// `[offset, offset+limit)` window ordered by [sortSpecBytes].
+  Future<List<(List<int>, List<int>)>> snapshotQuerySorted({
+    required int snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortSpecBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    final result = await _request('snapshotQuerySorted', <Object?>[
+      snapshot,
+      table,
+      predicateBytes,
+      sortSpecBytes,
+      limit,
+      offset,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
+  }
+
+  /// M4: index-ordered early-stop sort (snapshot-bound). Streams the durable
+  /// index range in index-key order and stops once `offset + limit` matches
+  /// are collected.
+  Future<List<(List<int>, List<int>)>> snapshotQueryIndexedOrdered({
+    required int snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    required String sortField,
+    required bool eqBounded,
+    int? limit,
+    int offset = 0,
+  }) async {
+    final result = await _request('snapshotQueryIndexedOrdered', <Object?>[
+      snapshot,
+      table,
+      indexTable,
+      start,
+      end,
+      predicateBytes,
+      sortField,
+      eqBounded,
+      limit,
+      offset,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+    ];
   }
 
   /// Releases [snapshot] in the worker (idempotent).

@@ -84,6 +84,177 @@ pub struct RedbWorker {
     next_snapshot_id: u64,
 }
 
+/// A candidate row held by the M4 top-K sort heap: the record key, the raw row
+/// bytes, and the precomputed sort-key tuple (one `Option<RowValue>` per sort
+/// spec — `None` = the row lacks that field, which sorts last for ascending /
+/// first for descending, exactly like Dart `compareRows`).
+struct SortCandidate {
+    key: Vec<u8>,
+    row: Vec<u8>,
+    sort_key: Vec<Option<crate::value_codec::RowValue>>,
+}
+
+/// A bounded max-heap (ordered by [cmp]) that keeps the K smallest items under
+/// [cmp] without materializing the full candidate set. Root is the current
+/// maximum; a new item only replaces the root when it compares smaller.
+struct TopK<T, C: Fn(&T, &T) -> std::cmp::Ordering> {
+    cap: usize,
+    items: Vec<T>,
+    cmp: C,
+}
+
+impl<T, C: Fn(&T, &T) -> std::cmp::Ordering> TopK<T, C> {
+    fn new(cap: usize, cmp: C) -> Self {
+        TopK {
+            cap,
+            items: Vec::with_capacity(cap.min(1024)),
+            cmp,
+        }
+    }
+
+    fn push(&mut self, item: T) {
+        if self.cap == 0 {
+            return;
+        }
+        if self.items.len() < self.cap {
+            self.items.push(item);
+            let mut i = self.items.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if (self.cmp)(&self.items[i], &self.items[parent]) == std::cmp::Ordering::Greater {
+                    self.items.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+            return;
+        }
+        // Heap is full: replace the root if the new item is smaller.
+        if (self.cmp)(&item, &self.items[0]) == std::cmp::Ordering::Less {
+            self.items[0] = item;
+            let len = self.items.len();
+            let mut i = 0;
+            loop {
+                let left = 2 * i + 1;
+                let right = 2 * i + 2;
+                let mut largest = i;
+                if left < len
+                    && (self.cmp)(&self.items[left], &self.items[largest])
+                        == std::cmp::Ordering::Greater
+                {
+                    largest = left;
+                }
+                if right < len
+                    && (self.cmp)(&self.items[right], &self.items[largest])
+                        == std::cmp::Ordering::Greater
+                {
+                    largest = right;
+                }
+                if largest == i {
+                    break;
+                }
+                self.items.swap(i, largest);
+                i = largest;
+            }
+        }
+    }
+
+    /// Consumes the heap, returning the items in ascending comparator order.
+    fn into_sorted(mut self) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.items.len());
+        while self.items.len() > 1 {
+            // Move the current max (root) to the end, pop it, then restore the
+            // heap invariant for the new root.
+            let last = self.items.len() - 1;
+            self.items.swap(0, last);
+            let max = self.items.pop().expect("len > 1");
+            out.push(max);
+            let len = self.items.len();
+            let mut i = 0;
+            loop {
+                let left = 2 * i + 1;
+                let right = 2 * i + 2;
+                let mut largest = i;
+                if left < len
+                    && (self.cmp)(&self.items[left], &self.items[largest])
+                        == std::cmp::Ordering::Greater
+                {
+                    largest = left;
+                }
+                if right < len
+                    && (self.cmp)(&self.items[right], &self.items[largest])
+                        == std::cmp::Ordering::Greater
+                {
+                    largest = right;
+                }
+                if largest == i {
+                    break;
+                }
+                self.items.swap(i, largest);
+                i = largest;
+            }
+        }
+        if let Some(last_item) = self.items.pop() {
+            out.push(last_item);
+        }
+        out.reverse();
+        out
+    }
+}
+
+/// Applies `(offset, limit)` to a fully-collected ordered result: skips the
+/// first [offset] rows and keeps the next [limit] (or all remaining when
+/// [limit] is None). Clamps out-of-range windows (matches Dart's slice).
+fn slice_offset_limit(rows: Vec<SortCandidate>, limit: Option<u64>, offset: u64) -> Vec<ByteEntry> {
+    let len = rows.len() as u64;
+    let start = offset.min(len) as usize;
+    let end = match limit {
+        Some(l) => (offset.saturating_add(l)).min(len) as usize,
+        None => len as usize,
+    };
+    rows[start..end]
+        .iter()
+        .map(|c| (c.key.clone(), c.row.clone()))
+        .collect()
+}
+
+/// Compares two [SortCandidate]s by their precomputed sort-key tuples under
+/// [specs] — the same missing-field/descending rules as
+/// `sort_spec::compare_rows`, but over the extracted per-field values.
+fn compare_rows_from_keys(
+    a: &SortCandidate,
+    b: &SortCandidate,
+    specs: &[crate::sort_spec::SortSpec],
+) -> std::cmp::Ordering {
+    for (i, spec) in specs.iter().enumerate() {
+        match (&a.sort_key[i], &b.sort_key[i]) {
+            (Some(x), Some(y)) => {
+                let c = crate::value_codec::sort_compare(x, y);
+                if c != std::cmp::Ordering::Equal {
+                    return if spec.descending { c.reverse() } else { c };
+                }
+            }
+            (Some(_), None) => {
+                return if spec.descending {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+            }
+            (None, Some(_)) => {
+                return if spec.descending {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+            (None, None) => {}
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 impl RedbWorker {
     /// Creates or opens a database. redb performs file locking and crash
     /// recovery during this call.
@@ -761,6 +932,506 @@ impl RedbWorker {
             result.push(row_bytes[start..end].to_vec());
         }
         Ok(result)
+    }
+
+    // ── M4: early LIMIT/OFFSET + indexed/top-K sorting ──────────────────────
+
+    /// M4: full-scan with a pushed predicate and an early LIMIT/OFFSET —
+    /// skips the first [offset] matches and returns at most [limit] of the
+    /// rest, stopping the scan as soon as the window is filled. Non-matching
+    /// rows are never decoded in Dart, and (unlike [Self::query_filtered])
+    /// matching rows beyond the window are never transferred.
+    pub fn query_filtered_limited(
+        &self,
+        table: &str,
+        predicate_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_filtered_limited_with(&transaction, table, predicate_bytes, limit, offset)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_limited].
+    pub fn snapshot_query_filtered_limited(
+        &self,
+        snapshot: u64,
+        table: &str,
+        predicate_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_filtered_limited_with(transaction, table, predicate_bytes, limit, offset)
+    }
+
+    fn query_filtered_limited_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        predicate_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let definition = table_definition(table);
+        let table = match transaction.open_table(definition) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let want = limit.map(|l| offset.saturating_add(l));
+        if want == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut result = Vec::new();
+        for entry in table
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            if !predicate.test_bytes(value.value()) {
+                continue;
+            }
+            result.push((key.value().to_vec(), value.value().to_vec()));
+            if let Some(want) = want {
+                if result.len() as u64 >= want {
+                    break;
+                }
+            }
+        }
+        if offset > 0 {
+            let start = (offset as usize).min(result.len());
+            result = result.split_off(start);
+        }
+        Ok(result)
+    }
+
+    /// M4: index-served eq query with an early LIMIT/OFFSET. Streams the
+    /// durable-index range `[start..=end]` in index-key order, joins each
+    /// entry back to its row, applies [predicate_bytes] (the full filter set,
+    /// so early-stop is correct even with additional filters), and stops once
+    /// the window is filled.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_indexed_limited(
+        &self,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+        predicate_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_indexed_limited_with(
+            &transaction,
+            table,
+            index_table,
+            start,
+            end,
+            predicate_bytes,
+            limit,
+            offset,
+        )
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed_limited].
+    #[allow(clippy::too_many_arguments)]
+    pub fn snapshot_query_indexed_limited(
+        &self,
+        snapshot: u64,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+        predicate_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_indexed_limited_with(
+            transaction,
+            table,
+            index_table,
+            start,
+            end,
+            predicate_bytes,
+            limit,
+            offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn query_indexed_limited_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+        predicate_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let index_def = table_definition(index_table);
+        let index_table = match transaction.open_table(index_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let user_def = table_definition(table);
+        let user_table = match transaction.open_table(user_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let want = limit.map(|l| offset.saturating_add(l));
+        if want == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut result = Vec::new();
+        for entry in index_table
+            .range(start..=end)
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row_key = entry.1.value();
+            let Some(row_bytes) = user_table
+                .get(row_key)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .map(|v| v.value().to_vec())
+            else {
+                continue;
+            };
+            if !predicate.test_bytes(&row_bytes) {
+                continue;
+            }
+            result.push((row_key.to_vec(), row_bytes));
+            if let Some(want) = want {
+                if result.len() as u64 >= want {
+                    break;
+                }
+            }
+        }
+        if offset > 0 {
+            let start_idx = (offset as usize).min(result.len());
+            result = result.split_off(start_idx);
+        }
+        Ok(result)
+    }
+
+    /// M4: full-scan + top-K sort. Scans every row in [table], evaluates
+    /// [predicate_bytes], and keeps only the `offset + limit` smallest rows
+    /// under the [sort_spec_bytes] ordering (a port of Dart `compareRows`),
+    /// then returns the `[offset, offset+limit)` window in sorted order. The
+    /// full candidate set is never materialized or transferred — only the
+    /// window crosses the boundary. Handles multi-field sorts, ascending and
+    /// descending, and missing-field placement (last for ascending, first for
+    /// descending), exactly like Dart.
+    pub fn query_sorted(
+        &self,
+        table: &str,
+        predicate_bytes: &[u8],
+        sort_spec_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_sorted_with(
+            &transaction,
+            table,
+            predicate_bytes,
+            sort_spec_bytes,
+            limit,
+            offset,
+        )
+    }
+
+    /// Snapshot-bound variant of [Self::query_sorted].
+    pub fn snapshot_query_sorted(
+        &self,
+        snapshot: u64,
+        table: &str,
+        predicate_bytes: &[u8],
+        sort_spec_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_sorted_with(
+            transaction,
+            table,
+            predicate_bytes,
+            sort_spec_bytes,
+            limit,
+            offset,
+        )
+    }
+
+    fn query_sorted_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        predicate_bytes: &[u8],
+        sort_spec_bytes: &[u8],
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        use crate::sort_spec::decode_sort_specs;
+        use crate::value_codec::RowValue;
+        let specs = decode_sort_specs(sort_spec_bytes).map_err(WorkerError::Wire)?;
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let definition = table_definition(table);
+        let table = match transaction.open_table(definition) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let cap = limit
+            .map(|l| offset.saturating_add(l) as usize)
+            .unwrap_or(usize::MAX);
+        let mut heap = TopK::new(cap, |a: &SortCandidate, b: &SortCandidate| {
+            // M4: ties break by record key bytes (matching the durable-index
+            // order and the Dart `_compareDecoded` tiebreak) so every backend
+            // returns the same deterministic order.
+            compare_rows_from_keys(a, b, &specs.specs).then_with(|| a.key.cmp(&b.key))
+        });
+        for entry in table
+            .iter()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row_bytes = value.value();
+            if !predicate.test_bytes(row_bytes) {
+                continue;
+            }
+            // Decode ONLY the sort fields via find_field (no full row decode).
+            let mut sort_key: Vec<Option<RowValue>> = Vec::with_capacity(specs.specs.len());
+            for spec in &specs.specs {
+                let found = crate::value_codec::find_field(row_bytes, &spec.field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                sort_key.push(found);
+            }
+            heap.push(SortCandidate {
+                key: key.value().to_vec(),
+                row: row_bytes.to_vec(),
+                sort_key,
+            });
+        }
+        let sorted = heap.into_sorted();
+        Ok(slice_offset_limit(sorted, limit, offset))
+    }
+
+    /// M4: index-ordered early-stop sort. When a query's sort field is covered
+    /// by a single-field durable index, the composite index keys are already
+    /// ordered by `(value, recordId)` — the same order Dart's stable sort of
+    /// that field produces. This streams the index range `[start..=end]`,
+    /// joins each entry to its row, applies [predicate_bytes], and stops once
+    /// `offset + limit` matches are collected — no full scan, no sort.
+    ///
+    /// Two calling modes (the Dart side routes accordingly):
+    /// - [eq_bounded] = true: `start..=end` is an equality bound on the sort
+    ///   field, so every matching row's sort key is equal and index-key order
+    ///   (recordId) is exactly the stable Dart order for both directions.
+    /// - [eq_bounded] = false: `start..=end` covers all values of [sort_field]
+    ///   (ascending order only). Rows missing the field sort LAST for
+    ///   ascending; if the index stream is exhausted before the window fills,
+    ///   a table scan appends the missing-field matching rows (stable order).
+    ///   Descending without an eq bound is NOT routed here (caller uses
+    ///   [Self::query_sorted], which handles missing-first correctly).
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_indexed_ordered(
+        &self,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+        predicate_bytes: &[u8],
+        sort_field: &str,
+        eq_bounded: bool,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_indexed_ordered_with(
+            &transaction,
+            table,
+            index_table,
+            start,
+            end,
+            predicate_bytes,
+            sort_field,
+            eq_bounded,
+            limit,
+            offset,
+        )
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed_ordered].
+    #[allow(clippy::too_many_arguments)]
+    pub fn snapshot_query_indexed_ordered(
+        &self,
+        snapshot: u64,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+        predicate_bytes: &[u8],
+        sort_field: &str,
+        eq_bounded: bool,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.snapshot_transaction(snapshot)?;
+        self.query_indexed_ordered_with(
+            transaction,
+            table,
+            index_table,
+            start,
+            end,
+            predicate_bytes,
+            sort_field,
+            eq_bounded,
+            limit,
+            offset,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn query_indexed_ordered_with(
+        &self,
+        transaction: &ReadTransaction,
+        table: &str,
+        index_table: &str,
+        start: &[u8],
+        end: &[u8],
+        predicate_bytes: &[u8],
+        sort_field: &str,
+        eq_bounded: bool,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        use crate::value_codec::find_field;
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let index_def = table_definition(index_table);
+        let index_table = match transaction.open_table(index_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                // No durable index yet (e.g. an empty index table): the
+                // ordered result for the non-eq mode is every matching row in
+                // recordId order (they all lack index entries). Fall back to
+                // the full top-K sort, which is correct in all cases.
+                if eq_bounded {
+                    return Ok(Vec::new());
+                }
+                let fallback_spec =
+                    crate::sort_spec::encode_sort_specs(&[crate::sort_spec::SortSpec {
+                        field: sort_field.to_string(),
+                        descending: false,
+                    }]);
+                return self.query_sorted_with(
+                    transaction,
+                    table,
+                    predicate_bytes,
+                    &fallback_spec,
+                    limit,
+                    offset,
+                );
+            }
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let user_def = table_definition(table);
+        let user_table = match transaction.open_table(user_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        };
+        let want = limit.map(|l| offset.saturating_add(l));
+        if want == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut matches: Vec<ByteEntry> = Vec::new();
+        let mut matched_keys: Vec<Vec<u8>> = Vec::new();
+        for entry in index_table
+            .range(start..=end)
+            .map_err(|error| WorkerError::Storage(error.to_string()))?
+        {
+            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row_key = entry.1.value();
+            let Some(row_bytes) = user_table
+                .get(row_key)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .map(|v| v.value().to_vec())
+            else {
+                continue;
+            };
+            if !predicate.test_bytes(&row_bytes) {
+                continue;
+            }
+            matched_keys.push(row_key.to_vec());
+            matches.push((row_key.to_vec(), row_bytes));
+            if let Some(want) = want {
+                if matches.len() as u64 >= want {
+                    break;
+                }
+            }
+        }
+        // Non-eq mode: if the index stream did not fill the window, the rows
+        // missing `sort_field` (which sort LAST for ascending) must be
+        // appended. They are found with a table scan (stable recordId order,
+        // matching Dart's stable sort of ties). In eq-bounded mode every
+        // matching row carries the sort field, so no append is needed.
+        let needs_append = !eq_bounded && want.is_some_and(|w| (matches.len() as u64) < w);
+        if needs_append {
+            let mut present = std::collections::HashSet::new();
+            for k in &matched_keys {
+                present.insert(k.clone());
+            }
+            for entry in user_table
+                .iter()
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+            {
+                let (key, value) =
+                    entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                let key_bytes = key.value().to_vec();
+                if present.contains(&key_bytes) {
+                    continue;
+                }
+                let row_bytes = value.value();
+                if !predicate.test_bytes(row_bytes) {
+                    continue;
+                }
+                let has_field = find_field(row_bytes, sort_field)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                    .is_some();
+                if has_field {
+                    // The row carries the field but has no index entry — not a
+                    // missing-field row; skip (should not happen when the
+                    // durable index is maintained atomically).
+                    continue;
+                }
+                matches.push((key_bytes, row_bytes.to_vec()));
+                if let Some(want) = want {
+                    if matches.len() as u64 >= want {
+                        break;
+                    }
+                }
+            }
+        }
+        if offset > 0 {
+            let start_idx = (offset as usize).min(matches.len());
+            matches = matches.split_off(start_idx);
+        }
+        Ok(matches)
     }
 
     pub fn commit_sequence(&self) -> u64 {
@@ -1486,6 +2157,310 @@ mod tests {
             .query_filtered_distinct("nope", &empty_pred, "g")
             .unwrap();
         assert!(missing_table.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── M4: early limit/offset + sorted + index-ordered ────────────────────
+
+    /// The durable-index composite key `encode([table, field, value, recordId])`
+    /// (a 4-element codec list) for the test table.
+    fn index_key(table: &str, field: &str, value: &[u8], record_id: &[u8]) -> Vec<u8> {
+        use crate::value_codec::TAG_LIST;
+        let mut out = vec![TAG_LIST];
+        out.extend_from_slice(&4u32.to_be_bytes());
+        out.extend_from_slice(&encode_test_string(table));
+        out.extend_from_slice(&encode_test_string(field));
+        out.extend_from_slice(value);
+        out.extend_from_slice(record_id);
+        out
+    }
+
+    /// Seeds rows with an `age` field (values 10..=40 step 10 on k0..k3) plus
+    /// one row without `age` (k4), and a durable `__gecko_index` entry for the
+    /// `age` field of every row that has it. Returns the file path.
+    fn seed_indexed_age_fixture(label: &str) -> (std::path::PathBuf, RedbWorker) {
+        let path = temp_path(label);
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // (key, age-value bytes, row bytes)
+        let rows: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = [
+            (b"k0".to_vec(), encode_test_int64(10)),
+            (b"k1".to_vec(), encode_test_int64(20)),
+            (b"k2".to_vec(), encode_test_int64(30)),
+            (b"k3".to_vec(), encode_test_int64(40)),
+        ]
+        .iter()
+        .map(|(k, age)| {
+            let row = encode_test_row(&[("age", age.clone()), ("nick", encode_test_string("g0"))]);
+            (k.clone(), age.clone(), row)
+        })
+        .collect();
+        // k4 has a nick but NO age (missing-field row).
+        let missing_row = encode_test_row(&[("nick", encode_test_string("g1"))]);
+        let mut ops: Vec<Op> = rows
+            .iter()
+            .map(|(k, _, v)| Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(k.clone()),
+                value: Some(v.clone()),
+                start: None,
+                end: None,
+            })
+            .collect();
+        ops.push(Op {
+            kind: OpKind::Put,
+            table: "items".into(),
+            key: Some(b"k4".to_vec()),
+            value: Some(missing_row),
+            start: None,
+            end: None,
+        });
+        // Durable index entries for `age` on k0..k3: key = [items, age, value, id].
+        for (k, age, _) in &rows {
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "__gecko_index".into(),
+                key: Some(index_key("items", "age", age, k)),
+                value: Some(k.clone()),
+                start: None,
+                end: None,
+            });
+        }
+        worker.apply_batch(&ops).unwrap();
+        (path, worker)
+    }
+
+    /// Field bounds for all `age` entries of `items` (the 4-element prefix
+    /// `0x06 | u32(4) | encode("items") | encode("age")`, upper-bounded by the
+    /// incremented last byte).
+    fn age_field_bounds() -> (Vec<u8>, Vec<u8>) {
+        let full = index_key(
+            "items",
+            "age",
+            &[crate::value_codec::TAG_NULL],
+            &[crate::value_codec::TAG_NULL],
+        );
+        // strip two trailing null tag bytes to get the shared 2-element prefix
+        let prefix = full[0..full.len() - 2].to_vec();
+        let mut end = prefix.clone();
+        let mut i = end.len() - 1;
+        while i > 0 && end[i] == 0xFF {
+            end.pop();
+            i -= 1;
+        }
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        (prefix, end)
+    }
+
+    #[test]
+    fn query_filtered_limited_skips_and_stops_early() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::RowValue;
+        let (path, worker) = seed_aggregate_fixture("qfl");
+        // Empty predicate; limit 2, offset 1 → k1, k2 (skip k0, take 2).
+        let got = worker
+            .query_filtered_limited("items", &predicate::encode_predicate(&[]), Some(2), 1)
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, b"k1");
+        assert_eq!(got[1].0, b"k2");
+        // No limit → all 4.
+        let all = worker
+            .query_filtered_limited("items", &predicate::encode_predicate(&[]), None, 0)
+            .unwrap();
+        assert_eq!(all.len(), 4);
+        // Offset beyond the result set → empty.
+        let beyond = worker
+            .query_filtered_limited("items", &predicate::encode_predicate(&[]), Some(2), 10)
+            .unwrap();
+        assert!(beyond.is_empty());
+        // With a predicate: g0 → k0,k1; limit 1 → k0.
+        let g0 = predicate::encode_predicate(&[Filter::Equals {
+            field: "g".into(),
+            value: RowValue::String("g0".into()),
+        }]);
+        let one = worker
+            .query_filtered_limited("items", &g0, Some(1), 0)
+            .unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, b"k0");
+        // Missing table → empty.
+        assert!(worker
+            .query_filtered_limited("nope", &predicate::encode_predicate(&[]), Some(1), 0)
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_sorted_topk_matches_dart_order() {
+        use crate::sort_spec::{encode_sort_specs, SortSpec};
+        let (path, worker) = seed_indexed_age_fixture("qsorted");
+        let empty_pred = crate::predicate::encode_predicate(&[]);
+        // Sort ascending by age: k0(10), k1(20), k2(30), k3(40), then k4(missing).
+        let asc = encode_sort_specs(&[SortSpec {
+            field: "age".into(),
+            descending: false,
+        }]);
+        let got = worker
+            .query_sorted("items", &empty_pred, &asc, Some(5), 0)
+            .unwrap();
+        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(
+            keys,
+            vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]
+        );
+        // limit 2 → k0, k1; offset 2 → k2, k3.
+        let lim = worker
+            .query_sorted("items", &empty_pred, &asc, Some(2), 0)
+            .unwrap();
+        assert_eq!(lim.len(), 2);
+        assert_eq!(lim[0].0, b"k0");
+        assert_eq!(lim[1].0, b"k1");
+        let off = worker
+            .query_sorted("items", &empty_pred, &asc, Some(2), 2)
+            .unwrap();
+        assert_eq!(off[0].0, b"k2");
+        assert_eq!(off[1].0, b"k3");
+        // Descending: missing (k4) FIRST, then 40, 30, 20, 10.
+        let desc = encode_sort_specs(&[SortSpec {
+            field: "age".into(),
+            descending: true,
+        }]);
+        let d = worker
+            .query_sorted("items", &empty_pred, &desc, Some(5), 0)
+            .unwrap();
+        let dkeys: Vec<&[u8]> = d.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(
+            dkeys,
+            vec![&b"k4"[..], &b"k3"[..], &b"k2"[..], &b"k1"[..], &b"k0"[..]]
+        );
+        // Predicate filter: age > 15 → k1,k2,k3 sorted asc (k4 has no age → filtered out).
+        let gt15 = crate::predicate::encode_predicate(&[crate::predicate::Filter::Range {
+            field: "age".into(),
+            min: Some(crate::value_codec::RowValue::Int64(16)),
+            max: None,
+        }]);
+        let g = worker
+            .query_sorted("items", &gt15, &asc, Some(5), 0)
+            .unwrap();
+        let gkeys: Vec<&[u8]> = g.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(gkeys, vec![&b"k1"[..], &b"k2"[..], &b"k3"[..]]);
+        // limit 0 → empty.
+        assert!(worker
+            .query_sorted("items", &empty_pred, &asc, Some(0), 0)
+            .unwrap()
+            .is_empty());
+        // Missing table → empty.
+        assert!(worker
+            .query_sorted("nope", &empty_pred, &asc, Some(1), 0)
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_streams_early_and_appends_missing() {
+        let (path, worker) = seed_indexed_age_fixture("qio");
+        let empty_pred = crate::predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        // Ascending, no eq bound: index order k0..k3, then missing k4 appended.
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                Some(5),
+                0,
+            )
+            .unwrap();
+        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(
+            keys,
+            vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]
+        );
+        // Early-stop: limit 2 → k0, k1 (no missing append needed).
+        let lim = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                Some(2),
+                0,
+            )
+            .unwrap();
+        assert_eq!(lim.len(), 2);
+        assert_eq!(lim[0].0, b"k0");
+        assert_eq!(lim[1].0, b"k1");
+        // Offset 2 → k2, k3.
+        let off = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                Some(2),
+                2,
+            )
+            .unwrap();
+        assert_eq!(off[0].0, b"k2");
+        assert_eq!(off[1].0, b"k3");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_limited_windows_an_eq_bound() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::RowValue;
+        let (path, worker) = seed_indexed_age_fixture("qil");
+        // Eq bound for age == 20 (only k1).
+        let mut full = index_key(
+            "items",
+            "age",
+            &encode_test_int64(20),
+            &[crate::value_codec::TAG_NULL],
+        );
+        full.pop(); // strip trailing null → shared prefix
+        let mut end = full.clone();
+        let mut i = end.len() - 1;
+        while i > 0 && end[i] == 0xFF {
+            end.pop();
+            i -= 1;
+        }
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        let eq_pred = predicate::encode_predicate(&[Filter::Equals {
+            field: "age".into(),
+            value: RowValue::Int64(20),
+        }]);
+        // Sanity: the plain M2 join over the same bounds must find k1.
+        let joined = worker
+            .query_indexed("items", "__gecko_index", &full, &end)
+            .unwrap();
+        assert_eq!(joined.len(), 1, "index bounds must reach the age=20 entry");
+        assert_eq!(joined[0].0, b"k1");
+        let got = worker
+            .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, Some(10), 0)
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, b"k1");
+        // limit 0 → empty.
+        assert!(worker
+            .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, Some(0), 0,)
+            .unwrap()
+            .is_empty());
         let _ = std::fs::remove_file(path);
     }
 }

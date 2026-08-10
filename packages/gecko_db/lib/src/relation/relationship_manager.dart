@@ -138,10 +138,9 @@ class RelationshipManager {
       // backend) instead of one `snap.read` per child id (the relationship
       // N+1). The FK re-check is kept because the in-memory index may be
       // stale relative to the snapshot's committed state in edge cases.
-      final entries = await snap.getMany(
-        r.childCollection,
-        [for (final id in ids) _byteOf(id)],
-      );
+      final entries = await snap.getMany(r.childCollection, [
+        for (final id in ids) _byteOf(id),
+      ]);
       final rows = <Map<Object?, Object?>>[];
       for (final entry in entries) {
         final row = _mapOf(_codec.decode(entry.value ?? const []));

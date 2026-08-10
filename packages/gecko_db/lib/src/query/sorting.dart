@@ -2,7 +2,10 @@
 ///
 /// Rows are sorted by a list of [`SortSpec`]. Missing field values place those
 /// rows at a documented position: last for ascending, first for descending
-/// (consistent with the index ordering). Ties preserve stable order of input.
+/// (consistent with the index ordering). [`compareRows`] returns 0 for ties;
+/// the query engine then breaks ties deterministically by record key bytes
+/// (M4), which matches the durable index's `(value, recordId)` order so the
+/// native fast paths and the Dart sort agree exactly.
 library;
 
 import '../api/query.dart';
@@ -11,6 +14,7 @@ import '../api/query.dart';
 ///
 /// `missingFirst` controls where rows lacking the sort field sort: for
 /// ascending we want missing values last, for descending missing first.
+/// Returns 0 for ties; the query engine breaks ties by record key.
 int compareRows(
   Map<Object?, Object?> a,
   Map<Object?, Object?> b,

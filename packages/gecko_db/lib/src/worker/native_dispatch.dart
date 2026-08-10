@@ -145,6 +145,69 @@ Future<Object?> dispatchNativeWorker(
     case 'dropSnapshot':
       await worker.dropSnapshot(snapshot: _asBigInt(arguments[0]));
       return null;
+    case 'snapshotQueryFilteredLimited':
+      final pairs = await worker.snapshotQueryFilteredLimited(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[2] as List),
+        ),
+        limit: arguments[3] == null ? null : _asBigInt(arguments[3]),
+        offset: _asBigInt(arguments[4]),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
+    case 'snapshotQueryIndexedLimited':
+      final pairs = await worker.snapshotQueryIndexedLimited(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        indexTable: arguments[2] as String,
+        start: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+        end: Uint8List.fromList(List<int>.from(arguments[4] as List)),
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[5] as List),
+        ),
+        limit: arguments[6] == null ? null : _asBigInt(arguments[6]),
+        offset: _asBigInt(arguments[7]),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
+    case 'snapshotQuerySorted':
+      final pairs = await worker.snapshotQuerySorted(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[2] as List),
+        ),
+        sortSpecBytes: Uint8List.fromList(
+          List<int>.from(arguments[3] as List),
+        ),
+        limit: arguments[4] == null ? null : _asBigInt(arguments[4]),
+        offset: _asBigInt(arguments[5]),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
+    case 'snapshotQueryIndexedOrdered':
+      final pairs = await worker.snapshotQueryIndexedOrdered(
+        snapshot: _asBigInt(arguments[0]),
+        table: arguments[1] as String,
+        indexTable: arguments[2] as String,
+        start: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+        end: Uint8List.fromList(List<int>.from(arguments[4] as List)),
+        predicateBytes: Uint8List.fromList(
+          List<int>.from(arguments[5] as List),
+        ),
+        sortField: arguments[6] as String,
+        eqBounded: arguments[7] as bool,
+        limit: arguments[8] == null ? null : _asBigInt(arguments[8]),
+        offset: _asBigInt(arguments[9]),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+      ];
     case 'commitSequence':
       return (await worker.commitSequence()).toString();
     case 'compact':

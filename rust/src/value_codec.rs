@@ -145,6 +145,79 @@ impl RowValue {
     }
 }
 
+/// A 64/128-bit numeric value extracted from a [`RowValue`] for sorting.
+#[derive(Debug, Clone, Copy)]
+enum NumVal {
+    I(i64),
+    I128(i128),
+    F(f64),
+}
+
+/// M4: sort comparison over two decoded field values — a byte-for-byte port of
+/// Dart `compareFieldValues` (`sorting.dart`), NOT the range-filter `compare`.
+/// The contracts differ: `compare` uses the Dart `Filter._compare` fallback
+/// (type-rank), while sorting uses Dart `num.compareTo` for all numerics, then
+/// string/bool natural order, same-runtimeType `Comparable` natural order, a
+/// `(x ?? '').toString()` rule when nulls are involved, and a plain
+/// `toString()` fallback otherwise.
+pub fn sort_compare(a: &RowValue, b: &RowValue) -> std::cmp::Ordering {
+    use RowValue::*;
+    // num vs num → numeric (Dart num.compareTo).
+    if let (Some(x), Some(y)) = (num_of(a), num_of(b)) {
+        return compare_num(x, y);
+    }
+    // String vs String → lexical.
+    if let (String(x), String(y)) = (a, b) {
+        return x.cmp(y);
+    }
+    // bool vs bool → false < true.
+    if let (Bool(x), Bool(y)) = (a, b) {
+        return x.cmp(y);
+    }
+    // DateTime vs DateTime → natural (Dart Comparable, same runtimeType).
+    if let (DateTime(x), DateTime(y)) = (a, b) {
+        return x.cmp(y);
+    }
+    // Nulls involved → (x ?? '').toString() comparison ('' for null).
+    if matches!(a, Null) || matches!(b, Null) {
+        return sortable_string(a).cmp(&sortable_string(b));
+    }
+    // Otherwise → toString() fallback.
+    sortable_string(a).cmp(&sortable_string(b))
+}
+
+fn num_of(v: &RowValue) -> Option<NumVal> {
+    match v {
+        RowValue::Int64(n) => Some(NumVal::I(*n)),
+        RowValue::BigInt(n) => Some(NumVal::I128(*n)),
+        RowValue::F64(d) => Some(NumVal::F(*d)),
+        _ => None,
+    }
+}
+
+fn compare_num(a: NumVal, b: NumVal) -> std::cmp::Ordering {
+    match (a, b) {
+        (NumVal::I(x), NumVal::I(y)) => x.cmp(&y),
+        (NumVal::I128(x), NumVal::I128(y)) => x.cmp(&y),
+        (NumVal::I(x), NumVal::I128(y)) => (x as i128).cmp(&y),
+        (NumVal::I128(x), NumVal::I(y)) => x.cmp(&(y as i128)),
+        (NumVal::F(x), NumVal::F(y)) => x.total_cmp(&y),
+        (NumVal::F(x), NumVal::I(y)) => x.total_cmp(&(y as f64)),
+        (NumVal::I(x), NumVal::F(y)) => (x as f64).total_cmp(&y),
+        (NumVal::F(x), NumVal::I128(y)) => x.total_cmp(&(y as f64)),
+        (NumVal::I128(x), NumVal::F(y)) => (x as f64).total_cmp(&y),
+    }
+}
+
+/// The string Dart `x.toString()` produces for a value, with `Null → ""` (the
+/// `(x ?? '').toString()` rule in `compareFieldValues`).
+pub fn sortable_string(v: &RowValue) -> String {
+    match v {
+        RowValue::Null => String::new(),
+        other => other.to_compare_string(),
+    }
+}
+
 /// The tag bytes — must match the Dart `_Tag` enum byte-for-byte.
 pub const TAG_NULL: u8 = 0x00;
 pub const TAG_BOOL: u8 = 0x01;

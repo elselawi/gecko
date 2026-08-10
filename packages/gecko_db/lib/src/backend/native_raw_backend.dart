@@ -474,6 +474,118 @@ class NativeRawSnapshot implements RawSnapshot {
       throw mapNativeError(error);
     }
   }
+
+  /// M4: full-scan + predicate with an early LIMIT/OFFSET, snapshot-bound.
+  /// Returns at most [limit] matching rows after skipping [offset], stopping
+  /// the scan as soon as the window fills.
+  Future<List<RawEntry>> queryFilteredLimited({
+    required String table,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQueryFilteredLimited(
+        snapshot: _snapshotId,
+        table: table,
+        predicateBytes: predicateBytes,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M4: index-served query with an early LIMIT/OFFSET, snapshot-bound.
+  Future<List<RawEntry>> queryIndexedLimited({
+    required String table,
+    required ByteKey start,
+    required ByteKey end,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQueryIndexedLimited(
+        snapshot: _snapshotId,
+        table: table,
+        indexTable: indexTable,
+        start: start.bytes,
+        end: end.bytes,
+        predicateBytes: predicateBytes,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M4: full-scan + top-K sort, snapshot-bound. Returns the
+  /// `[offset, offset+limit)` window ordered by [sortSpecBytes] (a Rust port
+  /// of Dart `compareRows`); the full candidate set is never materialized.
+  Future<List<RawEntry>> querySorted({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortSpecBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQuerySorted(
+        snapshot: _snapshotId,
+        table: table,
+        predicateBytes: predicateBytes,
+        sortSpecBytes: sortSpecBytes,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
+
+  /// M4: index-ordered early-stop sort, snapshot-bound. Streams the durable
+  /// index range `[start..=end]` in index-key order, applies [predicateBytes],
+  /// and stops once `offset + limit` matches are collected. [eqBounded] marks
+  /// an equality bound on [sortField] (index-key order is correct for either
+  /// direction); when false the range covers all values of [sortField]
+  /// (ascending only; missing-field rows are appended if the window is not
+  /// filled).
+  Future<List<RawEntry>> queryIndexedOrdered({
+    required String table,
+    required ByteKey start,
+    required ByteKey end,
+    required List<int> predicateBytes,
+    required String sortField,
+    required bool eqBounded,
+    int? limit,
+    int offset = 0,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.snapshotQueryIndexedOrdered(
+        snapshot: _snapshotId,
+        table: table,
+        indexTable: indexTable,
+        start: start.bytes,
+        end: end.bytes,
+        predicateBytes: predicateBytes,
+        sortField: sortField,
+        eqBounded: eqBounded,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
+    }
+  }
 }
 
 class _SnapshotToken {

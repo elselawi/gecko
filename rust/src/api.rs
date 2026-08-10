@@ -226,6 +226,197 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// M4: full-scan + predicate with an early LIMIT/OFFSET — skips the first
+    /// [offset] matches and returns at most [limit] of the rest, stopping the
+    /// scan as soon as the window fills (matching rows beyond it are never
+    /// transferred).
+    pub async fn query_filtered_limited(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_filtered_limited(&table, &predicate_bytes, limit, offset)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_limited].
+    pub async fn snapshot_query_filtered_limited(
+        &self,
+        snapshot: u64,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_filtered_limited(snapshot, &table, &predicate_bytes, limit, offset)
+            .map_err(encode_worker_error)
+    }
+
+    /// M4: index-served query with an early LIMIT/OFFSET. Streams the durable
+    /// index range `[start..=end]`, joins to rows, applies [predicate_bytes]
+    /// (so early-stop is correct with additional filters), and stops once the
+    /// window fills.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_indexed_limited(
+        &self,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        predicate_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_indexed_limited(
+                &table,
+                &index_table,
+                &start,
+                &end,
+                &predicate_bytes,
+                limit,
+                offset,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed_limited].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn snapshot_query_indexed_limited(
+        &self,
+        snapshot: u64,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        predicate_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_indexed_limited(
+                snapshot,
+                &table,
+                &index_table,
+                &start,
+                &end,
+                &predicate_bytes,
+                limit,
+                offset,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// M4: full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
+    /// `[offset, offset+limit)` window ordered by [sort_spec_bytes] (a port of
+    /// Dart `compareRows`), keeping only the window in memory — the full
+    /// candidate set is never materialized or transferred.
+    pub async fn query_sorted(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        sort_spec_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_sorted(&table, &predicate_bytes, &sort_spec_bytes, limit, offset)
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_sorted].
+    pub async fn snapshot_query_sorted(
+        &self,
+        snapshot: u64,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        sort_spec_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_sorted(
+                snapshot,
+                &table,
+                &predicate_bytes,
+                &sort_spec_bytes,
+                limit,
+                offset,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// M4: index-ordered early-stop sort. Streams the durable-index range
+    /// `[start..=end]` in index-key order (the same order Dart's stable sort of
+    /// the field produces), joins to rows, applies [predicate_bytes], and
+    /// stops once `offset + limit` matches are collected. [eq_bounded]
+    /// indicates `start..=end` is an equality bound on [sort_field] (so
+    /// index-key order is correct for either direction); when false, the
+    /// stream covers all values of [sort_field] (ascending only; missing-field
+    /// rows are appended if the window is not filled).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_indexed_ordered(
+        &self,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        predicate_bytes: Vec<u8>,
+        sort_field: String,
+        eq_bounded: bool,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_indexed_ordered(
+                &table,
+                &index_table,
+                &start,
+                &end,
+                &predicate_bytes,
+                &sort_field,
+                eq_bounded,
+                limit,
+                offset,
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_indexed_ordered].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn snapshot_query_indexed_ordered(
+        &self,
+        snapshot: u64,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        predicate_bytes: Vec<u8>,
+        sort_field: String,
+        eq_bounded: bool,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_indexed_ordered(
+                snapshot,
+                &table,
+                &index_table,
+                &start,
+                &end,
+                &predicate_bytes,
+                &sort_field,
+                eq_bounded,
+                limit,
+                offset,
+            )
+            .map_err(encode_worker_error)
+    }
+
     /// Snapshot-bound variant of [Self::query_filtered]: the scan + predicate
     /// evaluation observe one consistent committed state.
     pub async fn snapshot_query_filtered(

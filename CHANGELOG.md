@@ -7,6 +7,29 @@ All notable changes to gecko_db are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **M4 — Indexed sorting and early LIMIT** (ADR-0019): sorted/limited queries
+  push sort + window to Rust on native — no materialization, no Dart sort.
+  - `query_indexed_ordered` streams index-covered sorts directly from the
+    durable index in byte order (ascending, or both directions when the sort
+    field is equality-filtered) and stops early at the limit; rows missing the
+    sort field are appended last (first when descending). If the index table
+    is absent it falls back to `query_sorted`.
+  - `query_sorted` does a full scan but keeps only a bounded **top-K heap**
+    (`offset + limit`) using the new `sort_spec::sort_compare` port of Dart's
+    `compareFieldValues`; only sort fields are extracted per row (via
+    `value_codec::find_field`), never a full decode.
+  - `query_filtered_limited` / `query_indexed_limited` add `limit`/`offset`
+    early-stop to the existing M2/M3 scans.
+  - New `sort_spec` wire format (`SORT_SPEC_WIRE_VERSION = 1`), mirrored by
+    `encodeSortSpecs` (Dart) and `decode_sort_specs` (Rust).
+  - `_nativeOrderedCollect` in `query_impl.dart` routes native sorted queries
+    to the Rust ops, bypassing `compareRows`/`decoded.sort` entirely.
+  - **Deterministic tie-break:** all paths (native index order, Rust top-K,
+    in-memory Dart sort) now break equal sort keys by raw record-key bytes,
+    since Dart's `List.sort` is not stable.
+  - 14 new parity tests in `packages/gecko_db/test/m4_sort_limit_test.dart`;
+    perf probe shows indexed `ORDER BY … LIMIT 20` on 100k rows at
+    **110–209 µs** (target < 5 ms).
 - **M3 — Read-path completion + `getMany`** (ADR-0018): every native read path
   now uses the Rust fast path, and reads aggregate / batch instead of moving
   whole rows to Dart.

@@ -101,6 +101,17 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String field,
   });
 
+  /// M4: full-scan + predicate with an early LIMIT/OFFSET — skips the first
+  /// [offset] matches and returns at most [limit] of the rest, stopping the
+  /// scan as soon as the window fills (matching rows beyond it are never
+  /// transferred).
+  Future<List<(Uint8List, Uint8List)>> queryFilteredLimited({
+    required String table,
+    required List<int> predicateBytes,
+    BigInt? limit,
+    required BigInt offset,
+  });
+
   /// Phase 2 native query fast path: range-scans the durable index table
   /// [index_table] for keys in `[start..=end]`, joins each entry's value
   /// (the user-table row key) back to its row in [table], and returns the
@@ -112,6 +123,52 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String indexTable,
     required List<int> start,
     required List<int> end,
+  });
+
+  /// M4: index-served query with an early LIMIT/OFFSET. Streams the durable
+  /// index range `[start..=end]`, joins to rows, applies [predicate_bytes]
+  /// (so early-stop is correct with additional filters), and stops once the
+  /// window fills.
+  Future<List<(Uint8List, Uint8List)>> queryIndexedLimited({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    BigInt? limit,
+    required BigInt offset,
+  });
+
+  /// M4: index-ordered early-stop sort. Streams the durable-index range
+  /// `[start..=end]` in index-key order (the same order Dart's stable sort of
+  /// the field produces), joins to rows, applies [predicate_bytes], and
+  /// stops once `offset + limit` matches are collected. [eq_bounded]
+  /// indicates `start..=end` is an equality bound on [sort_field] (so
+  /// index-key order is correct for either direction); when false, the
+  /// stream covers all values of [sort_field] (ascending only; missing-field
+  /// rows are appended if the window is not filled).
+  Future<List<(Uint8List, Uint8List)>> queryIndexedOrdered({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    required String sortField,
+    required bool eqBounded,
+    BigInt? limit,
+    required BigInt offset,
+  });
+
+  /// M4: full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
+  /// `[offset, offset+limit)` window ordered by [sort_spec_bytes] (a port of
+  /// Dart `compareRows`), keeping only the window in memory — the full
+  /// candidate set is never materialized or transferred.
+  Future<List<(Uint8List, Uint8List)>> querySorted({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortSpecBytes,
+    BigInt? limit,
+    required BigInt offset,
   });
 
   Future<List<(Uint8List, Uint8List)>> rangeScan({
@@ -173,6 +230,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String field,
   });
 
+  /// Snapshot-bound variant of [Self::query_filtered_limited].
+  Future<List<(Uint8List, Uint8List)>> snapshotQueryFilteredLimited({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    BigInt? limit,
+    required BigInt offset,
+  });
+
   /// Snapshot-bound variant of [Self::query_indexed]: reads through an
   /// existing MVCC snapshot so the index→row join observes one consistent
   /// committed state.
@@ -182,6 +248,42 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String indexTable,
     required List<int> start,
     required List<int> end,
+  });
+
+  /// Snapshot-bound variant of [Self::query_indexed_limited].
+  Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedLimited({
+    required BigInt snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    BigInt? limit,
+    required BigInt offset,
+  });
+
+  /// Snapshot-bound variant of [Self::query_indexed_ordered].
+  Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedOrdered({
+    required BigInt snapshot,
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    required String sortField,
+    required bool eqBounded,
+    BigInt? limit,
+    required BigInt offset,
+  });
+
+  /// Snapshot-bound variant of [Self::query_sorted].
+  Future<List<(Uint8List, Uint8List)>> snapshotQuerySorted({
+    required BigInt snapshot,
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortSpecBytes,
+    BigInt? limit,
+    required BigInt offset,
   });
 
   Future<List<(Uint8List, Uint8List)>> snapshotRangeScan({
