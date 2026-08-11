@@ -4,6 +4,8 @@
 // smoke suites (tool/web_smoke).
 library;
 
+import 'dart:io';
+
 import 'package:gecko_db/gecko_db.dart';
 import 'package:gecko_db/src/native/host_arch.dart' show hostArchitecture;
 import 'package:test/test.dart';
@@ -39,6 +41,39 @@ void main() {
           'x86_64',
         ),
       );
+    });
+
+    test('bundledArtifactPath resolves the OS-correct artifact name', () async {
+      final bundled = await bundledArtifactPath();
+      if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) {
+        expect(bundled, isNull);
+        return;
+      }
+      expect(bundled, isNotNull);
+      final expected = Platform.isWindows
+          ? 'gecko_db_rust.dll'
+          : Platform.isMacOS
+          ? 'libgecko_db_rust.dylib'
+          : 'libgecko_db_rust.so';
+      expect(bundled, endsWith(expected));
+    });
+
+    test('bundledArtifactPath lives under lib/native/<os>/<arch>', () async {
+      final bundled = await bundledArtifactPath();
+      if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) {
+        return;
+      }
+      expect(bundled, isNotNull);
+      final osDir = Platform.isWindows
+          ? 'native${Platform.pathSeparator}windows'
+          : Platform.isMacOS
+          ? 'native${Platform.pathSeparator}macos'
+          : 'native${Platform.pathSeparator}linux';
+      expect(bundled, contains(osDir));
+    });
+
+    test('bundledNativeDir is the package-native directory on the VM', () {
+      expect(bundledNativeDir, 'native');
     });
   });
 }

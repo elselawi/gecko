@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
 import 'package:gecko_db/src/namespaces.dart' show geckoIndexTable;
+import 'package:gecko_db/src/query/durable_index_bounds.dart' show eqBounds;
 import 'package:gecko_db/src/query/predicate_codec.dart' show encodePredicate;
 import 'package:test/test.dart';
 
@@ -34,21 +35,6 @@ _Rec _fromRow(Object? row) {
 }
 
 Object? _id(_Rec r) => r.id;
-
-/// Increments the last byte with carry, mirroring durable_index_bounds' helper.
-List<int> _bumpLast(List<int> bytes) {
-  final out = List<int>.of(bytes);
-  var i = out.length - 1;
-  while (i >= 0) {
-    if (out[i] < 0xFF) {
-      out[i] += 1;
-      return out.sublist(0, i + 1);
-    }
-    out.removeLast();
-    i--;
-  }
-  return bytes;
-}
 
 String _repoRoot() {
   if (Directory.current.path.endsWith(
@@ -152,21 +138,18 @@ void main() {
         await db.close();
       });
 
-      test(
-        'multi-equality intersection uses both durable indexes',
-        () async {
-          final db = await open('multi-eq');
-          final col = _coll(db, 't', indexFields: ['name', 'age']);
-          for (var i = 0; i < 100; i++) {
-            await col.put(_Rec('r$i', 'name-${i % 5}', i));
-          }
-          final q = col.where({'name': 'name-3', 'age': 33});
-          final result = await q.findAll();
-          expect(result.map((r) => r.id), ['r33']);
-          expect(q.lastPlan, IndexPlan.secondaryIndex);
-          await db.close();
-        },
-      );
+      test('multi-equality intersection uses both durable indexes', () async {
+        final db = await open('multi-eq');
+        final col = _coll(db, 't', indexFields: ['name', 'age']);
+        for (var i = 0; i < 100; i++) {
+          await col.put(_Rec('r$i', 'name-${i % 5}', i));
+        }
+        final q = col.where({'name': 'name-3', 'age': 33});
+        final result = await q.findAll();
+        expect(result.map((r) => r.id), ['r33']);
+        expect(q.lastPlan, IndexPlan.secondaryIndex);
+        await db.close();
+      });
 
       test(
         'indexed prefix uses durable field candidates and Rust recheck',
@@ -206,28 +189,25 @@ void main() {
         await db.close();
       });
 
-      test(
-        'indexed range and prefix aggregates retain index plan',
-        () async {
-          final db = await open('indexed-aggregates');
-          final col = _coll(
-            db,
-            't',
-            indexFields: ['age'],
-            prefixFields: ['name'],
-          );
-          for (var i = 0; i < 50; i++) {
-            await col.put(_Rec('r$i', 'name-${i % 2}', i, 'g${i % 3}'));
-          }
-          final rangeQ = col.where().range('age', min: 10, max: 19);
-          expect(await rangeQ.count(), 10);
-          expect(rangeQ.lastPlan, IndexPlan.secondaryIndex);
-          final prefixQ = col.where().prefix('name', 'name-1');
-          expect((await prefixQ.distinct('nick')).toSet(), {'g0', 'g1', 'g2'});
-          expect(prefixQ.lastPlan, IndexPlan.secondaryIndex);
-          await db.close();
-        },
-      );
+      test('indexed range and prefix aggregates retain index plan', () async {
+        final db = await open('indexed-aggregates');
+        final col = _coll(
+          db,
+          't',
+          indexFields: ['age'],
+          prefixFields: ['name'],
+        );
+        for (var i = 0; i < 50; i++) {
+          await col.put(_Rec('r$i', 'name-${i % 2}', i, 'g${i % 3}'));
+        }
+        final rangeQ = col.where().range('age', min: 10, max: 19);
+        expect(await rangeQ.count(), 10);
+        expect(rangeQ.lastPlan, IndexPlan.secondaryIndex);
+        final prefixQ = col.where().prefix('name', 'name-1');
+        expect((await prefixQ.distinct('nick')).toSet(), {'g0', 'g1', 'g2'});
+        expect(prefixQ.lastPlan, IndexPlan.secondaryIndex);
+        await db.close();
+      });
 
       test('unindexed range query falls back to a full scan', () async {
         final db = await open('range-unindexed');
@@ -644,19 +624,18 @@ void main() {
           await col.put(_Rec('r$i', 'n$i', null, 'g${i % 3}'));
         }
         final backend = db.engine.backend as NativeRawBackend;
-        final codec = const DefaultWireCodec();
-        // Build eq bounds for nick == 'g1' inline (the query impl does this
-        // automatically; here we exercise the raw backend method).
-        final full = codec.encode(['t', 'nick', 'g1', null]);
-        final start = ByteKey(full.sublist(0, full.length - 1));
-        final end = ByteKey(_bumpLast(start.bytes));
+        // Build eq bounds for nick == 'g1' (the query impl does this
+        // automatically; here we exercise the raw backend method). The bounds
+        // use the order-preserving element, matching the durable index keys.
+        final (start, end) = eqBounds('t', 'nick', 'g1');
         final entries = await backend.queryIndexed(
           table: 't',
-          start: start,
-          end: end,
+          start: ByteKey(start),
+          end: ByteKey(end),
         );
         expect(entries, hasLength(20));
         // Every returned row decodes to nick == 'g1'.
+        final codec = const DefaultWireCodec();
         for (final entry in entries) {
           final row = codec.decode(entry.value ?? const []) as Map;
           expect(row['nick'], 'g1');
@@ -693,95 +672,84 @@ void main() {
       },
     );
 
-    test(
-      'covered multi-eq / range / prefix use durable candidates',
-      () async {
-        // intersects broad durable-index candidate ranges in Rust and
-        // rechecks the complete predicate there. The result remains semantic
-        // parity with the Dart index, while avoiding a full native scan.
-        final db = await openNative();
-        final col = _coll(
-          db,
-          't',
-          indexFields: ['nick', 'age'],
-          prefixFields: ['name'],
-        );
-        for (var i = 0; i < 120; i++) {
-          await col.put(
-            _Rec('r$i', 'name-${i % 4}', 20 + (i % 30), 'g${i % 3}'),
-          );
-        }
-        // Range on a numeric indexed field (no eq) — Dart path.
-        final rangeQ = col.where().range('age', min: 20, max: 25);
-        final rangeResult = await rangeQ.findAll();
-        expect(rangeResult, hasLength(24));
-        expect(rangeQ.lastPlan, IndexPlan.secondaryIndex);
-        // Prefix on a prefixed field — durable candidate path.
-        final prefixQ = col.where().prefix('name', 'name-1');
-        final prefixResult = await prefixQ.findAll();
-        expect(prefixResult, hasLength(30)); // 'name-1' for i ≡ 1 mod 4 → 30
-        expect(prefixQ.lastPlan, IndexPlan.secondaryIndex);
-        await db.close();
-      },
-    );
+    test('covered multi-eq / range / prefix use durable candidates', () async {
+      // intersects broad durable-index candidate ranges in Rust and
+      // rechecks the complete predicate there. The result remains semantic
+      // parity with the Dart index, while avoiding a full native scan.
+      final db = await openNative();
+      final col = _coll(
+        db,
+        't',
+        indexFields: ['nick', 'age'],
+        prefixFields: ['name'],
+      );
+      for (var i = 0; i < 120; i++) {
+        await col.put(_Rec('r$i', 'name-${i % 4}', 20 + (i % 30), 'g${i % 3}'));
+      }
+      // Range on a numeric indexed field (no eq) — Dart path.
+      final rangeQ = col.where().range('age', min: 20, max: 25);
+      final rangeResult = await rangeQ.findAll();
+      expect(rangeResult, hasLength(24));
+      expect(rangeQ.lastPlan, IndexPlan.secondaryIndex);
+      // Prefix on a prefixed field — durable candidate path.
+      final prefixQ = col.where().prefix('name', 'name-1');
+      final prefixResult = await prefixQ.findAll();
+      expect(prefixResult, hasLength(30)); // 'name-1' for i ≡ 1 mod 4 → 30
+      expect(prefixQ.lastPlan, IndexPlan.secondaryIndex);
+      await db.close();
+    });
 
-    test(
-      'step 2: unindexed full scan pushes the predicate to Rust',
-      () async {
-        // A query with no usable index on the native backend must use the
-        // nativeFilteredScan plan (predicate pushed to Rust) and return only
-        // matching rows. Parity: the result set must match the in-memory
-        // backend's Dart full scan exactly.
-        final db = await openNative(slowQueryThreshold: 1);
-        final col = _coll(db, 't', indexFields: ['nick']);
-        for (var i = 0; i < 200; i++) {
-          await col.put(_Rec('r$i', 'n$i', 20 + (i % 50), 'g${i % 4}'));
-        }
-        // Unindexed equality on 'age' (not an index field).
-        final q = col.where({'age': 33});
-        final result = await q.findAll();
-        expect(q.lastPlan, IndexPlan.nativeFilteredScan);
-        // age == 33 for i where 20 + (i % 50) == 33 → i % 50 == 13 →
-        // i ∈ {13, 63, 113, 163}.
-        expect(result, hasLength(4));
-        expect(
-          result.map((r) => r.id).toSet(),
-          equals({'r13', 'r63', 'r113', 'r163'}),
-        );
-        // Only the 4 matches were scanned in Dart (predicate pushed to Rust).
-        final rec = db.engine.recentSlowQueries.last;
-        final t = rec.timings!;
-        expect(t.rowsScanned, 4, reason: 'only matches cross back to Dart');
-        expect(t.rowsMatched, 4);
-        await db.close();
-      },
-    );
+    test('step 2: unindexed full scan pushes the predicate to Rust', () async {
+      // A query with no usable index on the native backend must use the
+      // nativeFilteredScan plan (predicate pushed to Rust) and return only
+      // matching rows. Parity: the result set must match the in-memory
+      // backend's Dart full scan exactly.
+      final db = await openNative(slowQueryThreshold: 1);
+      final col = _coll(db, 't', indexFields: ['nick']);
+      for (var i = 0; i < 200; i++) {
+        await col.put(_Rec('r$i', 'n$i', 20 + (i % 50), 'g${i % 4}'));
+      }
+      // Unindexed equality on 'age' (not an index field).
+      final q = col.where({'age': 33});
+      final result = await q.findAll();
+      expect(q.lastPlan, IndexPlan.nativeFilteredScan);
+      // age == 33 for i where 20 + (i % 50) == 33 → i % 50 == 13 →
+      // i ∈ {13, 63, 113, 163}.
+      expect(result, hasLength(4));
+      expect(
+        result.map((r) => r.id).toSet(),
+        equals({'r13', 'r63', 'r113', 'r163'}),
+      );
+      // Only the 4 matches were scanned in Dart (predicate pushed to Rust).
+      final rec = db.engine.recentSlowQueries.last;
+      final t = rec.timings!;
+      expect(t.rowsScanned, 4, reason: 'only matches cross back to Dart');
+      expect(t.rowsMatched, 4);
+      await db.close();
+    });
 
-    test(
-      'step 2: range + prefix predicates are also pushed to Rust',
-      () async {
-        final db = await openNative();
-        final col = _coll(db, 't', indexFields: ['nick']);
-        for (var i = 0; i < 100; i++) {
-          await col.put(_Rec('r$i', 'name-${i % 5}', 20 + (i % 30), 'g0'));
-        }
-        // Range on a non-indexed field.
-        final rangeQ = col.where().range('age', min: 20, max: 25);
-        final rangeResult = await rangeQ.findAll();
-        expect(rangeQ.lastPlan, IndexPlan.nativeFilteredScan);
-        // Every result has age in [20, 25].
-        for (final r in rangeResult) {
-          expect(r.age, greaterThanOrEqualTo(20));
-          expect(r.age, lessThanOrEqualTo(25));
-        }
-        // Prefix on a non-prefixed field.
-        final prefixQ = col.where().prefix('name', 'name-1');
-        final prefixResult = await prefixQ.findAll();
-        expect(prefixQ.lastPlan, IndexPlan.nativeFilteredScan);
-        expect(prefixResult, hasLength(20)); // 'name-1' for i ≡ 1 mod 5 → 20
-        await db.close();
-      },
-    );
+    test('step 2: range + prefix predicates are also pushed to Rust', () async {
+      final db = await openNative();
+      final col = _coll(db, 't', indexFields: ['nick']);
+      for (var i = 0; i < 100; i++) {
+        await col.put(_Rec('r$i', 'name-${i % 5}', 20 + (i % 30), 'g0'));
+      }
+      // Range on a non-indexed field.
+      final rangeQ = col.where().range('age', min: 20, max: 25);
+      final rangeResult = await rangeQ.findAll();
+      expect(rangeQ.lastPlan, IndexPlan.nativeFilteredScan);
+      // Every result has age in [20, 25].
+      for (final r in rangeResult) {
+        expect(r.age, greaterThanOrEqualTo(20));
+        expect(r.age, lessThanOrEqualTo(25));
+      }
+      // Prefix on a non-prefixed field.
+      final prefixQ = col.where().prefix('name', 'name-1');
+      final prefixResult = await prefixQ.findAll();
+      expect(prefixQ.lastPlan, IndexPlan.nativeFilteredScan);
+      expect(prefixResult, hasLength(20)); // 'name-1' for i ≡ 1 mod 5 → 20
+      await db.close();
+    });
 
     test(
       'step 2: empty predicate (where().findAll) returns all rows',

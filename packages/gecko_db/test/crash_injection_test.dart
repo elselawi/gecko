@@ -197,4 +197,61 @@ void main() {
       await dir.delete(recursive: true);
     }
   });
+
+  test(
+    'kill after the compaction marker leaves a recovering reopen with data',
+    () async {
+      // The helper writes ~150x100 rows of 4KiB values (the write phase and
+      // the in-place compaction each take several seconds), prints
+      // `compacting` right before the maintenance marker is persisted, then
+      // starts the compaction — so a kill shortly after `compacting` lands
+      // mid-flight with the durable marker still set.
+      final (path, dir) = await freshDb();
+      final process = await _spawnHelper([
+        'compact',
+        path,
+        nativePath,
+        '150',
+        '100',
+      ], root);
+
+      final reached = Completer<void>();
+      final sub = process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) {
+            if (line == 'compacting' && !reached.isCompleted) {
+              reached.complete();
+            }
+          });
+      await reached.future.timeout(const Duration(seconds: 120));
+      await sub.cancel();
+
+      // Give the durable `compacting` marker a moment to commit (it is one
+      // small redb transaction, well inside this window), then kill the OS
+      // process mid-compaction.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await _kill(process);
+
+      final db = await DatabaseImpl.open(
+        path,
+        config: DatabaseConfig(nativeLibraryPath: nativePath),
+      );
+      try {
+        expect(
+          db.maintenance.state,
+          MaintenanceState.recovering,
+          reason:
+              'the durable compacting marker must surface as recovering on '
+              'the next open',
+        );
+        // Data survives the interrupted compaction.
+        final items = await db.engine.rawScanAll('items');
+        expect(items, isNotEmpty, reason: 'rows survive an interrupted compaction');
+      } finally {
+        await db.close();
+      }
+      await dir.delete(recursive: true);
+    },
+  );
 }

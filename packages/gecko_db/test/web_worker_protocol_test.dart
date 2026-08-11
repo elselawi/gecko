@@ -4,6 +4,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:gecko_db/gecko_db.dart' hide StorageStats;
 import 'package:gecko_db/src/native/generated/worker.dart' show StorageStats;
@@ -84,6 +85,187 @@ void main() {
       final original = <Object?>['18446744073709551615'];
       final roundTrip = decodeValue(encodeValue(original));
       expect((roundTrip as List)[0], '18446744073709551615');
+    });
+
+    test('List<int> round-trips as Uint8List (type identity lost)', () {
+      final decoded = decodeValue(encodeValue(<int>[1, 2, 3]));
+      expect(
+        decoded,
+        isA<Uint8List>(),
+        reason: 'base64 decode yields Uint8List',
+      );
+      expect(List<int>.from(decoded as Uint8List), [1, 2, 3]);
+    });
+
+    test('map keys are coerced via toString (lossy)', () {
+      final encoded = encodeValue(<Object?, Object?>{1: 'int', true: 'bool'});
+      // Both keys stringify to "1" / "true"; the original key type is lost.
+      final map = encoded as Map<String, Object?>;
+      expect(map['1'], 'int');
+      expect(map['true'], 'bool');
+      final decoded = decodeValue(encoded) as Map<String, Object?>;
+      expect(decoded['1'], 'int');
+      expect(decoded['true'], 'bool');
+    });
+
+    test("a {'b64': non-string} map falls through to the generic map", () {
+      final decoded = decodeValue(<String, Object?>{'b64': 42});
+      expect(decoded, isA<Map<String, Object?>>());
+      expect((decoded as Map<String, Object?>)['b64'], 42);
+    });
+
+    test('malformed storageStats throws a FormatException', () {
+      expect(
+        () => decodeValue(<String, Object?>{
+          'storageStats': <String, Object?>{'physicalBytes': 'not-a-number'},
+        }),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('malformed JSON message throws a FormatException', () {
+      expect(() => decodeMessage('{not json'), throwsA(isA<FormatException>()));
+      expect(
+        () => decodeMessage('[1, 2]'),
+        throwsA(isA<TypeError>()),
+        reason: 'a non-map JSON root cannot be cast to a message map',
+      );
+    });
+
+    test(
+      'round-trip preserves JS-safe and unsafe integer values as strings',
+      () {
+        // The dispatch layer converts big ints to strings; a string that looks
+        // like a huge integer survives as a string.
+        final payload = <Object?>[
+          '9007199254740993', // 2^53 + 1, not JS-safe
+          '18446744073709551615',
+        ];
+        final roundTrip = decodeValue(encodeValue(payload)) as List;
+        expect(roundTrip, payload);
+      },
+    );
+  });
+
+  group('protocol malformed-input matrix', () {
+    test('a b64 map with non-base64 payload throws FormatException', () {
+      expect(
+        () => decodeValue(<String, Object?>{'b64': '!! not base64 !!'}),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('a b64 map with an odd-length payload throws FormatException', () {
+      expect(
+        () => decodeValue(<String, Object?>{'b64': 'aGVsbG'}),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('an empty b64 payload decodes to an empty byte array', () {
+      final decoded = decodeValue(<String, Object?>{'b64': ''});
+      expect(decoded, isA<Uint8List>());
+      expect(decoded as Uint8List, isEmpty);
+    });
+
+    test('storageStats with a missing field throws a raw TypeError', () {
+      expect(
+        () => decodeValue(<String, Object?>{
+          'storageStats': <String, Object?>{'physicalBytes': '1024'},
+        }),
+        throwsA(isA<TypeError>()),
+        reason: 'missing fields cast null to String',
+      );
+    });
+
+    test('storageStats with a non-string numeric field throws a TypeError', () {
+      expect(
+        () => decodeValue(<String, Object?>{
+          'storageStats': <String, Object?>{
+            'physicalBytes': 1024,
+            'logicalBytes': '512',
+            'tableCount': '3',
+            'openSnapshots': '1',
+            'commitSequence': '99',
+          },
+        }),
+        throwsA(isA<TypeError>()),
+        reason: 'an int cannot cast to String',
+      );
+    });
+
+    test("a storageStats tag with a non-map value falls through to a map", () {
+      final decoded = decodeValue(<String, Object?>{'storageStats': 'nope'});
+      expect(decoded, isA<Map<String, Object?>>());
+      expect((decoded as Map<String, Object?>)['storageStats'], 'nope');
+    });
+
+    test('duplicate JSON keys keep the last occurrence (pinned)', () {
+      final decoded = decodeMessage('{"id": 1, "id": 2}');
+      expect(decoded['id'], 2);
+    });
+
+    test('a null JSON root cannot cast to a message map', () {
+      expect(() => decodeMessage('null'), throwsA(isA<TypeError>()));
+    });
+
+    test('an empty string is not valid JSON', () {
+      expect(() => decodeMessage(''), throwsA(isA<FormatException>()));
+    });
+
+    test('non-string cmd/op fields survive decode (no validation)', () {
+      final decoded = decodeMessage('{"cmd": 42, "op": ["x"], "id": 1}');
+      expect(decoded['cmd'], 42);
+      expect(decoded['op'], ['x']);
+    });
+
+    test('nested b64 tags decode recursively inside lists and maps', () {
+      final wrapped = <String, Object?>{
+        'b64': base64Encode(<int>[7, 8, 9]),
+      };
+      final decoded = decodeValue(<Object?>[
+        <String, Object?>{'inner': wrapped},
+        <Object?>[wrapped],
+      ]);
+      final outer = decoded as List<Object?>;
+      final innerMap = outer[0] as Map<String, Object?>;
+      expect(innerMap['inner'], <int>[7, 8, 9]);
+      final innerList = outer[1] as List<Object?>;
+      expect(innerList[0], <int>[7, 8, 9]);
+    });
+
+    test('encodeValue wraps empty and single-byte arrays as b64', () {
+      final empty = encodeValue(<int>[]) as Map<String, Object?>;
+      expect(empty[b64Tag], '');
+      final single = encodeValue(<int>[255]) as Map<String, Object?>;
+      expect(single[b64Tag], base64Encode(<int>[255]));
+    });
+
+    test('StorageStats with huge BigInt fields round-trips exactly', () {
+      final stats = StorageStats(
+        physicalBytes: BigInt.parse('18446744073709551615'),
+        logicalBytes: BigInt.parse('9007199254740993'),
+        tableCount: BigInt.from(1),
+        openSnapshots: BigInt.zero,
+        commitSequence: BigInt.parse('99999999999999999999'),
+      );
+      final decoded = decodeValue(encodeValue(stats)) as StorageStats;
+      expect(decoded.physicalBytes, stats.physicalBytes);
+      expect(decoded.logicalBytes, stats.logicalBytes);
+      expect(decoded.tableCount, stats.tableCount);
+      expect(decoded.openSnapshots, stats.openSnapshots);
+      expect(decoded.commitSequence, stats.commitSequence);
+    });
+
+    test('a map with mixed key types stringifies all keys (lossy)', () {
+      final encoded =
+          encodeValue(<Object?, Object?>{
+                'k': <int>[1],
+                7: <int>[2],
+              })
+              as Map<String, Object?>;
+      expect(encoded['k'], isA<Map<String, Object?>>());
+      expect(encoded['7'], isA<Map<String, Object?>>());
     });
   });
 

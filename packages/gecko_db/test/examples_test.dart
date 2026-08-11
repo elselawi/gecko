@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
@@ -21,6 +23,60 @@ _User _fromRow(Object? row) {
 }
 
 Object? _id(_User user) => user.id;
+
+String _repoRoot() {
+  if (Directory.current.path.endsWith(
+    'packages${Platform.pathSeparator}gecko_db',
+  )) {
+    return Directory.current.parent.parent.path;
+  }
+  return Directory.current.path;
+}
+
+String _nativeLibraryPath(String root) {
+  final name = Platform.isWindows
+      ? 'gecko_db_rust.dll'
+      : Platform.isMacOS
+      ? 'libgecko_db_rust.dylib'
+      : 'libgecko_db_rust.so';
+  return '$root${Platform.pathSeparator}rust${Platform.pathSeparator}'
+      'target${Platform.pathSeparator}release${Platform.pathSeparator}$name';
+}
+
+const List<int> _testKey = [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22,
+  23,
+  24,
+  25,
+  26,
+  27,
+  28,
+  29,
+  30,
+  31,
+  32,
+];
 
 void main() {
   test('quickstart example compiles and runs', () async {
@@ -67,6 +123,175 @@ void main() {
     expect(await db.schema.readVersion(), 2);
     await db.close();
   });
+
+  test(
+    'consumer example runs end-to-end as a subprocess',
+    () async {
+      final root = _repoRoot();
+      final native = _nativeLibraryPath(root);
+      final dir = await Directory.systemTemp.createTemp('gecko-consumer-run-');
+      addTearDown(() => dir.delete(recursive: true));
+      final dbPath = '${dir.path}${Platform.pathSeparator}db.redb';
+      final process = await Process.start(Platform.resolvedExecutable, [
+        'run',
+        '$root${Platform.pathSeparator}examples'
+            '${Platform.pathSeparator}consumer.dart',
+        dbPath,
+        native,
+      ], workingDirectory: root);
+      final output = await process.stdout
+          .transform(const SystemEncoding().decoder)
+          .join();
+      final errorOutput = await process.stderr
+          .transform(const SystemEncoding().decoder)
+          .join();
+      final exitCode = await process.exitCode;
+      expect(
+        exitCode,
+        0,
+        reason: 'consumer fixture must exit 0: $output\n$errorOutput',
+      );
+      expect(output, contains('CONSUMER-OK'));
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'malformed encryption keys fail cleanly and the path stays reopenable',
+    () async {
+      final root = _repoRoot();
+      final native = _nativeLibraryPath(root);
+      final dir = await Directory.systemTemp.createTemp('gecko-badkey-');
+      addTearDown(() => dir.delete(recursive: true));
+      final path = '${dir.path}${Platform.pathSeparator}db.redb';
+
+      // Short / long / non-hex-able keys fail with typed errors and never
+      // leave the path wedged.
+      for (final bad in [
+        <int>[1, 2, 3], // short
+        List<int>.filled(40, 7), // long
+        <int>[
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+        ], // 31
+      ]) {
+        await expectLater(
+          DatabaseImpl.open(
+            path,
+            config: DatabaseConfig(
+              nativeLibraryPath: native,
+              encryptionKey: bad,
+            ),
+          ),
+          throwsA(isA<GeckoError>()),
+        );
+        expect(DatabaseImpl.isOpenAt(path), isFalse);
+      }
+      // The path is still usable with a valid key.
+      final db = await DatabaseImpl.open(
+        path,
+        config: DatabaseConfig(
+          nativeLibraryPath: native,
+          encryptionKey: _testKey,
+        ),
+      );
+      final notes = db.collection<Map<String, Object?>>(
+        'notes',
+        toRow: (m) => m,
+        fromRow: (m) => Map<String, Object?>.from(m as Map),
+        id: (m) => m['id'],
+      );
+      await notes.put({'id': 'n1', 'text': 'ok'});
+      await db.close();
+    },
+  );
+
+  test(
+    'wrong-key open fails cleanly and the right key reopens the data',
+    () async {
+      final root = _repoRoot();
+      final native = _nativeLibraryPath(root);
+      final dir = await Directory.systemTemp.createTemp('gecko-wrongkey-');
+      addTearDown(() => dir.delete(recursive: true));
+      final path = '${dir.path}${Platform.pathSeparator}db.redb';
+
+      final writer = await DatabaseImpl.open(
+        path,
+        config: DatabaseConfig(
+          nativeLibraryPath: native,
+          encryptionKey: _testKey,
+        ),
+      );
+      final notes = writer.collection<Map<String, Object?>>(
+        'notes',
+        toRow: (m) => m,
+        fromRow: (m) => Map<String, Object?>.from(m as Map),
+        id: (m) => m['id'],
+      );
+      await notes.put({'id': 'n1', 'text': 'secret'});
+      await writer.close();
+
+      // A wrong key must fail with a typed error.
+      final wrongKey = List<int>.generate(32, (i) => 200 + i);
+      await expectLater(
+        DatabaseImpl.open(
+          path,
+          config: DatabaseConfig(
+            nativeLibraryPath: native,
+            encryptionKey: wrongKey,
+          ),
+        ),
+        throwsA(isA<GeckoError>()),
+      );
+      expect(DatabaseImpl.isOpenAt(path), isFalse);
+
+      // The right key reopens and reads the data.
+      final reader = await DatabaseImpl.open(
+        path,
+        config: DatabaseConfig(
+          nativeLibraryPath: native,
+          encryptionKey: _testKey,
+        ),
+      );
+      final notes2 = reader.collection<Map<String, Object?>>(
+        'notes',
+        toRow: (m) => m,
+        fromRow: (m) => Map<String, Object?>.from(m as Map),
+        id: (m) => m['id'],
+      );
+      expect((await notes2.get('n1'))!['text'], 'secret');
+      await reader.close();
+    },
+  );
 }
 
 const ageField = 'age';
