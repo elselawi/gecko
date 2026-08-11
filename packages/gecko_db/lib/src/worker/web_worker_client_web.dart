@@ -11,6 +11,7 @@ import 'dart:js_interop_unsafe';
 
 import '../backend/byte_key.dart';
 import '../backend/raw_backend.dart';
+import '../native/generated/api.dart' show PreparedChange;
 import '../native/generated/worker.dart' show StorageStats;
 import 'web_worker_protocol.dart';
 
@@ -174,29 +175,82 @@ class WebWorkerClient {
 
   /// applies a batch and returns the reactive-registry deltas
   /// the worker produced for it. [changeLogMaxEntries] (0 = disabled) prunes
-  /// the pending-sync change log in the same write transaction 
-  Future<List<RegistryDelta>> applyBatch(
+  /// the pending-sync change log in the same write transaction
+  Future<ApplyBatchResult> applyBatch(
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
     int changeLogMaxEntries = 0,
   }) async {
-    final result = await _request('applyBatch', <Object?>[
-      encodedOps,
-      indexDefinitions,
-      changeLogMaxEntries,
-    ]) as Map;
-    return [
-      for (final delta in (result['deltas'] as List))
-        RegistryDelta(
-          id: int.parse((delta as Map)['id'] as String),
-          added: _decodeEntries(delta['added'] as List),
-          updated: _decodeEntries(delta['updated'] as List),
-          removed: _decodeEntries(delta['removed'] as List),
-          snapshot: _decodeEntries(delta['snapshot'] as List),
-          unchanged: delta['unchanged'] as bool,
-        ),
-    ];
+    final result =
+        await _request('applyBatch', <Object?>[
+              encodedOps,
+              indexDefinitions,
+              changeLogMaxEntries,
+            ])
+            as Map;
+    return _decodeApplyBatchResult(result);
   }
+
+  Future<ApplyBatchResult> applyPreparedBatch(
+    List<int> encodedOps, {
+    List<List<Object?>> indexDefinitions = const [],
+    int changeLogMaxEntries = 0,
+    List<String> previousOperationIndexes = const [],
+    List<(BigInt, int)> putModes = const [],
+    List<PreparedChange> changes = const [],
+  }) async {
+    final result =
+        await _request('applyPreparedBatch', <Object?>[
+              encodedOps,
+              indexDefinitions,
+              changeLogMaxEntries,
+              previousOperationIndexes,
+              [
+                for (final (index, mode) in putModes)
+                  <Object?>[index.toString(), mode],
+              ],
+              [
+                for (final change in changes)
+                  <String, Object?>{
+                    'operationIndex': change.operationIndex.toString(),
+                    'ordinal': change.ordinal.toString(),
+                    'syncStateKey': change.syncStateKey,
+                    'recordTemplate': change.recordTemplate,
+                    'fillPreviousVersion': change.fillPreviousVersion,
+                  },
+              ],
+            ])
+            as Map;
+    return _decodeApplyBatchResult(result);
+  }
+
+  ApplyBatchResult _decodeApplyBatchResult(Map<Object?, Object?> result) =>
+      ApplyBatchResult(
+        affected: const <(String, ByteKey)>{},
+        sequence: int.parse(result['sequence'] as String),
+        previousValues: [
+          for (final value in result['previousValues'] as List)
+            value == null ? null : List<int>.from(value as List),
+        ],
+        removedKeys: [
+          for (final entry in result['removedKeys'] as List)
+            (
+              (entry as List)[0] as String,
+              ByteKey(List<int>.from(entry[1] as List)),
+            ),
+        ],
+        deltas: [
+          for (final delta in result['deltas'] as List)
+            RegistryDelta(
+              id: int.parse((delta as Map)['id'] as String),
+              added: _decodeEntries(delta['added'] as List),
+              updated: _decodeEntries(delta['updated'] as List),
+              removed: _decodeEntries(delta['removed'] as List),
+              snapshot: _decodeEntries(delta['snapshot'] as List),
+              unchanged: delta['unchanged'] as bool,
+            ),
+        ],
+      );
 
   /// registers a live query with the worker's reactive
   /// registry, returning the registration id and initial result set.
@@ -207,10 +261,13 @@ class WebWorkerClient {
     required int kind,
   }) async {
     final result =
-        await _request(
-          'registerLiveQuery',
-          <Object?>[table, predicateBytes, sortBytes, kind],
-        ) as Map;
+        await _request('registerLiveQuery', <Object?>[
+              table,
+              predicateBytes,
+              sortBytes,
+              kind,
+            ])
+            as Map;
     return LiveQueryRegistration(
       id: int.parse(result['id'] as String),
       initial: _decodeEntries(result['initial'] as List),

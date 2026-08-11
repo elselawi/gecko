@@ -1,4 +1,4 @@
-/// The raw byte-level API surface for 
+/// The raw byte-level API surface for
 ///
 /// Provides [`rawGet`], [`rawPut`], [`rawDelete`], [`rawRangeScan`] over any
 /// [`RawBackend`], fronted by an optional LRU cache for hot point reads, and
@@ -7,8 +7,6 @@
 library;
 
 import 'dart:async';
-import 'dart:math' as math;
-
 import '../backend/byte_key.dart';
 import '../backend/raw_backend.dart';
 import '../cache/lru_cache.dart';
@@ -16,7 +14,6 @@ import '../errors/errors.dart';
 import '../reactive/change_bus.dart';
 import '../api/change.dart';
 import '../api/maintenance.dart';
-import '../namespaces.dart';
 import '../wire/wire_codec.dart';
 
 /// Strategy for a put when a key already exists.
@@ -59,6 +56,7 @@ class RawEngine {
   bool _disposed = false;
   final _WriteGate _writeGate;
   final ChangeBus _changeBus;
+
   /// per-registration deltas produced by the worker for each
   /// committed batch, in commit order (same delivery order as [_changeBus]).
   final StreamController<RegistryDelta> _liveDeltas =
@@ -122,11 +120,14 @@ class RawEngine {
 
   /// Applies [ops] atomically and forwards any reactive-registry deltas the
   /// worker produced to [liveDeltas] (one delta per touched registration).
-  Future<void> _applyBatchWithDeltas(List<RawOp> ops) async {
-    final result = await _backend.applyBatch(ops);
+  Future<ApplyBatchResult> _applyBatchWithDeltas(RawBatchPlan plan) async {
+    final result = _backend is PreparedBatchBackend
+        ? await (_backend as PreparedBatchBackend).applyPreparedBatch(plan)
+        : await _backend.applyBatch(plan.ops);
     for (final delta in result.deltas) {
       _liveDeltas.add(delta);
     }
+    return result;
   }
 
   /// The backend this engine wraps (exposed for the shared parametrized tests).
@@ -213,14 +214,22 @@ class RawEngine {
     final cacheKey = _CacheKey(table, key);
     final cached = _lru.get(cacheKey);
     if (cached != null) {
-      // Cache hit (including a cached "missing" sentinel).
-      return cached;
+      // Cache hit (including a cached "missing" sentinel). Return a defensive
+      // copy so a caller mutating the returned list cannot corrupt the cache
+      // (the cache stores the shared encoding of the value).
+      return List<int>.from(cached);
     }
+    final value = _backend is DirectReadBackend
+        ? await (_backend as DirectReadBackend).directRead(table, key)
+        : await _readThroughSnapshot(table, key);
+    if (value != null) _lru.put(cacheKey, value);
+    return value == null ? null : List<int>.from(value);
+  }
+
+  Future<List<int>?> _readThroughSnapshot(String table, ByteKey key) async {
     final snap = await _backend.snapshot();
     try {
-      final value = await snap.read(table, key);
-      _lru.put(cacheKey, value);
-      return value;
+      return await snap.read(table, key);
     } finally {
       await snap.dispose();
     }
@@ -238,44 +247,34 @@ class RawEngine {
     _assertWritable();
     return _writeGate.run(() async {
       final started = _diagnosticsEnabled ? (Stopwatch()..start()) : null;
-      final snapshot = await _backend.snapshot();
       try {
-        final prev = await snapshot.read(table, key);
-        switch (mode) {
-          case RawWriteMode.upsert:
-            break;
-          case RawWriteMode.insertOnly:
-            if (prev != null) {
-              throw GeckoError(
-                GeckoErrorType.invalidOperation,
-                'rawPut insertOnly: key already exists in "$table"',
-              );
-            }
-          case RawWriteMode.updateOnly:
-            if (prev == null) {
-              throw GeckoError(
-                GeckoErrorType.keyNotFound,
-                'rawPut updateOnly: key does not exist in "$table"',
-              );
-            }
-        }
-        final lsn = await _nextLsn(snapshot);
-        try {
-          await _applyBatchWithDeltas([RawPut(table, key, value), _lsnOp(lsn)]);
-        } catch (_) {
-          _failedWrites++;
-          rethrow;
-        } finally {
-          if (_diagnosticsEnabled) {
-            _totalWrites++;
-            _totalWriteDurationMicros += started?.elapsedMicroseconds ?? 0;
-          }
-        }
+        final result = await _applyBatchWithDeltas(
+          RawBatchPlan(
+            ops: [RawPut(table, key, value)],
+            previousOperationIndexes: const [0],
+            putModes: {
+              0: switch (mode) {
+                RawWriteMode.upsert => RawPutMode.upsert,
+                RawWriteMode.insertOnly => RawPutMode.insertOnly,
+                RawWriteMode.updateOnly => RawPutMode.updateOnly,
+              },
+            },
+          ),
+        );
+        final previous = result.previousValues.isEmpty
+            ? null
+            : result.previousValues.single;
         _lru.invalidate(_CacheKey(table, key));
-        _publishAt(lsn, [(table, key, ChangeKind.put)]);
-        return prev;
+        _publishAt(result.sequence, [(table, key, ChangeKind.put)]);
+        return previous;
+      } catch (_) {
+        _failedWrites++;
+        rethrow;
       } finally {
-        await snapshot.dispose();
+        if (_diagnosticsEnabled) {
+          _totalWrites++;
+          _totalWriteDurationMicros += started?.elapsedMicroseconds ?? 0;
+        }
       }
     });
   }
@@ -284,23 +283,24 @@ class RawEngine {
   Future<bool> rawDelete(String table, ByteKey key) async {
     _assertWritable();
     return _writeGate.run(() async {
-      final snapshot = await _backend.snapshot();
       try {
-        final existed = await snapshot.read(table, key) != null;
-        final lsn = await _nextLsn(snapshot);
-        try {
-          await _applyBatchWithDeltas([RawDelete(table, key), _lsnOp(lsn)]);
-        } catch (_) {
-          if (_diagnosticsEnabled) _failedWrites++;
-          rethrow;
-        } finally {
-          if (_diagnosticsEnabled) _totalWrites++;
-        }
+        final result = await _applyBatchWithDeltas(
+          RawBatchPlan(
+            ops: [RawDelete(table, key)],
+            previousOperationIndexes: const [0],
+          ),
+        );
+        final previous = result.previousValues.isEmpty
+            ? null
+            : result.previousValues.single;
         _lru.invalidate(_CacheKey(table, key));
-        _publishAt(lsn, [(table, key, ChangeKind.delete)]);
-        return existed;
+        _publishAt(result.sequence, [(table, key, ChangeKind.delete)]);
+        return previous != null;
+      } catch (_) {
+        if (_diagnosticsEnabled) _failedWrites++;
+        rethrow;
       } finally {
-        await snapshot.dispose();
+        if (_diagnosticsEnabled) _totalWrites++;
       }
     });
   }
@@ -309,21 +309,19 @@ class RawEngine {
   Future<void> rawClear(String table) async {
     _assertWritable();
     return _writeGate.run(() async {
-      final snapshot = await _backend.snapshot();
       try {
-        final lsn = await _nextLsn(snapshot);
-        try {
-          await _applyBatchWithDeltas([RawClear(table), _lsnOp(lsn)]);
-        } catch (_) {
-          if (_diagnosticsEnabled) _failedWrites++;
-          rethrow;
-        } finally {
-          if (_diagnosticsEnabled) _totalWrites++;
-        }
+        final result = await _applyBatchWithDeltas(
+          RawBatchPlan(ops: [RawClear(table)]),
+        );
         _lru.clear();
-        _publishAt(lsn, [(table, ByteKey(const []), ChangeKind.delete)]);
+        _publishAt(result.sequence, [
+          (table, ByteKey(const []), ChangeKind.delete),
+        ]);
+      } catch (_) {
+        if (_diagnosticsEnabled) _failedWrites++;
+        rethrow;
       } finally {
-        await snapshot.dispose();
+        if (_diagnosticsEnabled) _totalWrites++;
       }
     });
   }
@@ -336,24 +334,30 @@ class RawEngine {
     ByteKey? end,
   }) async {
     _assertUsable();
-    final snap = await _backend.snapshot();
-    try {
-      final entries = await snap.scan(table, start: start, end: end);
-      _scannedRows += entries.length;
-      return entries;
-    } finally {
-      await snap.dispose();
-    }
+    final entries = _backend is DirectReadBackend
+        ? await (_backend as DirectReadBackend).directScan(
+            table,
+            start: start,
+            end: end,
+          )
+        : await _scanThroughSnapshot(table, start: start, end: end);
+    _scannedRows += entries.length;
+    return entries;
   }
 
   /// Scans the whole [table] (empty iterable, never null).
   Future<List<RawEntry>> rawScanAll(String table) async {
-    _assertUsable();
+    return rawRangeScan(table);
+  }
+
+  Future<List<RawEntry>> _scanThroughSnapshot(
+    String table, {
+    ByteKey? start,
+    ByteKey? end,
+  }) async {
     final snap = await _backend.snapshot();
     try {
-      final entries = await snap.scanAll(table);
-      _scannedRows += entries.length;
-      return entries;
+      return await snap.scan(table, start: start, end: end);
     } finally {
       await snap.dispose();
     }
@@ -389,10 +393,10 @@ class RawEngine {
 
   /// Commits one atomic batch under the engine's single-writer gate.
   ///
-  /// [buildOps] runs after the persisted clock has been read and receives the
-  /// LSN that will be written in the same backend batch. This is the seam used
-  /// by transactions to append change metadata without a second persistence
-  /// system.
+  /// The callback still receives the last assigned sequence for API
+  /// compatibility, but sequence allocation and persistence now happen in
+  /// Rust. New callers should use [commitPreparedBatch] when they need
+  /// storage-derived previous values in change records.
   Future<int> commitBatch(
     FutureOr<List<RawOp>> Function(int lsn, RawSnapshot snapshot) buildOps, {
     List<Change> Function(int lsn)? buildChanges,
@@ -402,11 +406,18 @@ class RawEngine {
       final started = _diagnosticsEnabled ? (Stopwatch()..start()) : null;
       final snapshot = await _backend.snapshot();
       try {
-        final lsn = await _nextLsn(snapshot);
+        final lsn = _changeBus.lastSequence + 1;
         final ops = await buildOps(lsn, snapshot);
         if (ops.isEmpty) return lsn - 1;
         try {
-          await _applyBatchWithDeltas([...ops, _lsnOp(lsn)]);
+          final result = await _applyBatchWithDeltas(RawBatchPlan(ops: ops));
+          _lru.clear();
+          final changes =
+              buildChanges?.call(result.sequence) ?? const <Change>[];
+          if (changes.isNotEmpty) {
+            _publishAt(result.sequence, const [], supplied: changes);
+          }
+          return result.sequence;
         } catch (_) {
           if (_diagnosticsEnabled) _failedWrites++;
           rethrow;
@@ -416,34 +427,98 @@ class RawEngine {
             _totalWriteDurationMicros += started?.elapsedMicroseconds ?? 0;
           }
         }
-        _lru.clear();
-        final changes = buildChanges?.call(lsn) ?? const <Change>[];
-        if (changes.isNotEmpty) {
-          _publishAt(lsn, const [], supplied: changes);
-        }
-        return lsn;
       } finally {
         await snapshot.dispose();
       }
     });
   }
 
-  Future<int> _nextLsn(RawSnapshot snapshot) async {
-    final raw = await snapshot.read(
-      geckoSyncMetaTable,
-      ByteKey(_codec.encode(geckoLsnKey)),
-    );
-    final persisted = raw == null ? 0 : (_codec.decode(raw) as int? ?? 0);
-    return math.max(persisted, _changeBus.lastSequence) + 1;
+  Future<ApplyBatchResult> applyPreparedPlan(RawBatchPlan plan) async {
+    _assertWritable();
+    return _writeGate.run(() async {
+      final started = _diagnosticsEnabled ? (Stopwatch()..start()) : null;
+      try {
+        final result = await _applyBatchWithDeltas(plan);
+        _lru.clear();
+        return result;
+      } catch (_) {
+        if (_diagnosticsEnabled) _failedWrites++;
+        rethrow;
+      } finally {
+        if (_diagnosticsEnabled) {
+          _totalWrites++;
+          _totalWriteDurationMicros += started?.elapsedMicroseconds ?? 0;
+        }
+      }
+    });
   }
 
-  RawPut _lsnOp(int lsn) => RawPut(
-    geckoSyncMetaTable,
-    ByteKey(_codec.encode(geckoLsnKey)),
-    _codec.encode(lsn),
-  );
+  /// Commits a batch that does not need a Dart snapshot while preparing its
+  /// operations. Rust assigns and persists the sequence in the same write
+  /// transaction; this path avoids the historical create/read/drop snapshot
+  /// round trip used by simple metadata and join writes.
+  Future<int> commitBatchNoSnapshot(
+    FutureOr<List<RawOp>> Function(int lsn) buildOps, {
+    List<Change> Function(int sequence)? buildChanges,
+  }) async {
+    _assertWritable();
+    return _writeGate.run(() async {
+      final started = _diagnosticsEnabled ? (Stopwatch()..start()) : null;
+      try {
+        final predicted = _changeBus.lastSequence + 1;
+        final ops = await buildOps(predicted);
+        if (ops.isEmpty) return _changeBus.lastSequence;
+        final result = await _applyBatchWithDeltas(RawBatchPlan(ops: ops));
+        _lru.clear();
+        final changes = buildChanges?.call(result.sequence) ?? const <Change>[];
+        if (changes.isNotEmpty) {
+          _publishAt(result.sequence, const [], supplied: changes);
+        }
+        return result.sequence;
+      } catch (_) {
+        if (_diagnosticsEnabled) _failedWrites++;
+        rethrow;
+      } finally {
+        if (_diagnosticsEnabled) {
+          _totalWrites++;
+          _totalWriteDurationMicros += started?.elapsedMicroseconds ?? 0;
+        }
+      }
+    });
+  }
 
-  static const _codec = DefaultWireCodec();
+  Future<int> commitPreparedBatch(
+    FutureOr<RawBatchPlan> Function() buildPlan, {
+    List<Change> Function(int sequence)? buildChanges,
+  }) async {
+    _assertWritable();
+    return _writeGate.run(() async {
+      final started = _diagnosticsEnabled ? (Stopwatch()..start()) : null;
+      try {
+        final plan = await buildPlan();
+        if (plan.ops.isEmpty) return _changeBus.lastSequence;
+        final result = await _applyBatchWithDeltas(plan);
+        _lru.clear();
+        final changes = buildChanges?.call(result.sequence) ?? const <Change>[];
+        if (changes.isNotEmpty) {
+          _publishAt(result.sequence, const [], supplied: changes);
+        }
+        return result.sequence;
+      } catch (_) {
+        if (_diagnosticsEnabled) _failedWrites++;
+        rethrow;
+      } finally {
+        if (_diagnosticsEnabled) {
+          _totalWrites++;
+          _totalWriteDurationMicros += started?.elapsedMicroseconds ?? 0;
+        }
+      }
+    });
+  }
+
+  void publishPreparedChanges(int lsn, List<Change> changes) {
+    _publishAt(lsn, const [], supplied: changes);
+  }
 
   void _publishAt(
     int lsn,

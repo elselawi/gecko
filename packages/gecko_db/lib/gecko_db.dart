@@ -104,6 +104,7 @@ export 'src/native/native_resolver.dart'
 export 'src/native/opfs.dart' show registerOpfsHandle;
 export 'src/worker/web_worker_client.dart' show WebWorkerClient;
 export 'src/native/generated/api.dart' show NativeWorker;
+export 'src/native/generated/counters.dart' show WorkCounters;
 export 'src/native/generated/frb_generated.dart' show RustLib;
 export 'src/raw/raw_engine.dart' show RawEngine, RawWriteMode;
 export 'src/query/filter.dart' show Filter, FilterGroup;

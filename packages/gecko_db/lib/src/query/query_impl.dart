@@ -12,7 +12,8 @@ import '../api/change.dart';
 import '../api/maintenance.dart';
 import '../api/query.dart';
 import '../backend/byte_key.dart';
-import '../backend/native_raw_backend.dart' show NativeRawSnapshot;
+import '../backend/native_raw_backend.dart'
+    show NativeRawBackend, NativeRawSnapshot;
 import '../backend/raw_backend.dart';
 import '../errors/errors.dart';
 import '../raw/raw_engine.dart';
@@ -150,9 +151,17 @@ class QueryImpl<T> implements Query<T> {
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
-    // the engine is always native, so the snapshot is a
-    // NativeRawSnapshot (the RawEngine exposes the RawSnapshot interface).
-    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
+    final backend = _engine.backend;
+    if (backend is NativeRawBackend) {
+      yield* _scanDirect(
+        backend,
+        secondary,
+        nativeLimit: nativeLimit,
+        nativeOffset: nativeOffset,
+      );
+      return;
+    }
+    final snap = await backend.snapshot() as NativeRawSnapshot;
     try {
       yield* _scanWith(
         snap,
@@ -163,6 +172,59 @@ class QueryImpl<T> implements Query<T> {
       );
     } finally {
       await snap.dispose();
+    }
+  }
+
+  Stream<_Decoded> _scanDirect(
+    NativeRawBackend backend,
+    CollectionIndex? idx, {
+    int? nativeLimit,
+    int nativeOffset = 0,
+  }) async* {
+    final nativeRanges = _nativeIndexedRanges(idx);
+    final predicateBytes = encodePredicate(_filters, codec: _codec);
+    final List<RawEntry> entries;
+    if (nativeRanges != null) {
+      lastPlan = IndexPlan.secondaryIndex;
+      final nativeEq = _nativeEqProbe(idx);
+      if (nativeEq != null) {
+        final (field, value) = nativeEq;
+        final (start, end) = eqBounds(_table, field, value, codec: _codec);
+        entries = await backend.queryIndexedLimited(
+          table: _table,
+          start: ByteKey(start),
+          end: ByteKey(end),
+          predicateBytes: predicateBytes,
+          limit: nativeLimit,
+          offset: nativeOffset,
+        );
+      } else {
+        entries = await backend.queryIndexedMulti(
+          table: _table,
+          ranges: [
+            for (final range in nativeRanges)
+              (ByteKey(range.$1), ByteKey(range.$2)),
+          ],
+          predicateBytes: predicateBytes,
+        );
+      }
+    } else {
+      lastPlan = IndexPlan.nativeFilteredScan;
+      final windowed = nativeLimit != null || nativeOffset > 0;
+      entries = windowed
+          ? await backend.queryFilteredLimited(
+              table: _table,
+              predicateBytes: predicateBytes,
+              limit: nativeLimit,
+              offset: nativeOffset,
+            )
+          : await backend.queryFiltered(
+              table: _table,
+              predicateBytes: predicateBytes,
+            );
+    }
+    for (final entry in entries) {
+      yield _Decoded(entry.key, _mapOf(_codec.decode(entry.value ?? const [])));
     }
   }
 
@@ -186,11 +248,12 @@ class QueryImpl<T> implements Query<T> {
     return (entry.key, entry.value);
   }
 
-  /// Returns broad durable-index bounds for every filter that can narrow a
+  /// Returns exact durable-index bounds for every filter that can narrow a
   /// native candidate set. Equality uses an exact value bound; range and
-  /// prefix use the whole `(table, field)` span because DefaultWireCodec v1
-  /// is not semantic-order-preserving for all supported values. Rust always
-  /// rechecks the complete predicate, so broad bounds remain correct.
+  /// prefix use the order-preserving element bounds from
+  /// `durable_index_bounds.dart` (Priority 5), so a range/prefix scan visits
+  /// only rows that can match. Rust always rechecks the complete predicate,
+  /// so even these tight bounds remain correct.
   List<(List<int>, List<int>)>? _nativeIndexedRanges(CollectionIndex? idx) {
     if (idx == null) return null;
     final ranges = <(List<int>, List<int>)>[];
@@ -200,9 +263,9 @@ class QueryImpl<T> implements Query<T> {
       } else if (f.isRangeFilter &&
           (idx.fields.contains(f.field) ||
               idx.prefixFields.contains(f.field))) {
-        ranges.add(fieldBounds(_table, f.field, codec: _codec));
+        ranges.add(rangeBounds(_table, f.field, f.min, f.max, codec: _codec));
       } else if (f.isPrefixFilter && idx.prefixFields.contains(f.field)) {
-        ranges.add(fieldBounds(_table, f.field, codec: _codec));
+        ranges.add(prefixBounds(_table, f.field, f.prefix!, codec: _codec));
       }
     }
     return ranges.isEmpty ? null : ranges;
@@ -405,9 +468,16 @@ class QueryImpl<T> implements Query<T> {
   }) async {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
+    final backend = _engine.backend;
     final ownsSnapshot = snapshot == null;
+    final directBackend = snapshot == null && backend is NativeRawBackend
+        ? backend
+        : null;
     final snap =
-        snapshot ?? (await _engine.backend.snapshot() as NativeRawSnapshot);
+        snapshot ??
+        (directBackend == null
+            ? await backend.snapshot() as NativeRawSnapshot
+            : null);
     try {
       final idx = secondary;
       final predicateBytes = encodePredicate(_filters, codec: _codec);
@@ -421,28 +491,47 @@ class QueryImpl<T> implements Query<T> {
         lastPlan = IndexPlan.secondaryIndex;
         final (field, (start, end), eqBounded) = route;
         if (t != null) t.start(_QueryStage.backendRead);
-        entries = await snap.queryIndexedOrdered(
-          table: _table,
-          start: ByteKey(start),
-          end: ByteKey(end),
-          predicateBytes: predicateBytes,
-          sortField: field,
-          eqBounded: eqBounded,
-          limit: limit,
-          offset: offset,
-        );
+        entries = directBackend != null
+            ? await directBackend.queryIndexedOrdered(
+                table: _table,
+                start: ByteKey(start),
+                end: ByteKey(end),
+                predicateBytes: predicateBytes,
+                sortField: field,
+                eqBounded: eqBounded,
+                limit: limit,
+                offset: offset,
+              )
+            : await snap!.queryIndexedOrdered(
+                table: _table,
+                start: ByteKey(start),
+                end: ByteKey(end),
+                predicateBytes: predicateBytes,
+                sortField: field,
+                eqBounded: eqBounded,
+                limit: limit,
+                offset: offset,
+              );
         if (t != null) t.stop(_QueryStage.backendRead);
       } else {
         // Non-index-covered sort: Rust top-K (never materializes the full set).
         lastPlan = IndexPlan.nativeFilteredScan;
         if (t != null) t.start(_QueryStage.backendRead);
-        entries = await snap.querySorted(
-          table: _table,
-          predicateBytes: predicateBytes,
-          sortSpecBytes: sortBytes,
-          limit: limit,
-          offset: offset,
-        );
+        entries = directBackend != null
+            ? await directBackend.querySorted(
+                table: _table,
+                predicateBytes: predicateBytes,
+                sortSpecBytes: sortBytes,
+                limit: limit,
+                offset: offset,
+              )
+            : await snap!.querySorted(
+                table: _table,
+                predicateBytes: predicateBytes,
+                sortSpecBytes: sortBytes,
+                limit: limit,
+                offset: offset,
+              );
         if (t != null) t.stop(_QueryStage.backendRead);
       }
       final decoded = <_Decoded>[];
@@ -467,7 +556,7 @@ class QueryImpl<T> implements Query<T> {
       if (t != null) t.stopAccum(_QueryStage.predicate);
       return decoded;
     } finally {
-      if (ownsSnapshot) {
+      if (ownsSnapshot && snap != null) {
         await snap.dispose();
       }
     }
@@ -590,16 +679,42 @@ class QueryImpl<T> implements Query<T> {
 
   @override
   Future<int> count() async {
-    // aggregate pushdown — an unindexed query counts matching rows IN
-    // RUST without transferring them (no decode + map-copy + Dart increment
-    // loop). Indexed-eq queries keep the existing `queryIndexed` path (the
-    // result set is already small and joined in one hop).
+    // Aggregate pushdown stays in Rust. Ordinary native reads use the direct
+    // worker operation; compound indexed ranges retain the snapshot fallback
+    // until a direct multi-range API is added.
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
-    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
+    final backend = _engine.backend;
+    final nativeRanges = _nativeIndexedRanges(secondary);
+    final predicateBytes = encodePredicate(_filters, codec: _codec);
+    if (backend case final NativeRawBackend nativeBackend
+        when nativeRanges == null) {
+      lastPlan = IndexPlan.nativeFilteredScan;
+      return nativeBackend.queryFilteredCount(
+        table: _table,
+        predicateBytes: predicateBytes,
+      );
+    }
+    if (backend case final NativeRawBackend nativeBackend) {
+      if (nativeRanges != null) {
+        lastPlan = IndexPlan.secondaryIndex;
+        return nativeBackend.queryIndexedCount(
+          table: _table,
+          ranges: [
+            for (final range in nativeRanges)
+              (ByteKey(range.$1), ByteKey(range.$2)),
+          ],
+          predicateBytes: predicateBytes,
+        );
+      }
+      lastPlan = IndexPlan.nativeFilteredScan;
+      return nativeBackend.queryFilteredCount(
+        table: _table,
+        predicateBytes: predicateBytes,
+      );
+    }
+    final snap = await backend.snapshot() as NativeRawSnapshot;
     try {
-      final nativeRanges = _nativeIndexedRanges(secondary);
-      final predicateBytes = encodePredicate(_filters, codec: _codec);
       if (nativeRanges != null) {
         lastPlan = IndexPlan.secondaryIndex;
         return snap.queryIndexedCount(
@@ -623,43 +738,66 @@ class QueryImpl<T> implements Query<T> {
 
   @override
   Future<List<Object?>> distinct(String field) async {
-    // aggregate pushdown — an unindexed query emits only the requested
-    // field's bytes per matching row (one value per row, not the whole row).
-    // Dart decodes + dedups. Indexed-eq queries keep the `queryIndexed` path
-    // (small result set, already joined).
+    // Aggregate pushdown emits only the requested field bytes. Unindexed
+    // native queries use the direct operation; compound index routes retain a
+    // snapshot for consistent multi-range evaluation.
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
-    final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
-    try {
-      final nativeRanges = _nativeIndexedRanges(secondary);
-      final predicateBytes = encodePredicate(_filters, codec: _codec);
-      final fieldBytes = nativeRanges == null
-          ? await snap.queryFilteredDistinct(
-              table: _table,
-              predicateBytes: predicateBytes,
-              field: field,
-            )
-          : await snap.queryIndexedDistinct(
-              table: _table,
-              ranges: [
-                for (final range in nativeRanges)
-                  (ByteKey(range.$1), ByteKey(range.$2)),
-              ],
-              predicateBytes: predicateBytes,
-              field: field,
-            );
+    final backend = _engine.backend;
+    final nativeRanges = _nativeIndexedRanges(secondary);
+    final predicateBytes = encodePredicate(_filters, codec: _codec);
+    final List<List<int>> fieldBytes;
+    if (backend case final NativeRawBackend nativeBackend) {
+      if (nativeRanges == null) {
+        lastPlan = IndexPlan.nativeFilteredScan;
+        fieldBytes = await nativeBackend.queryFilteredDistinct(
+          table: _table,
+          predicateBytes: predicateBytes,
+          field: field,
+        );
+      } else {
+        lastPlan = IndexPlan.secondaryIndex;
+        fieldBytes = await nativeBackend.queryIndexedDistinct(
+          table: _table,
+          ranges: [
+            for (final range in nativeRanges)
+              (ByteKey(range.$1), ByteKey(range.$2)),
+          ],
+          predicateBytes: predicateBytes,
+          field: field,
+        );
+      }
+    } else {
+      final snap = await backend.snapshot() as NativeRawSnapshot;
+      try {
+        fieldBytes = nativeRanges == null
+            ? await snap.queryFilteredDistinct(
+                table: _table,
+                predicateBytes: predicateBytes,
+                field: field,
+              )
+            : await snap.queryIndexedDistinct(
+                table: _table,
+                ranges: [
+                  for (final range in nativeRanges)
+                    (ByteKey(range.$1), ByteKey(range.$2)),
+                ],
+                predicateBytes: predicateBytes,
+                field: field,
+              );
+      } finally {
+        await snap.dispose();
+      }
       lastPlan = nativeRanges == null
           ? IndexPlan.nativeFilteredScan
           : IndexPlan.secondaryIndex;
-      final seen = <Object?>{};
-      for (final bytes in fieldBytes) {
-        if (bytes.isEmpty) continue;
-        seen.add(_codec.decode(bytes));
-      }
-      return seen.toList();
-    } finally {
-      await snap.dispose();
     }
+    final seen = <Object?>{};
+    for (final bytes in fieldBytes) {
+      if (bytes.isEmpty) continue;
+      seen.add(_codec.decode(bytes));
+    }
+    return seen.toList();
   }
 
   /// Cursor-based pagination.
@@ -795,7 +933,7 @@ class QueryImpl<T> implements Query<T> {
   }
 
   /// Materializes the ordered matching set against [snap] (used by the
-  /// snapshot-bound cursor). Sorted materialization executes in Rust 
+  /// snapshot-bound cursor). Sorted materialization executes in Rust
   Future<List<_Decoded>> _materialize(NativeRawSnapshot snap) async {
     if (_sort.isNotEmpty) {
       return _nativeOrderedCollect(null, snapshot: snap);
@@ -808,7 +946,7 @@ class QueryImpl<T> implements Query<T> {
   }
 }
 
-/// Snapshot-bound cursor implementation 
+/// Snapshot-bound cursor implementation
 ///
 /// The ordered matching set is materialized once from the captured snapshot on
 /// the first page, then paged by offset. This is O(result) memory but

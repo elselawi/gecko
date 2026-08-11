@@ -44,6 +44,70 @@ class RawClear extends RawOp {
 
 typedef RawBatch = List<RawOp>;
 
+/// Validation mode for a prepared [RawPut]. The check and the write happen
+/// inside the same Rust write transaction; this is not a Dart-side read.
+enum RawPutMode { upsert, insertOnly, updateOnly }
+
+/// A Dart-authored change-record template completed by Rust before commit.
+///
+/// [operationIndex] refers to the data operation in [RawBatchPlan.ops]. Rust
+/// captures that operation's immediately preceding value, replaces the LSN
+/// and (when requested) `previousVersion`, and writes the completed record to
+/// both the change log and sync state in the same transaction.
+class RawChangeTemplate {
+  const RawChangeTemplate({
+    required this.operationIndex,
+    required this.ordinal,
+    required this.syncStateKey,
+    required this.recordTemplate,
+    this.fillPreviousVersion = false,
+  });
+
+  final int operationIndex;
+  final int ordinal;
+  final ByteKey syncStateKey;
+  final List<int> recordTemplate;
+  final bool fillPreviousVersion;
+}
+
+/// A batch that can be prepared and applied without a Dart snapshot or a
+/// Dart-side LSN read. This type is intentionally an internal capability
+/// seam; ordinary callers continue to use [RawBackend.applyBatch].
+class RawBatchPlan {
+  const RawBatchPlan({
+    required this.ops,
+    this.changeTemplates = const <RawChangeTemplate>[],
+    this.putModes = const <int, RawPutMode>{},
+    this.previousOperationIndexes = const <int>[],
+  });
+
+  final RawBatch ops;
+  final List<RawChangeTemplate> changeTemplates;
+  final Map<int, RawPutMode> putModes;
+
+  /// Data-operation indexes whose immediately preceding encoded values should
+  /// be returned by the worker. Indexes are positional so repeated keys remain
+  /// distinguishable.
+  final List<int> previousOperationIndexes;
+}
+
+/// Optional native capability used by [RawEngine] for one-hop writes.
+abstract interface class PreparedBatchBackend {
+  Future<ApplyBatchResult> applyPreparedBatch(RawBatchPlan plan);
+}
+
+/// Optional native capability used for ordinary point reads and scans that do
+/// not require a frozen multi-operation view.
+abstract interface class DirectReadBackend {
+  Future<List<int>?> directRead(String table, ByteKey key);
+
+  Future<List<RawEntry>> directScan(
+    String table, {
+    ByteKey? start,
+    ByteKey? end,
+  });
+}
+
 /// A point range scan (key + optional value), exposed as an ordered snapshot.
 class RawEntry {
   const RawEntry(this.key, this.value);
@@ -147,9 +211,27 @@ class RegistryDelta {
 /// affected (table, key) pairs plus one [RegistryDelta] per touched live
 /// registration.
 class ApplyBatchResult {
-  const ApplyBatchResult({required this.affected, required this.deltas});
+  const ApplyBatchResult({
+    required this.affected,
+    required this.deltas,
+    this.sequence = 0,
+    this.previousValues = const <List<int>?>[],
+    this.removedKeys = const <(String, ByteKey)>[],
+  });
+
   final Set<(String, ByteKey)> affected;
   final List<RegistryDelta> deltas;
+
+  /// The durable commit sequence assigned by Rust.
+  final int sequence;
+
+  /// Previous values in the same order as
+  /// [RawBatchPlan.previousOperationIndexes]. A null entry means the row was
+  /// absent immediately before that operation.
+  final List<List<int>?> previousValues;
+
+  /// Keys actually removed by range/clear operations, as returned by Rust.
+  final List<(String, ByteKey)> removedKeys;
 }
 
 /// the kind of live result a registration maintains (mirrors

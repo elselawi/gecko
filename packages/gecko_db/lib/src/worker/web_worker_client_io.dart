@@ -2,6 +2,7 @@
 library;
 
 import '../backend/raw_backend.dart';
+import '../native/generated/api.dart' show PreparedChange;
 import '../native/generated/worker.dart' show StorageStats;
 
 /// Throws on the VM — the web-worker client is web-only (see the web
@@ -28,10 +29,19 @@ class WebWorkerClient {
     _unsupported();
   }
 
-  Future<List<RegistryDelta>> applyBatch(
+  Future<ApplyBatchResult> applyBatch(
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
     int changeLogMaxEntries = 0,
+  }) async => _unsupported();
+
+  Future<ApplyBatchResult> applyPreparedBatch(
+    List<int> encodedOps, {
+    List<List<Object?>> indexDefinitions = const [],
+    int changeLogMaxEntries = 0,
+    List<String> previousOperationIndexes = const [],
+    List<(BigInt, int)> putModes = const [],
+    List<PreparedChange> changes = const [],
   }) async => _unsupported();
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,

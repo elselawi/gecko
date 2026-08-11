@@ -14,12 +14,14 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import '../backend/byte_key.dart';
 import '../backend/raw_backend.dart';
 import '../errors/errors.dart';
 import '../errors/native_error.dart';
-import '../native/generated/api.dart';
+import '../native/generated/api.dart' hide ApplyBatchResult;
+import '../native/generated/counters.dart' show WorkCounters;
 import '../native/generated/worker.dart' show StorageStats;
 import '../native/native_resolver.dart' show isWeb;
 import '../wire/compatibility.dart';
@@ -261,29 +263,84 @@ class NativeWorkerClient {
   /// applies a batch and returns the reactive-registry deltas
   /// the worker produced for it (empty when no live registration was touched).
   /// [changeLogMaxEntries] (0 = disabled) prunes the pending-sync change log
-  /// in the same write transaction when the batch touched it 
-  Future<List<RegistryDelta>> applyBatch(
+  /// in the same write transaction when the batch touched it
+  Future<ApplyBatchResult> applyBatch(
     List<int> encodedOps, {
     List<(String, List<String>)> indexDefinitions = const [],
     int changeLogMaxEntries = 0,
   }) async {
-    final result = await _request('applyBatch', <Object?>[
-      encodedOps,
-      indexDefinitions,
-      changeLogMaxEntries,
-    ]) as Map;
-    return [
-      for (final delta in (result['deltas'] as List))
-        RegistryDelta(
-          id: int.parse((delta as Map)['id'] as String),
-          added: _decodeEntries(delta['added'] as List),
-          updated: _decodeEntries(delta['updated'] as List),
-          removed: _decodeEntries(delta['removed'] as List),
-          snapshot: _decodeEntries(delta['snapshot'] as List),
-          unchanged: delta['unchanged'] as bool,
-        ),
-    ];
+    final result =
+        await _request('applyBatch', <Object?>[
+              encodedOps,
+              indexDefinitions,
+              changeLogMaxEntries,
+            ])
+            as Map;
+    return _decodeApplyBatchResult(result.cast<String, Object?>());
   }
+
+  Future<ApplyBatchResult> applyPreparedBatch(
+    List<int> encodedOps, {
+    List<(String, List<String>)> indexDefinitions = const [],
+    int changeLogMaxEntries = 0,
+    List<String> previousOperationIndexes = const [],
+    List<(BigInt, int)> putModes = const [],
+    List<PreparedChange> changes = const [],
+  }) async {
+    final result =
+        await _request('applyPreparedBatch', <Object?>[
+              encodedOps,
+              indexDefinitions,
+              changeLogMaxEntries,
+              previousOperationIndexes,
+              [
+                for (final (index, mode) in putModes)
+                  <Object?>[index.toString(), mode],
+              ],
+              [
+                for (final change in changes)
+                  <String, Object?>{
+                    'operationIndex': change.operationIndex.toString(),
+                    'ordinal': change.ordinal.toString(),
+                    'syncStateKey': change.syncStateKey,
+                    'recordTemplate': change.recordTemplate,
+                    'fillPreviousVersion': change.fillPreviousVersion,
+                  },
+              ],
+            ])
+            as Map;
+    return _decodeApplyBatchResult(result.cast<String, Object?>());
+  }
+
+  ApplyBatchResult _decodeApplyBatchResult(Map<String, Object?> result) =>
+      ApplyBatchResult(
+        affected: const <(String, ByteKey)>{},
+        sequence: int.parse(result['sequence'] as String),
+        previousValues: [
+          for (final value in result['previousValues'] as List)
+            value == null
+                ? null
+                : Uint8List.fromList(List<int>.from(value as List)),
+        ],
+        removedKeys: [
+          for (final entry in result['removedKeys'] as List)
+            (
+              (entry as List)[0] as String,
+              ByteKey(List<int>.from(entry[1] as List)),
+            ),
+        ],
+        deltas: [
+          for (final delta in result['deltas'] as List)
+            RegistryDelta(
+              id: int.parse((delta as Map)['id'] as String),
+              added: _decodeEntries(delta['added'] as List),
+              updated: _decodeEntries(delta['updated'] as List),
+              removed: _decodeEntries(delta['removed'] as List),
+              snapshot: _decodeEntries(delta['snapshot'] as List),
+              unchanged: delta['unchanged'] as bool,
+            ),
+        ],
+      );
 
   /// registers a live query with the worker's reactive
   /// registry, returning the registration id and initial result set.
@@ -294,10 +351,13 @@ class NativeWorkerClient {
     required int kind,
   }) async {
     final result =
-        await _request(
-          'registerLiveQuery',
-          <Object?>[table, predicateBytes, sortBytes, kind],
-        ) as Map;
+        await _request('registerLiveQuery', <Object?>[
+              table,
+              predicateBytes,
+              sortBytes,
+              kind,
+            ])
+            as Map;
     return LiveQueryRegistration(
       id: int.parse(result['id'] as String),
       initial: _decodeEntries(result['initial'] as List),
@@ -325,11 +385,11 @@ class NativeWorkerClient {
   /// Decodes a wire `[[keyBytes, valueBytes], ...]` list into [RawEntry]s.
   List<RawEntry> _decodeEntries(Object? raw) => [
     for (final pair in (raw as List))
-      RawEntry(
-        ByteKey(List<int>.from((pair as List)[0] as List)),
-        List<int>.from(pair[1] as List),
-      ),
+      RawEntry(ByteKey(_copyBytes((pair as List)[0])), _copyBytes(pair[1])),
   ];
+
+  List<int> _copyBytes(Object? value) =>
+      value is Uint8List ? value : List<int>.from(value as List);
 
   /// verifies and atomically repairs durable index entries for [table].
   Future<void> repairIndex({
@@ -390,9 +450,159 @@ class NativeWorkerClient {
     final result = await _request('rangeScan', <Object?>[table, start, end]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
+
+  Future<List<(List<int>, List<int>)>> queryFilteredLimited({
+    required String table,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+  }) async => _decodePairs(
+    await _request('queryFilteredLimited', <Object?>[
+      table,
+      predicateBytes,
+      limit,
+      offset,
+    ]),
+  );
+
+  Future<List<(List<int>, List<int>)>> queryIndexedLimited({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+  }) async => _decodePairs(
+    await _request('queryIndexedLimited', <Object?>[
+      table,
+      indexTable,
+      start,
+      end,
+      predicateBytes,
+      limit,
+      offset,
+    ]),
+  );
+
+  Future<List<(List<int>, List<int>)>> querySorted({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortSpecBytes,
+    int? limit,
+    int offset = 0,
+  }) async => _decodePairs(
+    await _request('querySorted', <Object?>[
+      table,
+      predicateBytes,
+      sortSpecBytes,
+      limit,
+      offset,
+    ]),
+  );
+
+  Future<List<(List<int>, List<int>)>> queryIndexedOrdered({
+    required String table,
+    required String indexTable,
+    required List<int> start,
+    required List<int> end,
+    required List<int> predicateBytes,
+    required String sortField,
+    required bool eqBounded,
+    int? limit,
+    int offset = 0,
+  }) async => _decodePairs(
+    await _request('queryIndexedOrdered', <Object?>[
+      table,
+      indexTable,
+      start,
+      end,
+      predicateBytes,
+      sortField,
+      eqBounded,
+      limit,
+      offset,
+    ]),
+  );
+
+  Future<int> queryFilteredCount({
+    required String table,
+    required List<int> predicateBytes,
+  }) async => _asInt(
+    await _request('queryFilteredCount', <Object?>[table, predicateBytes]),
+  );
+
+  Future<List<(List<int>, List<int>)>> queryIndexedMulti({
+    required String table,
+    required String indexTable,
+    required List<(List<int>, List<int>)> ranges,
+    required List<int> predicateBytes,
+  }) async => _decodePairs(
+    await _request('queryIndexedMulti', <Object?>[
+      table,
+      indexTable,
+      [
+        for (final range in ranges) <Object?>[range.$1, range.$2],
+      ],
+      predicateBytes,
+    ]),
+  );
+
+  Future<List<List<int>>> queryIndexedDistinct({
+    required String table,
+    required String indexTable,
+    required List<(List<int>, List<int>)> ranges,
+    required List<int> predicateBytes,
+    required String field,
+  }) async {
+    final result = await _request('queryIndexedDistinct', <Object?>[
+      table,
+      indexTable,
+      [
+        for (final range in ranges) <Object?>[range.$1, range.$2],
+      ],
+      predicateBytes,
+      field,
+    ]);
+    return [for (final bytes in result as List) _copyBytes(bytes)];
+  }
+
+  Future<int> queryIndexedCount({
+    required String table,
+    required String indexTable,
+    required List<(List<int>, List<int>)> ranges,
+    required List<int> predicateBytes,
+  }) async => _asInt(
+    await _request('queryIndexedCount', <Object?>[
+      table,
+      indexTable,
+      [
+        for (final range in ranges) <Object?>[range.$1, range.$2],
+      ],
+      predicateBytes,
+    ]),
+  );
+
+  Future<List<List<int>>> queryFilteredDistinct({
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) async {
+    final result = await _request('queryFilteredDistinct', <Object?>[
+      table,
+      predicateBytes,
+      field,
+    ]);
+    return [for (final bytes in result as List) _copyBytes(bytes)];
+  }
+
+  List<(List<int>, List<int>)> _decodePairs(Object? raw) => [
+    for (final pair in raw as List)
+      (_copyBytes((pair as List)[0]), _copyBytes(pair[1])),
+  ];
 
   Future<List<String>> tables() async {
     final result = await _request('tables', const <Object?>[]);
@@ -853,9 +1063,25 @@ class NativeWorkerClient {
   Future<bool> compact() async =>
       await _request('compact', const <Object?>[]) as bool;
 
-  /// Reports physical/logical size and health counters 
+  /// Reports physical/logical size and health counters
   Future<StorageStats> storageStats() async =>
       await _request('storageStats', const <Object?>[]) as StorageStats;
+
+  /// Starts recording physical-work counters in the worker (zero-cost when
+  /// off by default). Drain with [takeCounters].
+  Future<void> enableCounters() async {
+    await _request('enableCounters', const <Object?>[]);
+  }
+
+  /// Stops recording and resets all physical-work counters to zero.
+  Future<void> disableCounters() async {
+    await _request('disableCounters', const <Object?>[]);
+  }
+
+  /// Snapshots and resets the physical-work counters accumulated since the
+  /// last drain. Returns a zeroed snapshot when counters are disabled.
+  Future<WorkCounters> takeCounters() async =>
+      await _request('takeCounters', const <Object?>[]) as WorkCounters;
 
   Future<String> compatibilityHandshake() async =>
       await _request('compatibilityHandshake', const <Object?>[]) as String;

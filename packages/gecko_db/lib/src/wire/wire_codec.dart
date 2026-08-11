@@ -161,7 +161,12 @@ class DefaultWireCodec implements WireCodec {
         if (len < 0 || len > r.remaining) {
           throw const WireDecodeException('String length out of range');
         }
-        return utf8.decode(r.readBytes(len));
+        try {
+          return utf8.decode(r.readBytes(len));
+        } on FormatException {
+          // Invalid UTF-8 is a wire-format error, never a raw FormatException.
+          throw const WireDecodeException('Invalid UTF-8 in string value');
+        }
       case _Tag.dateTime:
         final micros = decodeInt64(r.readBytes(8));
         return DateTime.fromMicrosecondsSinceEpoch(micros, isUtc: true);

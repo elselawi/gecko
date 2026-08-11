@@ -138,7 +138,7 @@ class DatabaseImpl implements Database {
 
   /// The relationship manager bound to this database (). FK lookups are
   /// wired to the collection indexes so children/parents queries use an index
-  /// when the foreign-key field is indexed 
+  /// when the foreign-key field is indexed
   RelationshipManager get relationships => _relationships ??=
       RelationshipManager(_engine, indexLookup: (table) => _indexes[table]);
 
@@ -332,71 +332,55 @@ class DatabaseImpl implements Database {
       return const BulkWriteResult(sequence: 0, mutationCount: 0);
     }
     final codec = const DefaultWireCodec();
-    // A bulk write is still a local mutation: it must be change-tracked
-    // (change log + sync state) in the SAME atomic transaction as primary rows
-    // and Rust-owned durable indexes.
-    final lsn = await _engine.commitBatch(
-      (lsn, snapshot) async {
-        final ops = <RawOp>[];
-        for (var ordinal = 0; ordinal < mutations.length; ordinal++) {
-          final mutation = mutations[ordinal];
-          final keyBytes = codec.encode(mutation.key);
-          // Read the prior row so change records can describe updates.
-          final previousRaw = await snapshot.read(
-            mutation.table,
-            ByteKey(keyBytes),
-          );
-          final previous = previousRaw == null
-              ? null
-              : codec.decode(previousRaw);
-          if (mutation.kind == ChangeKind.put) {
-            ops.add(
-              RawPut(
-                mutation.table,
-                ByteKey(keyBytes),
-                codec.encode(mutation.value),
-              ),
-            );
-          } else {
-            ops.add(RawDelete(mutation.table, ByteKey(keyBytes)));
-          }
-          // Change tracking in the same batch (contract).
-          final record = ChangeRecord(
-            localMutationId: lsn,
-            recordId: mutation.key,
-            timestamp: _clock(),
-            collection: mutation.table,
-            kind: mutation.kind,
-            value: mutation.kind == ChangeKind.put ? mutation.value : null,
-            previousVersion: previous,
-            origin: ChangeOrigin.user,
-            dirty: true,
-            syncState: const SyncState(phase: SyncPhase.pending),
-          );
-          ops.add(
-            RawPut(
-              geckoChangeLogTable,
-              ByteKey(codec.encode([lsn, ordinal])),
-              codec.encode(_recordToMap(record)),
-            ),
-          );
-          ops.add(
-            RawPut(
-              geckoSyncStateTable,
-              _refKey(mutation.table, mutation.key),
-              codec.encode(_recordToMap(record)),
-            ),
-          );
-        }
-        // change-log pruning executes in the Rust commit path (retention
-        // from DatabaseConfig.changeLogMaxEntries); no Dart scan/prune here.
-        return ops;
-      },
-      buildChanges: (_) => [
+    final plan = RawBatchPlan(
+      ops: [
         for (final mutation in mutations)
-          Change(table: mutation.table, key: mutation.key, kind: mutation.kind),
+          mutation.kind == ChangeKind.put
+              ? RawPut(
+                  mutation.table,
+                  ByteKey(codec.encode(mutation.key)),
+                  codec.encode(mutation.value),
+                )
+              : RawDelete(mutation.table, ByteKey(codec.encode(mutation.key))),
+      ],
+      previousOperationIndexes: [for (var i = 0; i < mutations.length; i++) i],
+      changeTemplates: [
+        for (var ordinal = 0; ordinal < mutations.length; ordinal++)
+          RawChangeTemplate(
+            operationIndex: ordinal,
+            ordinal: ordinal,
+            syncStateKey: _refKey(
+              mutations[ordinal].table,
+              mutations[ordinal].key,
+            ),
+            recordTemplate: codec.encode(
+              _recordToMap(
+                ChangeRecord(
+                  localMutationId: 0,
+                  recordId: mutations[ordinal].key,
+                  timestamp: _clock(),
+                  collection: mutations[ordinal].table,
+                  kind: mutations[ordinal].kind,
+                  value: mutations[ordinal].kind == ChangeKind.put
+                      ? mutations[ordinal].value
+                      : null,
+                  previousVersion: null,
+                  origin: ChangeOrigin.user,
+                  dirty: true,
+                  syncState: const SyncState(phase: SyncPhase.pending),
+                ),
+              ),
+            ),
+            fillPreviousVersion: true,
+          ),
       ],
     );
+    final result = await _engine.applyPreparedPlan(plan);
+    final lsn = result.sequence;
+    _engine.publishPreparedChanges(lsn, [
+      for (final mutation in mutations)
+        Change(table: mutation.table, key: mutation.key, kind: mutation.kind),
+    ]);
     return BulkWriteResult(sequence: lsn, mutationCount: mutations.length);
   }
 
@@ -504,12 +488,12 @@ class _CollectionImpl<T> implements Collection<T> {
       }
       return rows;
     }
-    // one `get_many` Rust call fetches every key in a single read
-    // transaction (kills the N+1). The engine is always native.
-    final snap = await _db.engine.backend.snapshot() as NativeRawSnapshot;
-    try {
+    // One direct native getMany call fetches every key in a single read
+    // transaction without a snapshot create/drop round trip.
+    final backend = _db.engine.backend;
+    if (backend is NativeRawBackend) {
       final rows = <T>[];
-      final entries = await snap.getMany(name, keys);
+      final entries = await backend.getMany(name, keys);
       final byKey = {for (final e in entries) e.key: e.value};
       for (final key in keys) {
         final raw = byKey[key];
@@ -517,9 +501,13 @@ class _CollectionImpl<T> implements Collection<T> {
         rows.add(_fromRow(_codec.decode(raw)));
       }
       return rows;
-    } finally {
-      await snap.dispose();
     }
+    final rows = <T>[];
+    for (final key in keys) {
+      final raw = await _db.engine.rawGet(name, key);
+      if (raw != null) rows.add(_fromRow(_codec.decode(raw)));
+    }
+    return rows;
   }
 
   @override
@@ -995,60 +983,53 @@ class _TxnImpl implements Transaction {
     if (_finished) return;
     _finished = true;
     if (_ops.isEmpty) return;
-    await _db.engine.commitBatch(
-      (lsn, snapshot) async {
-        final ops = <RawOp>[..._ops];
-        for (var ordinal = 0; ordinal < _mutations.length; ordinal++) {
-          final mutation = _mutations[ordinal];
-          final record = ChangeRecord(
-            localMutationId: lsn,
-            recordId: mutation.recordId,
-            timestamp: _db._clock(),
-            collection: mutation.table,
-            kind: mutation.kind,
-            value: mutation.value,
-            previousVersion: mutation.previousVersion,
-            changedFields: mutation.changedFields,
-            origin: mutation.origin,
-            dirty: mutation.origin != ChangeOrigin.remoteSync,
-            syncState: SyncState(
-              phase: mutation.origin == ChangeOrigin.remoteSync
-                  ? SyncPhase.clean
-                  : SyncPhase.pending,
+    final plan = RawBatchPlan(
+      ops: List<RawOp>.of(_ops),
+      changeTemplates: [
+        for (var ordinal = 0; ordinal < _mutations.length; ordinal++)
+          RawChangeTemplate(
+            operationIndex: ordinal,
+            ordinal: ordinal,
+            syncStateKey: _refKey(
+              _mutations[ordinal].table,
+              _mutations[ordinal].recordId,
             ),
-            idempotencyKey: mutation.idempotencyKey,
-            remoteVersion: mutation.remoteVersion,
-          );
-          ops.add(
-            RawPut(
-              geckoChangeLogTable,
-              ByteKey(_codec.encode([lsn, ordinal])),
-              _codec.encode(_recordToMap(record)),
+            recordTemplate: _codec.encode(
+              _recordToMap(
+                ChangeRecord(
+                  localMutationId: 0,
+                  recordId: _mutations[ordinal].recordId,
+                  timestamp: _db._clock(),
+                  collection: _mutations[ordinal].table,
+                  kind: _mutations[ordinal].kind,
+                  value: _mutations[ordinal].value,
+                  previousVersion: _mutations[ordinal].previousVersion,
+                  changedFields: _mutations[ordinal].changedFields,
+                  origin: _mutations[ordinal].origin,
+                  dirty: _mutations[ordinal].origin != ChangeOrigin.remoteSync,
+                  syncState: SyncState(
+                    phase: _mutations[ordinal].origin == ChangeOrigin.remoteSync
+                        ? SyncPhase.clean
+                        : SyncPhase.pending,
+                  ),
+                  idempotencyKey: _mutations[ordinal].idempotencyKey,
+                  remoteVersion: _mutations[ordinal].remoteVersion,
+                ),
+              ),
             ),
-          );
-          ops.add(
-            RawPut(
-              geckoSyncStateTable,
-              _refKey(mutation.table, mutation.recordId),
-              _codec.encode(_recordToMap(record)),
-            ),
-          );
-        }
-        // change-log pruning executes in the Rust commit path (retention
-        // from DatabaseConfig.changeLogMaxEntries); no Dart scan/prune here.
-        return ops;
-      },
-      buildChanges: (lsn) {
-        return [
-          for (final mutation in _mutations)
-            Change(
-              table: mutation.table,
-              key: _codec.decode(mutation.key.bytes),
-              kind: mutation.kind,
-            ),
-        ];
-      },
+            fillPreviousVersion: false,
+          ),
+      ],
     );
+    final result = await _db.engine.applyPreparedPlan(plan);
+    _db.engine.publishPreparedChanges(result.sequence, [
+      for (final mutation in _mutations)
+        Change(
+          table: mutation.table,
+          key: _codec.decode(mutation.key.bytes),
+          kind: mutation.kind,
+        ),
+    ]);
     _committed = true;
   }
 
@@ -1387,7 +1368,7 @@ class _SyncHookImpl implements SyncHookApi {
             (logByKey[key] ??= []).add((entry.key, record));
           }
         }
-        await _db.engine.commitBatch((lsn, _) async {
+        await _db.engine.commitBatchNoSnapshot((lsn) async {
           final ops = <RawOp>[];
           for (final record in selected) {
             final next = update(record);
@@ -1456,74 +1437,67 @@ class _SyncHookImpl implements SyncHookApi {
           }
         }
         if (accepted.isEmpty) return;
-        await _db.engine.commitBatch(
-          (lsn, _) async {
-            final ops = <RawOp>[];
-            for (var ordinal = 0; ordinal < accepted.length; ordinal++) {
-              final record = accepted[ordinal];
-              final collection = record.collection;
-              final kind = record.kind ?? ChangeKind.put;
-              if (collection == null) {
-                throw ArgumentError(
-                  'Remote ChangeRecord.collection is required',
-                );
-              }
-              final key = ByteKey(_codec.encode(record.recordId));
-              if (kind == ChangeKind.delete) {
-                ops.add(RawDelete(collection, key));
-              } else {
-                ops.add(RawPut(collection, key, _codec.encode(record.value)));
-              }
-              final committed = ChangeRecord(
-                localMutationId: lsn,
-                recordId: record.recordId,
-                timestamp: _db._clock(),
-                collection: collection,
-                kind: kind,
-                value: record.value,
-                remoteVersion: record.remoteVersion,
-                dirty: false,
-                previousVersion: record.previousVersion,
-                changedFields: record.changedFields,
-                origin: ChangeOrigin.remoteSync,
-                syncState: const SyncState(phase: SyncPhase.clean),
-                idempotencyKey: record.idempotencyKey,
-              );
-              ops.add(
-                RawPut(
-                  geckoChangeLogTable,
-                  ByteKey(_codec.encode([lsn, ordinal])),
-                  _codec.encode(_recordToMap(committed)),
-                ),
-              );
-              ops.add(
-                RawPut(
-                  geckoSyncStateTable,
-                  _refKey(collection, record.recordId),
-                  _codec.encode(_recordToMap(committed)),
-                ),
-              );
-              if (record.idempotencyKey != null) {
-                ops.add(
-                  RawPut(
-                    geckoSyncDedupeTable,
-                    ByteKey(_codec.encode(record.idempotencyKey)),
-                    _codec.encode(lsn),
-                  ),
-                );
-              }
-            }
-            return ops;
-          },
-          buildChanges: (lsn) => [
-            for (final record in accepted)
-              Change(
-                table: record.collection!,
-                key: record.recordId,
-                kind: record.kind ?? ChangeKind.put,
+        final dataOps = <RawOp>[];
+        final templates = <RawChangeTemplate>[];
+        for (var ordinal = 0; ordinal < accepted.length; ordinal++) {
+          final record = accepted[ordinal];
+          final collection = record.collection;
+          final kind = record.kind ?? ChangeKind.put;
+          if (collection == null) {
+            throw ArgumentError('Remote ChangeRecord.collection is required');
+          }
+          final key = ByteKey(_codec.encode(record.recordId));
+          if (kind == ChangeKind.delete) {
+            dataOps.add(RawDelete(collection, key));
+          } else {
+            dataOps.add(RawPut(collection, key, _codec.encode(record.value)));
+          }
+          final committed = ChangeRecord(
+            localMutationId: 0,
+            recordId: record.recordId,
+            timestamp: _db._clock(),
+            collection: collection,
+            kind: kind,
+            value: record.value,
+            remoteVersion: record.remoteVersion,
+            dirty: false,
+            previousVersion: record.previousVersion,
+            changedFields: record.changedFields,
+            origin: ChangeOrigin.remoteSync,
+            syncState: const SyncState(phase: SyncPhase.clean),
+            idempotencyKey: record.idempotencyKey,
+          );
+          templates.add(
+            RawChangeTemplate(
+              operationIndex: ordinal,
+              ordinal: ordinal,
+              syncStateKey: _refKey(collection, record.recordId),
+              recordTemplate: _codec.encode(_recordToMap(committed)),
+            ),
+          );
+        }
+        for (final record in accepted) {
+          if (record.idempotencyKey != null) {
+            dataOps.add(
+              RawPut(
+                geckoSyncDedupeTable,
+                ByteKey(_codec.encode(record.idempotencyKey)),
+                _codec.encode(0),
               ),
-          ],
+            );
+          }
+        }
+        final result = await _db.engine.applyPreparedPlan(
+          RawBatchPlan(ops: dataOps, changeTemplates: templates),
         );
+        _db.engine.publishPreparedChanges(result.sequence, [
+          for (final record in accepted)
+            Change(
+              table: record.collection!,
+              key: record.recordId,
+              kind: record.kind ?? ChangeKind.put,
+            ),
+        ]);
       } finally {
         await snapshot.dispose();
       }
@@ -1827,56 +1801,46 @@ class _ConflictApiImpl implements ConflictApi {
     final prior = stateRaw == null
         ? null
         : _recordFromMap(_codec.decode(stateRaw));
-    await _db.engine.commitBatch(
-      (lsn, _) async {
-        final ops = <RawOp>[];
-        if (value.deleted) {
-          ops.add(RawDelete(request.record.collection, key));
-        } else {
-          ops.add(
-            RawPut(request.record.collection, key, _codec.encode(value.value)),
-          );
-        }
-        final record = ChangeRecord(
-          localMutationId: lsn,
-          recordId: request.record.id,
-          timestamp: _db._clock(),
-          collection: request.record.collection,
-          kind: value.deleted ? ChangeKind.delete : ChangeKind.put,
-          value: value.value,
-          previousVersion: local.value,
-          origin: ChangeOrigin.remoteSync,
-          dirty: false,
-          syncState: const SyncState(phase: SyncPhase.clean),
-          remoteVersion: request.remote.version,
-        );
-        ops.add(
-          RawPut(
-            geckoChangeLogTable,
-            ByteKey(_codec.encode([lsn, 0])),
-            _codec.encode(_recordToMap(record)),
-          ),
-        );
-        ops.add(
-          RawPut(
-            geckoSyncStateTable,
-            _refKey(request.record.collection, request.record.id),
-            _codec.encode(_recordToMap(record)),
-          ),
-        );
-        ops.add(
-          RawDelete(geckoConflictTable, ByteKey(_codec.encode(conflictId))),
-        );
-        return ops;
-      },
-      buildChanges: (_) => [
-        Change(
-          table: request.record.collection,
-          key: request.record.id,
-          kind: value.deleted ? ChangeKind.delete : ChangeKind.put,
-        ),
-      ],
+    final record = ChangeRecord(
+      localMutationId: 0,
+      recordId: request.record.id,
+      timestamp: _db._clock(),
+      collection: request.record.collection,
+      kind: value.deleted ? ChangeKind.delete : ChangeKind.put,
+      value: value.value,
+      previousVersion: local.value,
+      origin: ChangeOrigin.remoteSync,
+      dirty: false,
+      syncState: const SyncState(phase: SyncPhase.clean),
+      remoteVersion: request.remote.version,
     );
+    final ops = <RawOp>[
+      if (value.deleted)
+        RawDelete(request.record.collection, key)
+      else
+        RawPut(request.record.collection, key, _codec.encode(value.value)),
+      RawDelete(geckoConflictTable, ByteKey(_codec.encode(conflictId))),
+    ];
+    final result = await _db.engine.applyPreparedPlan(
+      RawBatchPlan(
+        ops: ops,
+        changeTemplates: [
+          RawChangeTemplate(
+            operationIndex: 0,
+            ordinal: 0,
+            syncStateKey: _refKey(request.record.collection, request.record.id),
+            recordTemplate: _codec.encode(_recordToMap(record)),
+          ),
+        ],
+      ),
+    );
+    _db.engine.publishPreparedChanges(result.sequence, [
+      Change(
+        table: request.record.collection,
+        key: request.record.id,
+        kind: value.deleted ? ChangeKind.delete : ChangeKind.put,
+      ),
+    ]);
     // Keep the local read in the method's transactional preparation and make
     // the prior value an explicit dependency for future compare-and-swap
     // backends; this also documents that the resolution is against one view.

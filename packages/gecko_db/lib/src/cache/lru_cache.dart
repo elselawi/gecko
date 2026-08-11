@@ -86,8 +86,12 @@ class LruCache<K, V> {
   void _trim() {
     // Hard byte cap: resident weight never exceeds [maxWeight] (evict at the
     // boundary), while entry count uses a strict > for the classic LRU rule.
-    while (_map.length > capacity ||
-        (_maxWeight != null && _weight >= _maxWeight)) {
+    // The `isNotEmpty` guard prevents a maxWeight of 0 (or a value whose
+    // weight alone reaches the cap) from re-entering the loop on an already
+    // empty map.
+    while (_map.isNotEmpty &&
+        (_map.length > capacity ||
+            (_maxWeight != null && _weight >= _maxWeight))) {
       final oldest = _map.keys.first;
       final v = _map.remove(oldest);
       if (v != null) {

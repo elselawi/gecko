@@ -9,21 +9,31 @@ import 'dart:typed_data';
 
 import '../errors/native_error.dart';
 import '../namespaces.dart';
+import '../native/generated/counters.dart' show WorkCounters;
 import '../native/generated/worker.dart' show StorageStats;
+import '../native/generated/api.dart' show PreparedChange;
 import '../wire/compatibility.dart';
 import '../wire/op.dart';
-import '../wire/wire_codec.dart';
 import '../worker/native_worker_client.dart';
 import 'byte_key.dart';
 import 'raw_backend.dart';
 
 /// A file-backed backend using the generated flutter_rust_bridge worker.
-class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
-  NativeRawBackend._(this._worker, this._readOnly, {int changeLogMaxEntries = 0})
-    : _changeLogMaxEntries = changeLogMaxEntries;
+class NativeRawBackend
+    implements
+        RawBackend,
+        DurableIndexRegistrar,
+        PreparedBatchBackend,
+        DirectReadBackend {
+  NativeRawBackend._(
+    this._worker,
+    this._readOnly, {
+    int changeLogMaxEntries = 0,
+  }) : _changeLogMaxEntries = changeLogMaxEntries;
 
   final NativeWorkerClient _worker;
   final bool _readOnly;
+
   /// pending-sync change-log retention (0 = disabled); pruned in the
   /// Rust commit path when a batch grows the log beyond this bound.
   final int _changeLogMaxEntries;
@@ -44,11 +54,11 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
   bool get isReadOnly => _readOnly;
 
   /// Whether the worker isolate is alive and has completed its startup
-  /// handshake. Test/qualification surface 
+  /// handshake. Test/qualification surface
   bool get workerAlive => _worker.isWorkerAlive;
 
   /// The worker isolate's own name, proving reads/writes execute off the
-  /// caller's isolate. Test/qualification surface 
+  /// caller's isolate. Test/qualification surface
   String? get workerIsolateName => _worker.workerIsolateName;
 
   /// Test/qualification surface runs the [`Finalizer`] teardown
@@ -69,7 +79,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.commitSequence();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -79,7 +91,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.compact();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -88,7 +102,44 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.storageStats();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Starts recording physical-work counters in the worker (zero-cost when
+  /// off by default). Drain with [takeCounters].
+  Future<void> enableCounters() async {
+    try {
+      return await _worker.enableCounters();
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Stops recording and resets all physical-work counters to zero.
+  Future<void> disableCounters() async {
+    try {
+      return await _worker.disableCounters();
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Snapshots and resets the physical-work counters accumulated since the
+  /// last drain. Returns a zeroed snapshot when counters are disabled.
+  Future<WorkCounters> takeCounters() async {
+    try {
+      return await _worker.takeCounters();
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -130,61 +181,122 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
         rethrow;
       }
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
   @override
   Future<ApplyBatchResult> applyBatch(RawBatch ops) async {
     final wireOps = <Op>[for (final op in ops) _toWireOp(op)];
-    // Delete-range ops must report every key they actually remove so the
-    // affected-set contract matches the in-memory backend exactly. The engine
-    // is single-writer, so the pre-scan sees precisely the keys the batch is
-    // about to delete (nothing can interleave between scan and apply).
-    final preRemoved = <(String, ByteKey)>{};
-    final deleteRanges = [
-      for (final op in ops)
-        if (op is RawDeleteRange) op,
-    ];
-    if (deleteRanges.isNotEmpty) {
-      final snap = await snapshot();
-      try {
-        for (final range in deleteRanges) {
-          for (final entry in await snap.scan(
-            range.table,
-            start: range.start,
-            end: range.end,
-          )) {
-            preRemoved.add((range.table, entry.key));
-          }
-        }
-      } finally {
-        await snap.dispose();
-      }
-    }
     try {
-      final deltas = await _worker.applyBatch(
+      final result = await _worker.applyBatch(
         Op.encodeBatch(wireOps),
         indexDefinitions: [
           for (final entry in _durableIndexes.entries) (entry.key, entry.value),
         ],
         changeLogMaxEntries: _changeLogMaxEntries,
       );
-      return ApplyBatchResult(
-        affected: {
-          for (final op in ops)
-            switch (op) {
-              RawPut(:final table, :final key) => (table, key),
-              RawDelete(:final table, :final key) => (table, key),
-              RawDeleteRange(:final table, :final start) => (table, start),
-              RawClear(:final table) => (table, ByteKey(const [])),
-            },
-          ...preRemoved,
-        },
-        deltas: deltas,
-      );
+      return _rawApplyResult(result, ops);
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  @override
+  Future<ApplyBatchResult> applyPreparedBatch(RawBatchPlan plan) async {
+    final wireOps = <Op>[for (final op in plan.ops) _toWireOp(op)];
+    final preparedChanges = [
+      for (final template in plan.changeTemplates)
+        PreparedChange(
+          operationIndex: BigInt.from(template.operationIndex),
+          ordinal: BigInt.from(template.ordinal),
+          syncStateKey: template.syncStateKey.bytes,
+          recordTemplate: Uint8List.fromList(template.recordTemplate),
+          fillPreviousVersion: template.fillPreviousVersion,
+        ),
+    ];
+    try {
+      final result = await _worker.applyPreparedBatch(
+        Op.encodeBatch(wireOps),
+        indexDefinitions: [
+          for (final entry in _durableIndexes.entries) (entry.key, entry.value),
+        ],
+        changeLogMaxEntries: _changeLogMaxEntries,
+        previousOperationIndexes: [
+          for (final index in plan.previousOperationIndexes) index.toString(),
+        ],
+        putModes: [
+          for (final entry in plan.putModes.entries)
+            (BigInt.from(entry.key), _putMode(entry.value)),
+        ],
+        changes: preparedChanges,
+      );
+      return _rawApplyResult(result, plan.ops);
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  ApplyBatchResult _rawApplyResult(ApplyBatchResult result, RawBatch ops) {
+    final affected = <(String, ByteKey)>{
+      for (final op in ops)
+        switch (op) {
+          RawPut(:final table, :final key) => (table, key),
+          RawDelete(:final table, :final key) => (table, key),
+          RawDeleteRange(:final table, :final start) => (table, start),
+          RawClear(:final table) => (table, ByteKey(const [])),
+        },
+      ...result.removedKeys,
+    };
+    return ApplyBatchResult(
+      affected: affected,
+      deltas: result.deltas,
+      sequence: result.sequence,
+      previousValues: result.previousValues,
+      removedKeys: result.removedKeys,
+    );
+  }
+
+  static int _putMode(RawPutMode mode) => switch (mode) {
+    RawPutMode.upsert => 0,
+    RawPutMode.insertOnly => 1,
+    RawPutMode.updateOnly => 2,
+  };
+
+  @override
+  Future<List<int>?> directRead(String table, ByteKey key) async {
+    try {
+      return await _worker.get(table: table, key: key.bytes);
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  @override
+  Future<List<RawEntry>> directScan(
+    String table, {
+    ByteKey? start,
+    ByteKey? end,
+  }) async {
+    try {
+      final pairs = await _worker.rangeScan(
+        table: table,
+        start: start?.bytes,
+        end: end?.bytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -204,7 +316,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
         kind: kind,
       );
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -214,7 +328,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       await _worker.unregisterLiveQuery(id);
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -224,7 +340,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.liveQueryCount();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -235,7 +353,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.pendingChanges();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -263,7 +383,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -276,7 +398,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       await _worker.repairIndex(table: table, fields: fields);
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -304,7 +428,208 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<RawEntry>> queryFilteredLimited({
+    required String table,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    try {
+      final pairs = await _worker.queryFilteredLimited(
+        table: table,
+        predicateBytes: predicateBytes,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<RawEntry>> querySorted({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortSpecBytes,
+    int? limit,
+    int offset = 0,
+  }) async {
+    try {
+      final pairs = await _worker.querySorted(
+        table: table,
+        predicateBytes: predicateBytes,
+        sortSpecBytes: sortSpecBytes,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<RawEntry>> queryIndexedLimited({
+    required String table,
+    required ByteKey start,
+    required ByteKey end,
+    required List<int> predicateBytes,
+    int? limit,
+    int offset = 0,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.queryIndexedLimited(
+        table: table,
+        indexTable: indexTable,
+        start: start.bytes,
+        end: end.bytes,
+        predicateBytes: predicateBytes,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<RawEntry>> queryIndexedOrdered({
+    required String table,
+    required ByteKey start,
+    required ByteKey end,
+    required List<int> predicateBytes,
+    required String sortField,
+    required bool eqBounded,
+    int? limit,
+    int offset = 0,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.queryIndexedOrdered(
+        table: table,
+        indexTable: indexTable,
+        start: start.bytes,
+        end: end.bytes,
+        predicateBytes: predicateBytes,
+        sortField: sortField,
+        eqBounded: eqBounded,
+        limit: limit,
+        offset: offset,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<RawEntry>> queryIndexedMulti({
+    required String table,
+    required List<(ByteKey, ByteKey)> ranges,
+    required List<int> predicateBytes,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      final pairs = await _worker.queryIndexedMulti(
+        table: table,
+        indexTable: indexTable,
+        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        predicateBytes: predicateBytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<List<int>>> queryIndexedDistinct({
+    required String table,
+    required List<(ByteKey, ByteKey)> ranges,
+    required List<int> predicateBytes,
+    required String field,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      return await _worker.queryIndexedDistinct(
+        table: table,
+        indexTable: indexTable,
+        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        predicateBytes: predicateBytes,
+        field: field,
+      );
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<int> queryIndexedCount({
+    required String table,
+    required List<(ByteKey, ByteKey)> ranges,
+    required List<int> predicateBytes,
+    String indexTable = geckoIndexTable,
+  }) async {
+    try {
+      return await _worker.queryIndexedCount(
+        table: table,
+        indexTable: indexTable,
+        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        predicateBytes: predicateBytes,
+      );
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<int> queryFilteredCount({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    try {
+      return await _worker.queryFilteredCount(
+        table: table,
+        predicateBytes: predicateBytes,
+      );
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  Future<List<List<int>>> queryFilteredDistinct({
+    required String table,
+    required List<int> predicateBytes,
+    required String field,
+  }) async {
+    try {
+      return await _worker.queryFilteredDistinct(
+        table: table,
+        predicateBytes: predicateBytes,
+        field: field,
+      );
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -324,7 +649,9 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -337,24 +664,20 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     try {
       return await _worker.tables();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
   @override
   Future<int> lastCommitSeq() async {
-    final snapshot = await this.snapshot();
     try {
-      final raw = await snapshot.read(
-        geckoSyncMetaTable,
-        ByteKey(const DefaultWireCodec().encode(geckoLsnKey)),
-      );
-      if (raw == null) return 0;
-      return (const DefaultWireCodec().decode(raw) as int?) ?? 0;
+      return (await _worker.commitSequence()).toInt();
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
-    } finally {
-      await snapshot.dispose();
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -376,19 +699,19 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     RawPut(:final table, :final key, :final value) => Op(
       op: OpKind.put,
       table: table,
-      key: Uint8List.fromList(key.bytes),
-      value: Uint8List.fromList(value),
+      key: key.bytes,
+      value: value is Uint8List ? value : Uint8List.fromList(value),
     ),
     RawDelete(:final table, :final key) => Op(
       op: OpKind.delete,
       table: table,
-      key: Uint8List.fromList(key.bytes),
+      key: key.bytes,
     ),
     RawDeleteRange(:final table, :final start, :final end) => Op(
       op: OpKind.deleteRange,
       table: table,
-      start: Uint8List.fromList(start.bytes),
-      end: Uint8List.fromList(end.bytes),
+      start: start.bytes,
+      end: end.bytes,
     ),
     RawClear(:final table) => Op(op: OpKind.clear, table: table),
   };
@@ -530,7 +853,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -546,7 +871,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -603,7 +930,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return pair == null ? null : RawEntry(ByteKey(pair.$1), pair.$2);
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -635,13 +964,14 @@ class NativeRawSnapshot implements RawSnapshot {
           GroupedChildren(
             parentId: ByteKey(group.$1),
             entries: [
-              for (final pair in group.$2)
-                RawEntry(ByteKey(pair.$1), pair.$2),
+              for (final pair in group.$2) RawEntry(ByteKey(pair.$1), pair.$2),
             ],
           ),
       ];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -659,7 +989,9 @@ class NativeRawSnapshot implements RawSnapshot {
         wantedId: wantedId.bytes,
       );
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -682,7 +1014,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -703,7 +1037,9 @@ class NativeRawSnapshot implements RawSnapshot {
         predicateBytes: predicateBytes,
       );
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -726,7 +1062,9 @@ class NativeRawSnapshot implements RawSnapshot {
         field: field,
       );
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -748,7 +1086,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -775,7 +1115,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -800,7 +1142,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 
@@ -837,7 +1181,9 @@ class NativeRawSnapshot implements RawSnapshot {
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
-      throw mapNativeError(error); // coverage:ignore-line defensive error translation
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
     }
   }
 }
