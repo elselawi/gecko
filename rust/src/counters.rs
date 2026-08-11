@@ -113,7 +113,7 @@ impl AtomicCounters {
 
     /// Snapshots every counter and resets them to zero.
     pub fn snapshot_take(&self) -> WorkCounters {
-        let snapshot = WorkCounters {
+        WorkCounters {
             batches_applied: self.batches_applied.swap(0, Ordering::Relaxed),
             rows_written: self.rows_written.swap(0, Ordering::Relaxed),
             table_opens: self.table_opens.swap(0, Ordering::Relaxed),
@@ -134,8 +134,7 @@ impl AtomicCounters {
             registry_rows_removed: self.registry_rows_removed.swap(0, Ordering::Relaxed),
             registry_rows_cloned: self.registry_rows_cloned.swap(0, Ordering::Relaxed),
             registry_snapshot_bytes: self.registry_snapshot_bytes.swap(0, Ordering::Relaxed),
-        };
-        snapshot
+        }
     }
 
     fn reset(&self) {

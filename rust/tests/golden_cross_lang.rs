@@ -27,6 +27,11 @@ fn utc_micros(y: i64, mo: u32, d: u32, h: u32, mi: u32, s: u32, us: u32) -> i64 
     (((days * 24 + (h as i64)) * 60 + (mi as i64)) * 60 + (s as i64)) * 1_000_000 + (us as i64)
 }
 
+/// The fixture stores an approximate π value; a named constant keeps clippy's
+/// `approx_constant` lint from treating it as a typo.
+#[allow(clippy::approx_constant)]
+const PI_APPROX: f64 = 3.14159;
+
 #[test]
 fn dart_golden_decodes_byte_for_byte() {
     let bytes = std::fs
@@ -94,7 +99,7 @@ fn dart_golden_rich_values_decode_in_rust() {
         .find(|(k, _)| k == &RowValue::String("pi".into()))
         .map(|(_, v)| v)
         .expect("pi field");
-    assert!(matches!(pi, RowValue::F64(v) if (*v - 3.14159).abs() < 1e-9));
+    assert!(matches!(pi, RowValue::F64(v) if (*v - PI_APPROX).abs() < 1e-9));
     // bool field.
     let flag = entries
         .iter()

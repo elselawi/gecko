@@ -270,7 +270,7 @@ pub fn decode_predicate(bytes: &[u8]) -> Result<Predicate> {
     // so the remaining input bounds how many filters can possibly be present.
     // Capping the pre-allocation prevents a hostile count (up to u64::MAX)
     // from requesting a giant allocation before the bounds checks fail.
-    let cap = (count as usize).min(r.remaining() / 2);
+    let cap = count.min(r.remaining() / 2);
     let mut filters = Vec::with_capacity(cap);
     for _ in 0..count {
         let op = PredicateOp::from_u8(r.read_u8()?).ok_or_else(||

@@ -48,7 +48,7 @@ pub fn decode_sort_specs(bytes: &[u8]) -> Result<SortSpecs> {
     // byte), so the remaining input bounds how many specs can be present.
     // Capping the pre-allocation prevents a hostile count from requesting a
     // giant allocation before the bounds checks fail.
-    let cap = (count as usize).min(r.remaining() / 2);
+    let cap = count.min(r.remaining() / 2);
     let mut specs = Vec::with_capacity(cap);
     for _ in 0..count {
         let field = r.read_string()?;

@@ -591,6 +591,7 @@ impl RedbWorker {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_batch_impl(
         &mut self,
         operations: &[Op],
@@ -3972,7 +3973,7 @@ mod tests {
 
         // A genuine storage failure stays a Storage error.
         let io_error = CompactionError::Storage(
-            StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, "boom"))
+            StorageError::Io(std::io::Error::other("boom"))
         );
         assert!(
             matches!(RedbWorker::map_compaction_error(io_error), WorkerError::Storage(_)),

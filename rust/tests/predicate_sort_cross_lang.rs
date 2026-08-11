@@ -108,7 +108,7 @@ fn dart_predicates_match_the_same_rows_the_worker_contract_expects() {
         &hex_decode(as_str(&fixture["predicates"][4]["hex"], "empty predicate hex"))
     ).expect("empty predicate decodes");
     assert!(empty.is_empty());
-    for (_, encoded) in &rows {
+    for encoded in rows.values() {
         assert!(empty.test_bytes(encoded));
     }
 
