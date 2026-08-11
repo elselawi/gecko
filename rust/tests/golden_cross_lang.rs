@@ -7,11 +7,24 @@
 //! This is a contract artifact: a real cross-language check, not two
 //! encoders that merely happen to agree on their own round-trips.
 
+use gecko_db_rust::value_codec::{ self, RowValue };
 use gecko_db_rust::wire::{ Op, OpKind, WIRE_VERSION };
 use std::path::PathBuf;
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("golden_ops.bin")
+}
+
+/// UTC microseconds since the Unix epoch for a civil date (no chrono dep).
+fn utc_micros(y: i64, mo: u32, d: u32, h: u32, mi: u32, s: u32, us: u32) -> i64 {
+    let yy = if mo <= 2 { y - 1 } else { y };
+    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
+    let yoe = yy - era * 400; // [0, 399]
+    let mp = (mo + 9) % 12;
+    let doy = (153 * (mp as i64) + 2) / 5 + (d as i64) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    (((days * 24 + (h as i64)) * 60 + (mi as i64)) * 60 + (s as i64)) * 1_000_000 + (us as i64)
 }
 
 #[test]
@@ -34,6 +47,10 @@ fn dart_golden_decodes_byte_for_byte() {
         (OpKind::Delete, "users"),
         (OpKind::DeleteRange, "logs"),
         (OpKind::Clear, "sessions"),
+        (OpKind::Put, "rich"),
+        (OpKind::Put, "rich"),
+        (OpKind::Put, "rich"),
+        (OpKind::RangeScan, "events"),
     ];
 
     assert_eq!(ops.len(), expected.len(), "op count must match the fixture contract");
@@ -46,4 +63,124 @@ fn dart_golden_decodes_byte_for_byte() {
     // encoders, not merely self-consistent ones).
     let reencoded = Op::encode_batch(&ops);
     assert_eq!(reencoded, bytes, "Rust re-encode must equal the Dart golden bytes");
+}
+
+#[test]
+fn dart_golden_rich_values_decode_in_rust() {
+    let bytes = std::fs
+        ::read(fixture())
+        .expect("golden fixture must exist; run `dart run tool/gen_golden_ops.dart`");
+    let ops = Op::decode_batch(&bytes).unwrap();
+    // Op 7 is the rich map value.
+    let rich = &ops[7];
+    assert_eq!(rich.kind, OpKind::Put);
+    assert_eq!(rich.table, "rich");
+    let value = value_codec
+        ::decode_value(rich.value.as_deref().expect("rich value present"))
+        .unwrap();
+    let RowValue::Map(entries) = &value else {
+        panic!("rich value must decode to a map");
+    };
+    // BigInt field.
+    let big = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("big".into()))
+        .map(|(_, v)| v)
+        .expect("big field");
+    assert_eq!(*big, RowValue::BigInt(123456789012345678901234567890));
+    // double field.
+    let pi = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("pi".into()))
+        .map(|(_, v)| v)
+        .expect("pi field");
+    assert!(matches!(pi, RowValue::F64(v) if (*v - 3.14159).abs() < 1e-9));
+    // bool field.
+    let flag = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("flag".into()))
+        .map(|(_, v)| v)
+        .expect("flag field");
+    assert_eq!(*flag, RowValue::Bool(true));
+    // null field.
+    let nil = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("nil".into()))
+        .map(|(_, v)| v)
+        .expect("nil field");
+    assert_eq!(*nil, RowValue::Null);
+    // bytes field.
+    let blob = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("blob".into()))
+        .map(|(_, v)| v)
+        .expect("blob field");
+    assert_eq!(*blob, RowValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]));
+    // DateTime field (2024-01-02 03:04:05.006007 UTC).
+    let at = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("at".into()))
+        .map(|(_, v)| v)
+        .expect("at field");
+    let microseconds = utc_micros(2024, 1, 2, 3, 4, 5, 6007);
+    assert_eq!(*at, RowValue::DateTime(microseconds));
+    // nested list/map.
+    let nested = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("nested".into()))
+        .map(|(_, v)| v)
+        .expect("nested field");
+    assert_eq!(
+        *nested,
+        RowValue::List(
+            vec![
+                RowValue::Int64(1),
+                RowValue::Map(vec![(RowValue::String("k".into()), RowValue::String("v".into()))]),
+                RowValue::List(vec![RowValue::Bool(true), RowValue::Null])
+            ]
+        )
+    );
+    // negative int64 field.
+    let neg = entries
+        .iter()
+        .find(|(k, _)| k == &RowValue::String("negative".into()))
+        .map(|(_, v)| v)
+        .expect("negative field");
+    assert_eq!(*neg, RowValue::Int64(-9876543210));
+
+    // Op 8: a put whose value is explicitly null.
+    let null_op = &ops[8];
+    assert_eq!(null_op.kind, OpKind::Put);
+    assert_eq!(
+        value_codec::decode_value(null_op.value.as_deref().unwrap()).unwrap(),
+        RowValue::Null
+    );
+    assert_eq!(
+        value_codec::decode_value(null_op.key.as_deref().unwrap()).unwrap(),
+        RowValue::BigInt(-5)
+    );
+
+    // Op 9: a bytes key and a bytes map key.
+    let bytes_op = &ops[9];
+    assert_eq!(bytes_op.kind, OpKind::Put);
+    assert_eq!(
+        value_codec::decode_value(bytes_op.key.as_deref().unwrap()).unwrap(),
+        RowValue::Bytes(vec![1, 2, 3])
+    );
+    let bytes_value = value_codec::decode_value(bytes_op.value.as_deref().unwrap()).unwrap();
+    let RowValue::Map(bytes_entries) = &bytes_value else {
+        panic!("bytes-keyed value must decode to a map");
+    };
+    assert_eq!(bytes_entries.len(), 1);
+    assert_eq!(bytes_entries[0].0, RowValue::Bytes(vec![9, 8]));
+    assert_eq!(bytes_entries[0].1, RowValue::String("byte-keyed".into()));
+
+    // Op 10: a range scan bounded by DateTime-encoded keys.
+    let events = &ops[10];
+    assert_eq!(events.kind, OpKind::RangeScan);
+    assert_eq!(events.table, "events");
+    let start = value_codec::decode_value(events.start.as_deref().unwrap()).unwrap();
+    let end = value_codec::decode_value(events.end.as_deref().unwrap()).unwrap();
+    assert_eq!(start, RowValue::DateTime(utc_micros(2023, 1, 1, 0, 0, 0, 0)));
+    assert_eq!(end, RowValue::DateTime(utc_micros(2025, 1, 1, 0, 0, 0, 0)));
 }
