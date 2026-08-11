@@ -618,7 +618,8 @@ void main() {
       expect(
         t.total,
         lessThanOrEqualTo((rec.durationMicros * 1.5).round()),
-        reason: 'stage accounting must stay within a small tolerance of wall time',
+        reason:
+            'stage accounting must stay within a small tolerance of wall time',
       );
       await db.close();
     });
