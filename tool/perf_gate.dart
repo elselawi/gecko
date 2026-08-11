@@ -1,17 +1,19 @@
 #!/usr/bin/env dart
-// Performance regression gate for gecko_db 
+// Performance regression gate for gecko_db
 //
 // Runs the local benchmark harness in --json mode and compares every
 // (backend, workload) against the pinned baseline in benchmark/baseline.json.
-// Fails if any workload regressed beyond the tolerance (a ratio of ms/op,
-// so "slower" = higher ms/op).
+// Fails if any workload regressed beyond the tolerance on the mean (ms/op)
+// or, when both the run and the baseline pin it, on p95 (p95MsPerOp).
 //
 // Usage (from the repo root):
-//   dart run tool/perf_gate.dart                  # both backends, 30% tolerance
-//   dart run tool/perf_gate.dart --native         # native file only
-//   dart run tool/perf_gate.dart --mem            # in-memory only
-//   dart run tool/perf_gate.dart --tolerance=0.50 # relax the noise budget
-//   dart run tool/perf_gate.dart --update         # refresh baseline.json
+//   dart run tool/perf_gate.dart                    # native file, 30% tolerance
+//   dart run tool/perf_gate.dart --native           # accepted (only backend)
+//   dart run tool/perf_gate.dart --indexed          # also gate indexed workloads
+//   dart run tool/perf_gate.dart --rows=100000      # gate a non-default scale
+//   dart run tool/perf_gate.dart --shape=wide       # non-default row shape
+//   dart run tool/perf_gate.dart --tolerance=0.50   # relax the noise budget
+//   dart run tool/perf_gate.dart --update           # refresh baseline.json
 //
 // Notes:
 //   * Requires the release native artifact (cd rust && cargo build --release).
@@ -19,6 +21,13 @@
 //     regression check, not a precision instrument. The release checklist
 //     runs the strict gate locally; --update is for intentional, reviewed
 //     performance changes.
+//   * The in-memory backend is no longer produced by the harness; `--mem`
+//     fails loudly instead of silently running a different configuration.
+//   * The baseline is schema-versioned and records the dataset configuration
+//     (row count, shape, batch, selectivity, indexed rows) the numbers were
+//     produced with. A run whose configuration differs from the baseline
+//     fails rather than comparing apples to oranges; regenerate with --update
+//     only for an intentional, reviewed scale/config change.
 //   * A workload missing from the baseline is always a failure (the baseline
 //     must cover every workload the harness emits).
 
@@ -30,22 +39,191 @@ import 'package:path/path.dart' as p;
 final String baselinePath = 'benchmark${Platform.pathSeparator}baseline.json';
 const double defaultTolerance = 0.30;
 
-/// One measured (backend, workload, ms/op) row.
+/// JSON schema version shared with benchmark/bench.dart. The gate refuses to
+/// compare run output or a baseline with a different version.
+const int schemaVersion = 2;
+
+/// Keys of the dataset config that must match between a run and its baseline
+/// for the comparison to be meaningful.
+const List<String> datasetConfigKeys = [
+  'seedRows',
+  'shape',
+  'batch',
+  'distinctGroups',
+  'indexed',
+  'indexedRows',
+  'changeLogMaxEntries',
+];
+
+/// Baseline mean (ms/op) at or above which p95 is a gated regression metric.
+/// Below this, p95 is reported but advisory: microsecond-scale p95 is
+/// dominated by scheduler/JIT noise (documented across the m4/m5 perf notes),
+/// so gating it produces false failures.
+const double p95GateMinMeanMs = 0.05;
+
+/// One measured (backend, workload, ms/op) row. p95 is advisory (only
+/// compared when the baseline pins it too).
 class PerfRow {
-  PerfRow(this.backend, this.workload, this.msPerOp);
+  PerfRow(this.backend, this.workload, this.msPerOp, {this.p95MsPerOp});
   final String backend;
   final String workload;
   final double msPerOp;
+  final double? p95MsPerOp;
+}
+
+/// A baseline row: pinned mean and (optionally) pinned p95.
+class BaselineRow {
+  BaselineRow(this.msPerOp, this.p95MsPerOp);
+  final double msPerOp;
+  final double? p95MsPerOp;
+}
+
+/// Parsed harness `--json` output.
+class BenchDoc {
+  BenchDoc(
+    this.benchmark,
+    this.platform,
+    this.dart,
+    this.generatedAt,
+    this.schemaVersion,
+    this.metadata,
+    this.results,
+  );
+
+  final String benchmark;
+  final String platform;
+  final String dart;
+  final String generatedAt;
+  final int schemaVersion;
+  final Map<String, Object?> metadata;
+  final List<PerfRow> results;
+
+  Map<String, Object?> get dataset =>
+      (metadata['dataset'] as Map<String, Object?>?) ?? const {};
+}
+
+/// Parsed baseline file.
+class BaselineFile {
+  BaselineFile(this.schemaVersion, this.metadata, this.rows);
+  final int? schemaVersion;
+  final Map<String, Object?> metadata;
+  final Map<String, BaselineRow> rows;
+
+  Map<String, Object?> get dataset =>
+      (metadata['dataset'] as Map<String, Object?>?) ?? const {};
+}
+
+/// Parses the harness's `--json` output into rows.
+///
+/// Exposed (and tested) separately so the gate's parsing logic is verified
+/// without running the benchmark.
+List<PerfRow> parseResults(String jsonText) =>
+    _parseResults(jsonDecode(jsonText) as Map<String, Object?>);
+
+List<PerfRow> _parseResults(Map<String, Object?> doc) => [
+  for (final r in (doc['results'] as List))
+    PerfRow(
+      (r as Map)['backend'] as String,
+      r['workload'] as String,
+      (r['msPerOp'] as num).toDouble(),
+      p95MsPerOp: (r['p95MsPerOp'] as num?)?.toDouble(),
+    ),
+];
+
+/// Parses the full harness output document (schema version, metadata, rows).
+BenchDoc parseBenchDoc(String jsonText) {
+  final doc = jsonDecode(jsonText) as Map<String, Object?>;
+  return BenchDoc(
+    doc['benchmark'] as String? ?? 'unknown',
+    doc['platform'] as String? ?? 'unknown',
+    doc['dart'] as String? ?? 'unknown',
+    doc['generatedAt'] as String? ?? '',
+    (doc['schemaVersion'] as num?)?.toInt() ?? 1,
+    (doc['metadata'] as Map<String, Object?>?) ?? const {},
+    _parseResults(doc),
+  );
+}
+
+/// Parses a baseline file into rows, preserving the schema version and the
+/// dataset config it was generated with.
+BaselineFile parseBaseline(String jsonText) {
+  final doc = jsonDecode(jsonText) as Map<String, Object?>;
+  return BaselineFile(
+    (doc['schemaVersion'] as num?)?.toInt(),
+    (doc['metadata'] as Map<String, Object?>?) ?? const {},
+    {
+      for (final r in (doc['results'] as List))
+        '${(r as Map)['backend']}|${r['workload']}': BaselineRow(
+          (r['msPerOp'] as num).toDouble(),
+          (r['p95MsPerOp'] as num?)?.toDouble(),
+        ),
+    },
+  );
+}
+
+/// Returns a human-readable error if [baseline] cannot be compared against,
+/// or null when it is usable.
+String? baselineUsable(BaselineFile baseline) {
+  if (baseline.schemaVersion == null) {
+    return 'baseline is unversioned; regenerate it with --update '
+        '(current schema $schemaVersion).';
+  }
+  if (baseline.schemaVersion != schemaVersion) {
+    return 'baseline schema ${baseline.schemaVersion} != harness schema '
+        '$schemaVersion; regenerate it with --update.';
+  }
+  return null;
+}
+
+/// Returns a human-readable error when the run's dataset configuration
+/// differs from the baseline's, or null when they match (or the baseline
+/// carries no dataset config).
+String? datasetMismatch(BenchDoc run, BaselineFile baseline) {
+  for (final k in datasetConfigKeys) {
+    if (!baseline.dataset.containsKey(k)) continue;
+    if (run.dataset[k] != baseline.dataset[k]) {
+      return 'dataset config mismatch on `$k`: baseline=${baseline.dataset[k]} '
+          'run=${run.dataset[k]}. Run the gate with the same configuration '
+          'as the baseline (or regenerate the baseline with --update only '
+          'for an intentional, reviewed scale/config change).';
+    }
+  }
+  return null;
 }
 
 Future<void> main(List<String> args) async {
   final update = args.contains('--update');
-  final runNative = !args.contains('--mem');
-  final runMemory = !args.contains('--native');
   var tolerance = defaultTolerance;
+  // Pass-through flags forwarded to the harness so the gate can run (and
+  // gate) a specific scale/indexed configuration.
+  final passthrough = <String>[];
   for (final a in args) {
+    if (a == '--mem') {
+      stderr.writeln(
+        'PERF GATE: the in-memory backend is no longer produced by the '
+        'harness; --mem is unsupported. The gate benchmarks the native file '
+        'backend only.',
+      );
+      exit(2);
+    }
     if (a.startsWith('--tolerance=')) {
       tolerance = double.parse(a.substring('--tolerance='.length));
+    } else if (a == '--native' || a == '--update') {
+      // --native: only backend, accepted for compatibility.
+      // --update: handled below.
+    } else if (a == '--indexed' ||
+        a.startsWith('--rows=') ||
+        a.startsWith('--shape=') ||
+        a.startsWith('--batch=') ||
+        a.startsWith('--groups=') ||
+        a.startsWith('--indexedRows=')) {
+      passthrough.add(a);
+    } else if (a.startsWith('--tolerance')) {
+      // Malformed tolerance values fail in the parse below.
+      tolerance = double.parse(a.substring('--tolerance='.length));
+    } else {
+      stderr.writeln('PERF GATE: unknown flag `$a`.');
+      exit(2);
     }
   }
 
@@ -53,9 +231,7 @@ Future<void> main(List<String> args) async {
   final baselineFile = File(p.join(root, baselinePath));
 
   // 1. Run the harness in JSON mode.
-  final benchArgs = ['run', 'benchmark/bench.dart', '--json'];
-  if (runNative && !runMemory) benchArgs.add('--native');
-  if (runMemory && !runNative) benchArgs.add('--mem');
+  final benchArgs = ['run', 'benchmark/bench.dart', '--json', ...passthrough];
   final proc = await Process.start(Platform.resolvedExecutable, benchArgs);
   final stdoutBuf = StringBuffer();
   final stderrBuf = StringBuffer();
@@ -68,44 +244,42 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
-  final Map<String, Object?> doc;
+  final BenchDoc doc;
   try {
-    doc = jsonDecode(stdoutBuf.toString()) as Map<String, Object?>;
+    doc = parseBenchDoc(stdoutBuf.toString());
   } catch (e) {
     stderr.writeln('PERF GATE: could not parse benchmark JSON output: $e');
     stderr.writeln(stdoutBuf.toString());
     exit(1);
   }
-  final results = parseResults(stdoutBuf.toString());
+  if (doc.schemaVersion != schemaVersion) {
+    stderr.writeln(
+      'PERF GATE FAILED: harness output schema ${doc.schemaVersion} != '
+      'expected $schemaVersion. Regenerate the baseline with --update after '
+      'reviewing the harness change.',
+    );
+    exit(1);
+  }
 
-  // 2. Update mode: merge into (or create) the baseline and stop. Running
-  // with one backend (`--native`/`--mem`) updates only that backend's rows
-  // while keeping the other's, so the pinned file always covers everything.
+  // 2. Update mode: write a schema-versioned baseline carrying the run's
+  //    dataset config and p95, and stop. The baseline is a full snapshot of
+  //    this run (single backend), so stale rows cannot linger.
   if (update) {
-    final merged = <String, double>{};
-    if (baselineFile.existsSync()) {
-      final existing =
-          jsonDecode(baselineFile.readAsStringSync()) as Map<String, Object?>;
-      for (final r in (existing['results'] as List)) {
-        merged['${(r as Map)['backend']}|${r['workload']}'] =
-            (r['msPerOp'] as num).toDouble();
-      }
-    }
-    for (final r in results) {
-      merged['${r.backend}|${r.workload}'] = r.msPerOp;
-    }
     final out = {
-      'benchmark': doc['benchmark'],
-      'platform': doc['platform'],
-      'dart': doc['dart'],
-      'generatedAt': doc['generatedAt'],
+      'benchmark': doc.benchmark,
+      'schemaVersion': schemaVersion,
+      'platform': doc.platform,
+      'dart': doc.dart,
+      'generatedAt': doc.generatedAt,
       'tolerance': tolerance,
+      'metadata': doc.metadata,
       'results': [
-        for (final entry in merged.entries)
+        for (final r in doc.results)
           {
-            'backend': entry.key.substring(0, entry.key.indexOf('|')),
-            'workload': entry.key.substring(entry.key.indexOf('|') + 1),
-            'msPerOp': entry.value,
+            'backend': r.backend,
+            'workload': r.workload,
+            'msPerOp': r.msPerOp,
+            'p95MsPerOp': r.p95MsPerOp,
           },
       ],
     };
@@ -115,7 +289,7 @@ Future<void> main(List<String> args) async {
     );
     stdout.writeln(
       'PERF GATE: baseline updated at $baselinePath '
-      '(${merged.length} workloads).',
+      '(${doc.results.length} workloads, schema $schemaVersion).',
     );
     return;
   }
@@ -129,15 +303,25 @@ Future<void> main(List<String> args) async {
     );
     exit(1);
   }
-  final baseline =
-      jsonDecode(baselineFile.readAsStringSync()) as Map<String, Object?>;
-  final baseRows = <String, double>{
-    for (final r in (baseline['results'] as List))
-      '${(r as Map)['backend']}|${r['workload']}': (r['msPerOp'] as num)
-          .toDouble(),
-  };
+  final BaselineFile baseline;
+  try {
+    baseline = parseBaseline(baselineFile.readAsStringSync());
+  } catch (e) {
+    stderr.writeln('PERF GATE FAILED: could not parse baseline: $e');
+    exit(1);
+  }
+  final baselineProblem = baselineUsable(baseline);
+  if (baselineProblem != null) {
+    stderr.writeln('PERF GATE FAILED: $baselineProblem');
+    exit(1);
+  }
+  final configProblem = datasetMismatch(doc, baseline);
+  if (configProblem != null) {
+    stderr.writeln('PERF GATE FAILED: $configProblem');
+    exit(1);
+  }
 
-  final (failed, report) = compare(results, baseRows, tolerance);
+  final (failed, report) = compare(doc.results, baseline.rows, tolerance);
   stdout.writeln(report);
   if (failed) {
     stderr.writeln(
@@ -149,31 +333,16 @@ Future<void> main(List<String> args) async {
   stdout.writeln('PERF GATE PASSED.');
 }
 
-/// Parses the harness's `--json` output into rows.
-///
-/// Exposed (and tested) separately so the gate's parsing logic is verified
-/// without running the benchmark.
-List<PerfRow> parseResults(String jsonText) {
-  final doc = jsonDecode(jsonText) as Map<String, Object?>;
-  return [
-    for (final r in (doc['results'] as List))
-      PerfRow(
-        (r as Map)['backend'] as String,
-        r['workload'] as String,
-        (r['msPerOp'] as num).toDouble(),
-      ),
-  ];
-}
-
 /// Compares [results] against a pinned [baseline] (keyed
-/// `backend|workload` → ms/op) with the given regression [tolerance].
+/// `backend|workload` → [BaselineRow]) with the given regression [tolerance].
 ///
 /// Returns `(failed, humanReport)`. A workload absent from the baseline is a
 /// failure; a baseline workload the harness no longer produces is also a
-/// failure. Slower = higher ms/op; regressions beyond the tolerance fail.
+/// failure. Slower = higher ms/op; regressions on the mean (or on p95 when
+/// both the run and the baseline pin it) beyond the tolerance fail.
 (bool, String) compare(
   List<PerfRow> results,
-  Map<String, double> baseRows,
+  Map<String, BaselineRow> baseRows,
   double tolerance,
 ) {
   var failed = false;
@@ -199,19 +368,27 @@ List<PerfRow> parseResults(String jsonText) {
       failed = true;
       continue;
     }
-    final delta = (r.msPerOp - base) / base;
-    final regressed = delta > tolerance;
+    var rowFailed = false;
+    final delta = (r.msPerOp - base.msPerOp) / base.msPerOp;
+    if (delta > tolerance) rowFailed = true;
+    var p95Note = '';
+    if (base.p95MsPerOp != null && r.p95MsPerOp != null) {
+      final p95Delta = (r.p95MsPerOp! - base.p95MsPerOp!) / base.p95MsPerOp!;
+      p95Note = ' | p95 ${(p95Delta * 100).toStringAsFixed(1)}%';
+      final gateP95 = base.msPerOp >= p95GateMinMeanMs;
+      if (!gateP95) p95Note += ' (advisory)';
+      if (gateP95 && p95Delta > tolerance) rowFailed = true;
+    }
     report.writeln(
-      '${(key).padRight(28)} ${base.toStringAsFixed(3).padLeft(12)} '
+      '${(key).padRight(28)} ${base.msPerOp.toStringAsFixed(3).padLeft(12)} '
       '${r.msPerOp.toStringAsFixed(3).padLeft(12)} '
-      '${(delta * 100).toStringAsFixed(1).padLeft(9)}% '
-      '${regressed ? 'FAIL' : 'ok'}',
+      '${(delta * 100).toStringAsFixed(1).padLeft(9)}%'
+      '$p95Note  ${rowFailed ? 'FAIL' : 'ok'}',
     );
-    if (regressed) failed = true;
+    if (rowFailed) failed = true;
   }
   // Every baseline workload of a backend that WAS measured must still exist
-  // (a workload disappearing from the harness is a signal). Baselines of
-  // backends not measured in this run (e.g. `--native` only) are skipped.
+  // (a workload disappearing from the harness is a signal).
   final producedBackends = results.map((r) => r.backend).toSet();
   for (final key in baseRows.keys) {
     final backend = key.substring(0, key.indexOf('|'));

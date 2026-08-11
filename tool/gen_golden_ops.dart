@@ -13,6 +13,7 @@
 // to the repo.
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:gecko_db/gecko_db.dart';
 
@@ -47,6 +48,51 @@ List<Op> goldenOps() {
       end: codec.encode(100),
     ),
     Op(op: OpKind.clear, table: 'sessions'),
+    // Every codec scalar: the value carries BigInt, double, bool, null,
+    // bytes, DateTime, and a nested list/map, so the Rust decoder must agree
+    // on the full `RowValue` tree — not just op kind + table name.
+    Op(
+      op: OpKind.put,
+      table: 'rich',
+      key: codec.encode(42),
+      value: codec.encode({
+        'big': BigInt.parse('123456789012345678901234567890'),
+        'pi': 3.14159,
+        'flag': true,
+        'nil': null,
+        'blob': Uint8List.fromList([0xde, 0xad, 0xbe, 0xef]),
+        'at': DateTime.utc(2024, 1, 2, 3, 4, 5, 6, 7),
+        'nested': [
+          1,
+          {'k': 'v'},
+          [true, null],
+        ],
+        'negative': -9876543210,
+      }),
+    ),
+    // A put whose value is explicitly null (present, empty map not needed).
+    Op(
+      op: OpKind.put,
+      table: 'rich',
+      key: codec.encode(BigInt.from(-5)),
+      value: codec.encode(null),
+    ),
+    // Bytes as a map key (unusual but legal), and a bytes key itself.
+    Op(
+      op: OpKind.put,
+      table: 'rich',
+      key: codec.encode(Uint8List.fromList([1, 2, 3])),
+      value: codec.encode({
+        Uint8List.fromList([9, 8]): 'byte-keyed',
+      }),
+    ),
+    // A range scan bounded by DateTime-encoded keys.
+    Op(
+      op: OpKind.rangeScan,
+      table: 'events',
+      start: codec.encode(DateTime.utc(2023)),
+      end: codec.encode(DateTime.utc(2025)),
+    ),
   ];
 }
 

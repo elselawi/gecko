@@ -28,6 +28,7 @@ export: src/model/row_patch.dart show: applyPatch, applyDefaults, PatchResult
 export: src/model/row_schema.dart show: RowSchema, FieldSpec, FieldPresence, FieldPatch
 export: src/namespaces.dart show: geckoReservedPrefix, isReservedName, ensureUserTableName
 export: src/native/generated/api.dart show: NativeWorker
+export: src/native/generated/counters.dart show: WorkCounters
 export: src/native/generated/frb_generated.dart show: RustLib
 export: src/native/native_resolver.dart show: NativeArtifact, NativeResolver, ResolverStorage, ResolverDownloader, LocalResolverStorage, IoResolverDownloader, bundledArtifactPath, bundledNativeDir, bundledWebGluePrefix, isWeb, nativeArtifactSha256, nativeArtifactManifest
 export: src/native/opfs.dart show: registerOpfsHandle

@@ -10,7 +10,7 @@
 import 'dart:io';
 
 final _exportPattern = RegExp(
-  r"^export '([^']+)'(?:\s+show\s+([\s\S]*?));$",
+  r"^export '([^']+)'(?:\s+show\s+([\s\S]*?))?;$",
   multiLine: true,
 );
 final _declarationPattern = RegExp(
