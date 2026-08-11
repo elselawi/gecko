@@ -257,9 +257,9 @@ does this for you).
 ### Performance
 
 ```sh
-# Native workload benchmark + strict gate
-dart run benchmark/bench.dart --native --json
-dart run tool/perf_gate.dart
+# Native workload benchmark + strict gate (benchmark is a standalone package)
+cd benchmark && dart run bench.dart --native --json
+cd .. && dart run tool/perf_gate.dart
 
 # Comparative benchmark: gecko_db vs Hive CE, Sembast, SQLite, Isar, Drift
 cd benchmark && dart run comparative.dart            # all six backends

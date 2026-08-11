@@ -118,9 +118,9 @@ dart run tool/coverage_gate.dart packages/gecko_db/coverage/lcov.info
 ## Performance
 
 ```sh
-# Native workload + strict gate
-dart run benchmark/bench.dart --native --json
-dart run tool/perf_gate.dart
+# Native workload + strict gate (benchmark is a standalone package)
+cd benchmark && dart run bench.dart --native --json
+cd .. && dart run tool/perf_gate.dart
 
 # Comparative (gecko_db vs Hive CE, Sembast, SQLite, Isar, Drift)
 cd benchmark && dart run comparative.dart
