@@ -13,21 +13,50 @@ use redb::{
     ReadTransaction,
     ReadableDatabase,
     ReadableTable,
+    ReadableTableMetadata,
+    Table,
     TableDefinition,
     TableHandle,
     WriteTransaction,
 };
-use std::collections::{ BTreeMap, BTreeSet, HashMap };
+use std::collections::{ BTreeMap, BTreeSet, HashMap, HashSet };
 use std::fs::OpenOptions;
 use std::path::{ Path, PathBuf };
+use std::sync::{ Mutex, OnceLock };
 
+use crate::counters::AtomicCounters;
+pub use crate::counters::WorkCounters;
 use crate::crypto_storage::EncryptingStorageBackend;
 use crate::wire::{ Op, OpKind, WireError };
 
 const TABLE_PREFIX: &str = "__gecko_user_";
 
 pub(crate) type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
+/// One open mutable table handle inside a single write transaction. Handles
+/// are cached per batch so a large batch opens each table at most once.
+type WriteTableCache<'txn> = HashMap<String, Table<'txn, &'static [u8], &'static [u8]>>;
 pub type ByteEntry = (Vec<u8>, Vec<u8>);
+
+/// Process-global interner for full table names (`__gecko_user_<name>` and
+/// the reserved `__gecko_*` tables). Every unique name is leaked exactly once
+/// and shared by every `table_definition` call site (reads, writes, indexes,
+/// registry, stats). Memory is bounded by the number of distinct tables ever
+/// referenced and never grows with operation count. `Mutex` contention is
+/// negligible: the critical section is one short-string hash lookup.
+static TABLE_NAME_CACHE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+/// Leaks [full_name] once and returns the shared `'static` copy; repeated
+/// calls for the same name return the existing allocation.
+fn intern_table_name(full_name: String) -> &'static str {
+    let cache = TABLE_NAME_CACHE.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = cache.lock().expect("table-name intern lock");
+    if let Some(existing) = guard.get(full_name.as_str()).copied() {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(full_name.into_boxed_str());
+    guard.insert(leaked);
+    leaked
+}
 
 /// one group of child rows sharing the same foreign-key value (parent
 /// id). The worker classifies matching child rows by FK so Dart receives
@@ -46,6 +75,24 @@ pub struct GroupedChildEntries {
 pub struct ApplyBatchOutcome {
     pub sequence: u64,
     pub deltas: Vec<crate::registry::RegistryDelta>,
+    /// Positional previous values requested by the caller. A null entry means
+    /// the key was absent immediately before that operation.
+    pub previous_values: Vec<Option<Vec<u8>>>,
+    /// Every primary key actually removed by delete-range or clear, grouped by
+    /// operation order. The Dart adapter uses these to report affected keys
+    /// without a separate pre-write snapshot scan.
+    pub removed_keys: Vec<(String, Vec<u8>)>,
+}
+
+/// Dart-authored metadata completed inside the same Rust write transaction as
+/// its associated data operation.
+#[derive(Debug, Clone)]
+pub struct PreparedChangeTemplate {
+    pub operation_index: usize,
+    pub ordinal: u64,
+    pub sync_state_key: Vec<u8>,
+    pub record_template: Vec<u8>,
+    pub fill_previous_version: bool,
 }
 
 /// Storage-level size/health report
@@ -68,6 +115,7 @@ pub enum WorkerError {
     Storage(String),
     Wire(String),
     InvalidOperation(String),
+    KeyNotFound(String),
     DatabaseLocked(String),
 }
 
@@ -77,6 +125,7 @@ impl std::fmt::Display for WorkerError {
             Self::Storage(message) => write!(f, "storage error: {message}"),
             Self::Wire(message) => write!(f, "wire error: {message}"),
             Self::InvalidOperation(message) => write!(f, "invalid operation: {message}"),
+            Self::KeyNotFound(message) => write!(f, "key not found: {message}"),
             Self::DatabaseLocked(message) => write!(f, "database locked: {message}"),
         }
     }
@@ -110,6 +159,8 @@ pub struct RedbWorker {
     next_snapshot_id: u64,
     /// live-query registry Non-durable; dies with the worker.
     registry: crate::registry::LiveRegistry,
+    /// Physical-work counters; only touched while enabled (zero-cost off).
+    counters: AtomicCounters,
 }
 
 /// A candidate row held by the top-K sort heap: the record key, the raw row
@@ -316,14 +367,16 @@ impl RedbWorker {
                     Database::create(&path).map_err(|error| map_open_error(error, &path_display))?
                 )
             };
+            let commit_sequence = load_commit_sequence(&database)?;
             Ok(Self {
                 database,
                 path: path_buf,
-                commit_sequence: 0,
+                commit_sequence,
                 read_only,
                 snapshots: HashMap::new(),
                 next_snapshot_id: 0,
                 registry: crate::registry::LiveRegistry::new(),
+                counters: AtomicCounters::default(),
             })
         }
     }
@@ -351,14 +404,17 @@ impl RedbWorker {
         let database = Database::builder()
             .create_with_backend(backend)
             .map_err(|error| map_open_error(error, &path_display))?;
+        let database = WorkerDatabase::ReadWrite(database);
+        let commit_sequence = load_commit_sequence(&database)?;
         Ok(Self {
-            database: WorkerDatabase::ReadWrite(database),
+            database,
             path: path.to_path_buf(),
-            commit_sequence: 0,
+            commit_sequence,
             read_only,
             snapshots: HashMap::new(),
             next_snapshot_id: 0,
             registry: crate::registry::LiveRegistry::new(),
+            counters: AtomicCounters::default(),
         })
     }
 
@@ -414,14 +470,17 @@ impl RedbWorker {
         let database = Database::builder()
             .create_with_backend(backend)
             .map_err(|error| map_open_error(error, &path_display))?;
+        let database = WorkerDatabase::ReadWrite(database);
+        let commit_sequence = load_commit_sequence(&database)?;
         Ok(Self {
-            database: WorkerDatabase::ReadWrite(database),
+            database,
             path: path_buf,
-            commit_sequence: 0,
+            commit_sequence,
             read_only: false,
             snapshots: HashMap::new(),
             next_snapshot_id: 0,
             registry: crate::registry::LiveRegistry::new(),
+            counters: AtomicCounters::default(),
         })
     }
 
@@ -432,6 +491,29 @@ impl RedbWorker {
             WorkerDatabase::ReadOnly(database) =>
                 database.begin_read().map_err(|error| WorkerError::Storage(error.to_string())),
         }
+    }
+
+    /// Starts recording physical-work counters. No-op-safe: counters already
+    /// enabled stay enabled. Draining happens via [Self::take_counters].
+    pub fn enable_counters(&self) {
+        self.counters.set_enabled(true);
+    }
+
+    /// Stops recording and resets all counters to zero.
+    pub fn disable_counters(&self) {
+        self.counters.set_enabled(false);
+    }
+
+    /// Snapshots the physical-work counters accumulated since the last call
+    /// and resets them to zero. Works whether or not counters are enabled
+    /// (returns a zeroed snapshot when disabled).
+    pub fn take_counters(&self) -> WorkCounters {
+        self.counters.snapshot_take()
+    }
+
+    /// Whether physical-work counters are currently being recorded.
+    pub fn counters_enabled(&self) -> bool {
+        self.counters.is_enabled()
     }
 
     /// Applies an operation batch without user index declarations. This is
@@ -463,7 +545,7 @@ impl RedbWorker {
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)]
     ) -> Result<ApplyBatchOutcome, WorkerError> {
-        self.apply_batch_impl(operations, index_definitions, 0)
+        self.apply_batch_impl(operations, index_definitions, 0, &[], &[], &[], true)
     }
 
     /// /like [Self::apply_batch_reactive], but also prunes the
@@ -475,14 +557,49 @@ impl RedbWorker {
         index_definitions: &[(String, Vec<String>)],
         change_log_max_entries: u64
     ) -> Result<ApplyBatchOutcome, WorkerError> {
-        self.apply_batch_impl(operations, index_definitions, change_log_max_entries)
+        self.apply_batch_impl(
+            operations,
+            index_definitions,
+            change_log_max_entries,
+            &[],
+            &[],
+            &[],
+            true
+        )
+    }
+
+    /// Applies a prepared batch. The operation wire format remains unchanged;
+    /// the additional positional metadata is supplied beside it so old web
+    /// and native artifacts can continue to decode ordinary batches.
+    pub fn apply_prepared_batch(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)],
+        change_log_max_entries: u64,
+        previous_operation_indexes: &[usize],
+        put_modes: &[(usize, u8)],
+        change_templates: &[PreparedChangeTemplate]
+    ) -> Result<ApplyBatchOutcome, WorkerError> {
+        self.apply_batch_impl(
+            operations,
+            index_definitions,
+            change_log_max_entries,
+            previous_operation_indexes,
+            put_modes,
+            change_templates,
+            false
+        )
     }
 
     fn apply_batch_impl(
         &mut self,
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)],
-        change_log_max_entries: u64
+        change_log_max_entries: u64,
+        previous_operation_indexes: &[usize],
+        put_modes: &[(usize, u8)],
+        change_templates: &[PreparedChangeTemplate],
+        legacy_metadata: bool
     ) -> Result<ApplyBatchOutcome, WorkerError> {
         if self.read_only {
             return Err(
@@ -497,169 +614,320 @@ impl RedbWorker {
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
         };
 
+        // Validate all operation shapes before allocating metadata. A
+        // malformed batch must not create an otherwise empty metadata table or
+        // consume a sequence number before redb rolls the transaction back.
+        validate_write_operations(operations)?;
+
+        // Allocate the durable sequence inside this write transaction. The
+        // metadata row is read and written before any caller operations so a
+        // failed batch rolls the sequence back together with the data. The
+        // maintenance marker is deliberately sequence-neutral: it is an
+        // internal state marker, not a database mutation visible to sync.
+        let sequence_neutral =
+            legacy_metadata &&
+            !operations.is_empty() &&
+            operations.iter().all(|operation| { operation.table == "__gecko_maintenance" });
+        let sequence = if sequence_neutral {
+            self.commit_sequence
+        } else {
+            next_sequence_in_write_transaction(&transaction, self.commit_sequence)?
+        };
+        if !sequence_neutral {
+            let mut sync_meta = transaction
+                .open_table(table_definition("__gecko_sync_meta"))
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let lsn_key = lsn_key();
+            let lsn_value = lsn_value(sequence);
+            sync_meta
+                .insert(lsn_key.as_slice(), lsn_value.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            drop(sync_meta);
+        }
+
+        let change_log_touched =
+            !change_templates.is_empty() ||
+            operations.iter().any(|operation| operation.table == "__gecko_change_log");
+
+        // Pre-build the operation-index → previous-value slot map once so the
+        // hot loop never performs an O(n) scan per operation.
+        let mut previous_slots: HashMap<usize, usize> =
+            HashMap::with_capacity(previous_operation_indexes.len());
+        for (slot, index) in previous_operation_indexes.iter().enumerate() {
+            previous_slots.insert(*index, slot);
+        }
+
+        // Per-batch transaction table-handle cache: every user table plus the
+        // change-log/sync-state metadata tables open at most once per batch,
+        // instead of once per operation.
+        let mut handles: WriteTableCache<'_> = HashMap::new();
+
+        // Durable-index table, opened lazily at most once per batch. Kept as a
+        // separate local (not in `handles`) so index maintenance can borrow it
+        // mutably while a user table from `handles` is still being scanned.
+        let mut index_table: Option<Table<'_, &'static [u8], &'static [u8]>> = None;
+
+        // Pre-index index definitions by table and pre-encode the stable
+        // [table, field] key prefixes so per-op index maintenance is O(1).
+        let index_plan = IndexPlan::build(index_definitions);
+
+        // Scratch reused for every durable-index key built in this batch.
+        let mut index_scratch: Vec<u8> = Vec::new();
+
+        let put_mode_by_index: HashMap<usize, u8> = put_modes.iter().cloned().collect();
+
         // collect the affected (table, key) pairs and wholesale-cleared
         // tables so the reactive registry can re-evaluate them before commit.
         let mut affected: Vec<(String, Vec<u8>)> = Vec::new();
         let mut cleared: Vec<String> = Vec::new();
+        let mut removed_keys: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut previous_values = vec![None; previous_operation_indexes.len()];
 
-        for operation in operations {
+        for (operation_index, operation) in operations.iter().enumerate() {
             match operation.kind {
                 OpKind::Put => {
-                    let key = operation.key
-                        .as_deref()
-                        .ok_or_else(|| WorkerError::InvalidOperation("put requires key".into()))?;
-                    let value = operation.value
-                        .as_deref()
-                        .ok_or_else(|| {
-                            WorkerError::InvalidOperation("put requires value".into())
-                        })?;
+                    let key = operation.key.as_deref().expect("validated put key");
+                    let value = operation.value.as_deref().expect("validated put value");
+                    let mode = put_mode_by_index.get(&operation_index).copied().unwrap_or(0);
+                    // Scope the user-table borrow so index maintenance can take
+                    // the cached index handle right after.
                     let previous = {
-                        let table = transaction
-                            .open_table(table_definition(&operation.table))
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        let previous = table
-                            .get(key)
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?
-                            .map(|row| row.value().to_vec());
-                        previous
+                        let table =
+                            open_write_table(&mut handles, &transaction, &operation.table, &self.counters)?;
+                        match mode {
+                            // Plain upsert: a single `insert` returns the
+                            // previous value, so one lookup replaces the old
+                            // get-then-insert pair.
+                            0 => {
+                                crate::work_count!(self, previous_value_reads, 1);
+                                table
+                                    .insert(key, value)
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                                    .map(|row| row.value().to_vec())
+                            }
+                            // insertOnly: the key must not exist. The read is
+                            // authoritative and a failed check never touches
+                            // the tree.
+                            1 => {
+                                crate::work_count!(self, previous_value_reads, 1);
+                                let present = table
+                                    .get(key)
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                                    .is_some();
+                                if present {
+                                    return Err(
+                                        WorkerError::InvalidOperation(
+                                            format!(
+                                                "insertOnly: key already exists in \\\"{}\\\"",
+                                                operation.table
+                                            )
+                                        )
+                                    );
+                                }
+                                table
+                                    .insert(key, value)
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                                    .map(|row| row.value().to_vec())
+                            }
+                            // updateOnly: the key must exist.
+                            2 => {
+                                crate::work_count!(self, previous_value_reads, 2);
+                                let absent = table
+                                    .get(key)
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                                    .is_none();
+                                if absent {
+                                    return Err(
+                                        WorkerError::KeyNotFound(
+                                            format!(
+                                                "updateOnly: key does not exist in \\\"{}\\\"",
+                                                operation.table
+                                            )
+                                        )
+                                    );
+                                }
+                                table
+                                    .insert(key, value)
+                                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                                    .map(|row| row.value().to_vec())
+                            }
+                            _ => {
+                                return Err(
+                                    WorkerError::InvalidOperation("unknown raw put mode".into())
+                                );
+                            }
+                        }
                     };
-                    {
-                        let mut table = transaction
-                            .open_table(table_definition(&operation.table))
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        table
-                            .insert(key, value)
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    if let Some(slot) = previous_slots.get(&operation_index) {
+                        previous_values[*slot] = previous.clone();
                     }
                     maintain_durable_index(
                         &transaction,
+                        &mut index_table,
+                        &index_plan,
                         &operation.table,
                         key,
                         previous.as_deref(),
                         Some(value),
-                        index_definitions
+                        &mut index_scratch,
+                        &self.counters
                     )?;
+                    crate::work_count!(self, rows_written, 1);
                     affected.push((operation.table.clone(), key.to_vec()));
+                    write_prepared_templates(
+                        &transaction,
+                        &mut handles,
+                        operation_index,
+                        previous.as_deref(),
+                        sequence,
+                        change_templates,
+                        &self.counters
+                    )?;
                 }
                 OpKind::Delete => {
-                    let key = operation.key
-                        .as_deref()
-                        .ok_or_else(|| {
-                            WorkerError::InvalidOperation("delete requires key".into())
-                        })?;
+                    let key = operation.key.as_deref().expect("validated delete key");
                     let previous = {
-                        let table = transaction
-                            .open_table(table_definition(&operation.table))
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        let previous = table
-                            .get(key)
+                        let table =
+                            open_write_table(&mut handles, &transaction, &operation.table, &self.counters)?;
+                        crate::work_count!(self, previous_value_reads, 1);
+                        table
+                            .remove(key)
                             .map_err(|error| WorkerError::Storage(error.to_string()))?
-                            .map(|row| row.value().to_vec());
-                        previous
+                            .map(|row| row.value().to_vec())
                     };
-                    {
-                        let mut table = transaction
-                            .open_table(table_definition(&operation.table))
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        table.remove(key).map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    if let Some(slot) = previous_slots.get(&operation_index) {
+                        previous_values[*slot] = previous.clone();
                     }
                     maintain_durable_index(
                         &transaction,
+                        &mut index_table,
+                        &index_plan,
                         &operation.table,
                         key,
                         previous.as_deref(),
                         None,
-                        index_definitions
+                        &mut index_scratch,
+                        &self.counters
                     )?;
+                    crate::work_count!(self, rows_written, 1);
                     affected.push((operation.table.clone(), key.to_vec()));
+                    write_prepared_templates(
+                        &transaction,
+                        &mut handles,
+                        operation_index,
+                        previous.as_deref(),
+                        sequence,
+                        change_templates,
+                        &self.counters
+                    )?;
                 }
                 OpKind::DeleteRange => {
-                    let start = operation.start
-                        .as_deref()
-                        .ok_or_else(|| {
-                            WorkerError::InvalidOperation("deleteRange requires start".into())
-                        })?;
-                    let end = operation.end
-                        .as_deref()
-                        .ok_or_else(|| {
-                            WorkerError::InvalidOperation("deleteRange requires end".into())
-                        })?;
-                    let rows = {
-                        let table = transaction
-                            .open_table(table_definition(&operation.table))
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        table
-                            .range(start..=end)
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?
-                            .map(|entry| {
-                                entry
-                                    .map(|(key, value)| (
-                                        key.value().to_vec(),
-                                        value.value().to_vec(),
-                                    ))
-                                    .map_err(|error| WorkerError::Storage(error.to_string()))
-                            })
-                            .collect::<Result<Vec<_>, WorkerError>>()?
-                    };
+                    let start = operation.start.as_deref().expect("validated range start");
+                    let end = operation.end.as_deref().expect("validated range end");
+                    // Stream the range once: maintain the durable index from
+                    // the old row bytes and collect only the keys required for
+                    // affected-key reporting. Values are never materialized, so
+                    // a wide delete cannot build a process-sized (key, value)
+                    // vector.
+                    let mut keys: Vec<Vec<u8>> = Vec::new();
                     {
-                        let mut table = transaction
-                            .open_table(table_definition(&operation.table))
+                        let table = open_write_table(
+                            &mut handles,
+                            &transaction,
+                            &operation.table,
+                            &self.counters
+                        )?;
+                        let range = table
+                            .range(start..=end)
                             .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        for (key, _) in &rows {
+                        for entry in range {
+                            let (key, value) =
+                                entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                            crate::work_count!(self, primary_rows_visited, 1);
+                            maintain_durable_index(
+                                &transaction,
+                                &mut index_table,
+                                &index_plan,
+                                &operation.table,
+                                key.value(),
+                                Some(value.value()),
+                                None,
+                                &mut index_scratch,
+                                &self.counters
+                            )?;
+                            keys.push(key.value().to_vec());
+                        }
+                    }
+                    enforce_delete_memory_policy(&keys)?;
+                    crate::work_count!(self, rows_written, keys.len() as u64);
+                    {
+                        let table = open_write_table(
+                            &mut handles,
+                            &transaction,
+                            &operation.table,
+                            &self.counters
+                        )?;
+                        for key in &keys {
                             table
                                 .remove(key.as_slice())
                                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
                         }
                     }
-                    for (key, value) in rows {
-                        maintain_durable_index(
-                            &transaction,
-                            &operation.table,
-                            &key,
-                            Some(&value),
-                            None,
-                            index_definitions
-                        )?;
+                    for key in keys {
+                        removed_keys.push((operation.table.clone(), key.clone()));
                         affected.push((operation.table.clone(), key));
                     }
                 }
                 OpKind::Clear => {
-                    let rows = {
-                        let table = transaction
-                            .open_table(table_definition(&operation.table))
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        table
-                            .iter()
-                            .map_err(|error| WorkerError::Storage(error.to_string()))?
-                            .map(|entry| {
-                                entry
-                                    .map(|(key, value)| (
-                                        key.value().to_vec(),
-                                        value.value().to_vec(),
-                                    ))
-                                    .map_err(|error| WorkerError::Storage(error.to_string()))
-                            })
-                            .collect::<Result<Vec<_>, WorkerError>>()?
-                    };
+                    // Same streaming shape as DeleteRange but over the whole
+                    // table: index maintenance sees the old row bytes while
+                    // only keys are collected for reporting.
+                    let mut keys: Vec<Vec<u8>> = Vec::new();
                     {
-                        let mut table = transaction
-                            .open_table(table_definition(&operation.table))
+                        let table = open_write_table(
+                            &mut handles,
+                            &transaction,
+                            &operation.table,
+                            &self.counters
+                        )?;
+                        let iter = table
+                            .iter()
                             .map_err(|error| WorkerError::Storage(error.to_string()))?;
-                        for (key, _) in &rows {
+                        for entry in iter {
+                            let (key, value) =
+                                entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                            crate::work_count!(self, primary_rows_visited, 1);
+                            maintain_durable_index(
+                                &transaction,
+                                &mut index_table,
+                                &index_plan,
+                                &operation.table,
+                                key.value(),
+                                Some(value.value()),
+                                None,
+                                &mut index_scratch,
+                                &self.counters
+                            )?;
+                            keys.push(key.value().to_vec());
+                        }
+                    }
+                    enforce_delete_memory_policy(&keys)?;
+                    crate::work_count!(self, rows_written, keys.len() as u64);
+                    {
+                        let table = open_write_table(
+                            &mut handles,
+                            &transaction,
+                            &operation.table,
+                            &self.counters
+                        )?;
+                        for key in &keys {
                             table
                                 .remove(key.as_slice())
                                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
                         }
                     }
-                    for (key, value) in rows {
-                        maintain_durable_index(
-                            &transaction,
-                            &operation.table,
-                            &key,
-                            Some(&value),
-                            None,
-                            index_definitions
-                        )?;
+                    for key in keys {
+                        removed_keys.push((operation.table.clone(), key));
                     }
                     cleared.push(operation.table.clone());
                 }
@@ -677,18 +945,27 @@ impl RedbWorker {
         // transaction (the registry reads the just-applied state), then commit.
         // prune the pending-sync change log in the same transaction when
         // the batch grew it and a retention limit is configured.
-        if
-            change_log_max_entries > 0 &&
-            affected.iter().any(|(table, _)| table == "__gecko_change_log")
-        {
-            prune_change_log(&transaction, change_log_max_entries)?;
+        // Drop every cached table handle before the pruning and registry
+        // phases: redb allows only one open handle per table per write
+        // transaction, and both phases open tables through their own handles.
+        // Dropping a handle inside an uncommitted transaction is a no-op for
+        // durability — rollback still undoes everything on error.
+        drop(handles);
+        drop(index_table);
+        if change_log_max_entries > 0 && change_log_touched {
+            prune_change_log(&transaction, change_log_max_entries, &self.counters)?;
         }
-        let deltas = self.registry.apply(&transaction, &affected, &cleared)?;
+        let deltas = self.registry.apply(&transaction, &affected, &cleared, &self.counters)?;
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
-        self.commit_sequence += 1;
+        if !sequence_neutral {
+            self.commit_sequence = sequence;
+        }
+        crate::work_count!(self, batches_applied, 1);
         Ok(ApplyBatchOutcome {
-            sequence: self.commit_sequence,
+            sequence,
             deltas,
+            previous_values,
+            removed_keys,
         })
     }
 
@@ -783,6 +1060,10 @@ impl RedbWorker {
             .get(key)
             .map_err(|error| WorkerError::Storage(error.to_string()))?
             .map(|value| value.value().to_vec());
+        if let Some(row) = &value {
+            crate::work_count!(self, rows_returned, 1);
+            crate::work_count!(self, bytes_returned, row.len() as u64);
+        }
         Ok(value)
     }
 
@@ -840,6 +1121,15 @@ impl RedbWorker {
             // Absent keys are silently omitted; the durable contract is that
             // only existing rows appear in the result.
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -874,6 +1164,16 @@ impl RedbWorker {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             result.push((key.value().to_vec(), value.value().to_vec()));
         }
+        crate::work_count!(self, primary_rows_visited, result.len() as u64);
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -885,6 +1185,7 @@ impl RedbWorker {
         let id = self.next_snapshot_id;
         self.next_snapshot_id += 1;
         self.snapshots.insert(id, transaction);
+        crate::work_count!(self, snapshots_created, 1);
         Ok(id)
     }
 
@@ -916,6 +1217,10 @@ impl RedbWorker {
             .get(key)
             .map_err(|error| WorkerError::Storage(error.to_string()))?
             .map(|value| value.value().to_vec());
+        if let Some(row) = &value {
+            crate::work_count!(self, rows_returned, 1);
+            crate::work_count!(self, bytes_returned, row.len() as u64);
+        }
         Ok(value)
     }
 
@@ -951,6 +1256,16 @@ impl RedbWorker {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             result.push((key.value().to_vec(), value.value().to_vec()));
         }
+        crate::work_count!(self, primary_rows_visited, result.len() as u64);
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -1107,6 +1422,8 @@ impl RedbWorker {
             .map_err(|error| WorkerError::Storage(error.to_string()))?
             .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
             .collect();
+        crate::work_count!(self, index_entries_visited, row_keys.len() as u64);
+        crate::work_count!(self, candidate_keys_allocated, row_keys.len() as u64);
         if row_keys.is_empty() {
             return Ok(Vec::new());
         }
@@ -1123,6 +1440,7 @@ impl RedbWorker {
         };
         let mut result = Vec::with_capacity(row_keys.len());
         for row_key in row_keys {
+            crate::work_count!(self, primary_rows_fetched, 1);
             let value = user_table
                 .get(row_key.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
@@ -1135,6 +1453,15 @@ impl RedbWorker {
             // maintained atomically with the data, so this should not happen
             // in normal operation, and skipping is the safe fallback.
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -1183,6 +1510,18 @@ impl RedbWorker {
         self.query_indexed_count_with(transaction, table, index_table, ranges, predicate_bytes)
     }
 
+    /// Direct indexed count using one worker-owned read transaction.
+    pub fn query_indexed_count(
+        &self,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8]
+    ) -> Result<u64, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_indexed_count_with(&transaction, table, index_table, ranges, predicate_bytes)
+    }
+
     /// emits only the requested field bytes from durable-index
     /// candidates. Dart performs the final decode and insertion-order dedup.
     pub fn snapshot_query_indexed_distinct(
@@ -1197,6 +1536,27 @@ impl RedbWorker {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_distinct_with(
             transaction,
+            table,
+            index_table,
+            ranges,
+            predicate_bytes,
+            field
+        )
+    }
+
+    /// Direct indexed distinct extraction using a worker-owned read
+    /// transaction.
+    pub fn query_indexed_distinct(
+        &self,
+        table: &str,
+        index_table: &str,
+        ranges: &[(Vec<u8>, Vec<u8>)],
+        predicate_bytes: &[u8],
+        field: &str
+    ) -> Result<Vec<Vec<u8>>, WorkerError> {
+        let transaction = self.begin_read()?;
+        self.query_indexed_distinct_with(
+            &transaction,
             table,
             index_table,
             ranges,
@@ -1231,6 +1591,7 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
                 .collect::<BTreeSet<_>>();
+            crate::work_count!(self, index_entries_visited, keys.len() as u64);
             candidates = Some(match candidates {
                 None => keys,
                 Some(previous) => previous.intersection(&keys).cloned().collect(),
@@ -1239,7 +1600,9 @@ impl RedbWorker {
                 return Ok(BTreeSet::new());
             }
         }
-        Ok(candidates.unwrap_or_default())
+        let final_candidates = candidates.unwrap_or_default();
+        crate::work_count!(self, candidate_keys_allocated, final_candidates.len() as u64);
+        Ok(final_candidates)
     }
 
     fn query_indexed_count_with(
@@ -1253,6 +1616,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let candidates = self.indexed_candidate_keys_with(transaction, index_table, ranges)?;
         let user_table = match transaction.open_table(table_definition(table)) {
             Ok(t) => t,
@@ -1265,12 +1629,14 @@ impl RedbWorker {
         };
         let mut count = 0;
         for row_key in candidates {
+            crate::work_count!(self, primary_rows_fetched, 1);
             let Some(value) = user_table
                 .get(row_key.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
-            if predicate.test_bytes(value.value()) {
+            crate::work_count!(self, predicate_evaluations, 1);
+            if predicate.test_bytes_with_scratch(value.value(), &mut predicate_scratch) {
                 count += 1;
             }
         }
@@ -1289,6 +1655,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let candidates = self.indexed_candidate_keys_with(transaction, index_table, ranges)?;
         let user_table = match transaction.open_table(table_definition(table)) {
             Ok(t) => t,
@@ -1301,13 +1668,15 @@ impl RedbWorker {
         };
         let mut result = Vec::new();
         for row_key in candidates {
+            crate::work_count!(self, primary_rows_fetched, 1);
             let Some(value) = user_table
                 .get(row_key.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
             let row_bytes = value.value();
-            if !predicate.test_bytes(row_bytes) {
+            crate::work_count!(self, predicate_evaluations, 1);
+            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
                 continue;
             }
             let Some((start, end)) = crate::value_codec
@@ -1317,6 +1686,7 @@ impl RedbWorker {
             };
             result.push(row_bytes[start..end].to_vec());
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
         Ok(result)
     }
 
@@ -1389,6 +1759,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let user_table = match transaction.open_table(table_definition(child_table)) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => {
@@ -1463,7 +1834,7 @@ impl RedbWorker {
                 continue;
             };
             let row_bytes = value.value();
-            if !predicate.test_bytes(row_bytes) {
+            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
                 continue;
             }
             let Some((start, end)) = crate::value_codec
@@ -1560,6 +1931,7 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
                 .collect::<BTreeSet<_>>();
+            crate::work_count!(self, index_entries_visited, keys.len() as u64);
             candidates = Some(match candidates {
                 None => keys,
                 Some(previous) => previous.intersection(&keys).cloned().collect(),
@@ -1581,16 +1953,27 @@ impl RedbWorker {
         };
         let mut result = Vec::new();
         for row_key in candidates.unwrap_or_default() {
+            crate::work_count!(self, primary_rows_fetched, 1);
             let Some(value) = user_table
                 .get(row_key.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
             let row_bytes = value.value();
-            if predicate.test_bytes(row_bytes) {
+            crate::work_count!(self, predicate_evaluations, 1);
+            if predicate.test_bytes_single_pass(row_bytes) {
                 result.push((row_key, row_bytes.to_vec()));
             }
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -1634,6 +2017,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
@@ -1649,10 +2033,21 @@ impl RedbWorker {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
             // Empty predicate matches everything (matches Dart's `FilterGroup`).
-            if predicate.test_bytes(row_bytes) {
+            crate::work_count!(self, primary_rows_visited, 1);
+            crate::work_count!(self, predicate_evaluations, 1);
+            if predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
                 result.push((key.value().to_vec(), row_bytes.to_vec()));
             }
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -1690,6 +2085,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
@@ -1703,7 +2099,9 @@ impl RedbWorker {
         let mut count: u64 = 0;
         for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-            if predicate.test_bytes(value.value()) {
+            crate::work_count!(self, primary_rows_visited, 1);
+            crate::work_count!(self, predicate_evaluations, 1);
+            if predicate.test_bytes_with_scratch(value.value(), &mut predicate_scratch) {
                 count += 1;
             }
         }
@@ -1749,6 +2147,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
@@ -1763,7 +2162,9 @@ impl RedbWorker {
         for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
-            if !predicate.test_bytes(row_bytes) {
+            crate::work_count!(self, primary_rows_visited, 1);
+            crate::work_count!(self, predicate_evaluations, 1);
+            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
                 continue;
             }
             // Locate [field] within the row's encoded bytes and emit the
@@ -1778,6 +2179,7 @@ impl RedbWorker {
             };
             result.push(row_bytes[start..end].to_vec());
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
         Ok(result)
     }
 
@@ -1823,6 +2225,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
@@ -1840,7 +2243,9 @@ impl RedbWorker {
         let mut result = Vec::new();
         for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-            if !predicate.test_bytes(value.value()) {
+            crate::work_count!(self, primary_rows_visited, 1);
+            crate::work_count!(self, predicate_evaluations, 1);
+            if !predicate.test_bytes_with_scratch(value.value(), &mut predicate_scratch) {
                 continue;
             }
             result.push((key.value().to_vec(), value.value().to_vec()));
@@ -1854,6 +2259,15 @@ impl RedbWorker {
             let start = (offset as usize).min(result.len());
             result = result.split_off(start);
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -1927,6 +2341,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
@@ -1955,15 +2370,18 @@ impl RedbWorker {
         for entry in index_table
             .range(start..=end)
             .map_err(|error| WorkerError::Storage(error.to_string()))? {
+            crate::work_count!(self, index_entries_visited, 1);
             let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_key = entry.1.value();
+            crate::work_count!(self, primary_rows_fetched, 1);
             let Some(row_bytes) = user_table
                 .get(row_key)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .map(|v| v.value().to_vec()) else {
                 continue;
             };
-            if !predicate.test_bytes(&row_bytes) {
+            crate::work_count!(self, predicate_evaluations, 1);
+            if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
                 continue;
             }
             result.push((row_key.to_vec(), row_bytes));
@@ -1977,6 +2395,15 @@ impl RedbWorker {
             let start_idx = (offset as usize).min(result.len());
             result = result.split_off(start_idx);
         }
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(result)
     }
 
@@ -2029,6 +2456,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let definition = table_definition(table);
         let table = match transaction.open_table(definition) {
             Ok(t) => t,
@@ -2052,14 +2480,27 @@ impl RedbWorker {
         for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
-            if !predicate.test_bytes(row_bytes) {
+            crate::work_count!(self, primary_rows_visited, 1);
+            crate::work_count!(self, predicate_evaluations, 1);
+            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
                 continue;
             }
-            // Decode ONLY the sort fields via find_field (no full row decode).
+            // Decode the sort fields from one borrowed range scan. Values are
+            // still decoded individually so mixed-type sort semantics remain
+            // unchanged, but map keys are walked only once.
+            let sort_fields = specs
+                .specs
+                .iter()
+                .map(|spec| spec.field.clone())
+                .collect::<Vec<_>>();
+            let mut ranges = vec![None; sort_fields.len()];
+            crate::value_codec::find_fields_ranges(row_bytes, &sort_fields, &mut ranges)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
             let mut sort_key: Vec<Option<RowValue>> = Vec::with_capacity(specs.specs.len());
-            for spec in &specs.specs {
-                let found = crate::value_codec
-                    ::find_field(row_bytes, &spec.field)
+            for range in ranges {
+                let found = range
+                    .map(|(start, end)| crate::value_codec::decode_value(&row_bytes[start..end]))
+                    .transpose()
                     .map_err(|error| WorkerError::Storage(error.to_string()))?;
                 sort_key.push(found);
             }
@@ -2070,7 +2511,17 @@ impl RedbWorker {
             });
         }
         let sorted = heap.into_sorted();
-        Ok(slice_offset_limit(sorted, limit, offset))
+        let result = slice_offset_limit(sorted, limit, offset);
+        crate::work_count!(self, rows_returned, result.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            result
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
+        Ok(result)
     }
 
     /// index-ordered early-stop sort. When a query's sort field is covered
@@ -2166,6 +2617,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
@@ -2217,15 +2669,18 @@ impl RedbWorker {
         for entry in index_table
             .range(start..=end)
             .map_err(|error| WorkerError::Storage(error.to_string()))? {
+            crate::work_count!(self, index_entries_visited, 1);
             let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_key = entry.1.value();
+            crate::work_count!(self, primary_rows_fetched, 1);
             let Some(row_bytes) = user_table
                 .get(row_key)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .map(|v| v.value().to_vec()) else {
                 continue;
             };
-            if !predicate.test_bytes(&row_bytes) {
+            crate::work_count!(self, predicate_evaluations, 1);
+            if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
                 continue;
             }
             matched_keys.push(row_key.to_vec());
@@ -2257,7 +2712,9 @@ impl RedbWorker {
                     continue;
                 }
                 let row_bytes = value.value();
-                if !predicate.test_bytes(row_bytes) {
+                crate::work_count!(self, primary_rows_visited, 1);
+                crate::work_count!(self, predicate_evaluations, 1);
+                if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
                     continue;
                 }
                 let has_field = find_field(row_bytes, sort_field)
@@ -2281,6 +2738,15 @@ impl RedbWorker {
             let start_idx = (offset as usize).min(matches.len());
             matches = matches.split_off(start_idx);
         }
+        crate::work_count!(self, rows_returned, matches.len() as u64);
+        crate::work_count!(
+            self,
+            bytes_returned,
+            matches
+                .iter()
+                .map(|(key, value)| (key.len() + value.len()) as u64)
+                .sum::<u64>()
+        );
         Ok(matches)
     }
 
@@ -2313,19 +2779,21 @@ impl RedbWorker {
         }
         match &mut self.database {
             WorkerDatabase::ReadWrite(database) =>
-                database.compact().map_err(|error| {
-                    use redb::CompactionError::*;
-                    match &error {
-                        | TransactionInProgress
-                        | PersistentSavepointExists
-                        | EphemeralSavepointExists =>
-                            WorkerError::InvalidOperation(
-                                format!("compaction could not start: {error}")
-                            ),
-                        _ => WorkerError::Storage(format!("compaction failed: {error}")),
-                    }
-                }),
+                database.compact().map_err(Self::map_compaction_error),
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
+        }
+    }
+
+    /// Maps a redb compaction failure onto the worker's error taxonomy: a write
+    /// transaction (or savepoint) in progress is an `InvalidOperation` — the
+    /// caller's single-writer discipline means a retry succeeds once the writer
+    /// drains — while anything else is a genuine `Storage` failure.
+    fn map_compaction_error(error: redb::CompactionError) -> WorkerError {
+        use redb::CompactionError::*;
+        match &error {
+            TransactionInProgress | PersistentSavepointExists | EphemeralSavepointExists =>
+                WorkerError::InvalidOperation(format!("compaction could not start: {error}")),
+            _ => WorkerError::Storage(format!("compaction failed: {error}")),
         }
     }
 
@@ -2346,7 +2814,7 @@ impl RedbWorker {
         let mut logical_bytes: u64 = 0;
         let mut table_count: u64 = 0;
         for name in raw_names {
-            let definition = BytesTable::new(Box::leak(name.clone().into_boxed_str()));
+            let definition = BytesTable::new(intern_table_name(name));
             let Ok(table) = transaction.open_table(definition) else {
                 continue;
             };
@@ -2394,8 +2862,171 @@ fn map_open_error(error: DatabaseError, path: &str) -> WorkerError {
 }
 
 pub(crate) fn table_definition(name: &str) -> BytesTable {
+    // Interned: one leaked allocation per unique table name ever, not per
+    // call — reads, writes, indexes, registry, and stats all share it, so
+    // memory does not grow with operation count.
     let full_name = format!("{TABLE_PREFIX}{name}");
-    TableDefinition::new(Box::leak(full_name.into_boxed_str()))
+    TableDefinition::new(intern_table_name(full_name))
+}
+
+fn lsn_key() -> Vec<u8> {
+    let mut key = vec![crate::value_codec::TAG_STRING];
+    let bytes = b"lsn";
+    key.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    key.extend_from_slice(bytes);
+    key
+}
+
+fn lsn_value(sequence: u64) -> Vec<u8> {
+    let mut value = vec![crate::value_codec::TAG_INT64];
+    value.extend_from_slice(&(sequence as i64).to_be_bytes());
+    value
+}
+
+fn validate_write_operations(operations: &[Op]) -> Result<(), WorkerError> {
+    for operation in operations {
+        match operation.kind {
+            OpKind::Put if operation.key.is_none() => {
+                return Err(WorkerError::InvalidOperation("put requires key".into()));
+            }
+            OpKind::Put if operation.value.is_none() => {
+                return Err(WorkerError::InvalidOperation("put requires value".into()));
+            }
+            OpKind::Delete if operation.key.is_none() => {
+                return Err(WorkerError::InvalidOperation("delete requires key".into()));
+            }
+            OpKind::DeleteRange if operation.start.is_none() => {
+                return Err(WorkerError::InvalidOperation("deleteRange requires start".into()));
+            }
+            OpKind::DeleteRange if operation.end.is_none() => {
+                return Err(WorkerError::InvalidOperation("deleteRange requires end".into()));
+            }
+            OpKind::Get | OpKind::RangeScan => {
+                return Err(
+                    WorkerError::InvalidOperation(
+                        "read operations cannot be committed in a write batch".into()
+                    )
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn load_commit_sequence(database: &WorkerDatabase) -> Result<u64, WorkerError> {
+    let transaction = match database {
+        WorkerDatabase::ReadWrite(database) =>
+            database.begin_read().map_err(|error| WorkerError::Storage(error.to_string()))?,
+        WorkerDatabase::ReadOnly(database) =>
+            database.begin_read().map_err(|error| WorkerError::Storage(error.to_string()))?,
+    };
+    let meta = match transaction.open_table(table_definition("__gecko_sync_meta")) {
+        Ok(meta) => meta,
+        Err(redb::TableError::TableDoesNotExist(_)) => {
+            return Ok(0);
+        }
+        Err(error) => {
+            return Err(WorkerError::Storage(error.to_string()));
+        }
+    };
+    let Some(value) = meta
+        .get(lsn_key().as_slice())
+        .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+        return Ok(0);
+    };
+    match
+        crate::value_codec
+            ::decode_value(value.value())
+            .map_err(|error| WorkerError::Storage(format!("invalid persisted LSN: {error}")))?
+    {
+        crate::value_codec::RowValue::Int64(value) if value >= 0 => Ok(value as u64),
+        _ => Err(WorkerError::Storage("invalid persisted LSN value".into())),
+    }
+}
+
+fn next_sequence_in_write_transaction(
+    transaction: &WriteTransaction,
+    in_memory_sequence: u64
+) -> Result<u64, WorkerError> {
+    let meta = transaction
+        .open_table(table_definition("__gecko_sync_meta"))
+        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    let persisted = meta
+        .get(lsn_key().as_slice())
+        .map_err(|error| WorkerError::Storage(error.to_string()))?
+        .map(|value| value.value().to_vec());
+    let persisted = persisted
+        .as_deref()
+        .map(crate::value_codec::decode_value)
+        .transpose()
+        .map_err(|error| WorkerError::Storage(format!("invalid persisted LSN: {error}")))?
+        .map(|value| {
+            match value {
+                crate::value_codec::RowValue::Int64(value) if value >= 0 => Ok(value as u64),
+                crate::value_codec::RowValue::Int64(_) => {
+                    Err(WorkerError::Storage("invalid persisted LSN value".into()))
+                }
+                _ => Err(WorkerError::Storage("invalid persisted LSN value".into())),
+            }
+        })
+        .transpose()?;
+    Ok(persisted.unwrap_or(0).max(in_memory_sequence) + 1)
+}
+
+/// Opens (or reuses) a table handle for one write transaction. Every table
+/// referenced by a batch is opened at most once; the handle stays alive in
+/// [handles] for the rest of the transaction.
+fn open_write_table<'a, 'txn>(
+    handles: &'a mut WriteTableCache<'txn>,
+    transaction: &'txn WriteTransaction,
+    name: &str,
+    counters: &AtomicCounters
+) -> Result<&'a mut Table<'txn, &'static [u8], &'static [u8]>, WorkerError> {
+    if !handles.contains_key(name) {
+        let table = transaction
+            .open_table(table_definition(name))
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        counters.bump(&counters.table_opens, 1);
+        handles.insert(name.to_string(), table);
+    }
+    Ok(handles.get_mut(name).expect("inserted just above"))
+}
+
+fn write_prepared_templates<'txn>(
+    transaction: &'txn WriteTransaction,
+    handles: &mut WriteTableCache<'txn>,
+    operation_index: usize,
+    previous: Option<&[u8]>,
+    sequence: u64,
+    templates: &[PreparedChangeTemplate],
+    counters: &AtomicCounters
+) -> Result<(), WorkerError> {
+    for template in templates
+        .iter()
+        .filter(|template| template.operation_index == operation_index) {
+        let record = crate::value_codec
+            ::rewrite_change_record(
+                &template.record_template,
+                sequence,
+                template.fill_previous_version.then_some(previous)
+            )
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let log_key = encode_change_log_key(sequence, template.ordinal);
+        {
+            let log = open_write_table(handles, transaction, "__gecko_change_log", counters)?;
+            log
+                .insert(log_key.as_slice(), record.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        {
+            let state = open_write_table(handles, transaction, "__gecko_sync_state", counters)?;
+            state
+                .insert(template.sync_state_key.as_slice(), record.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Reads the `dirty` flag from a change-record map (encoded with the
@@ -2416,13 +3047,58 @@ fn change_record_mutation_id(row_bytes: &[u8]) -> u64 {
     }
 }
 
+/// Encodes the persisted sync watermark key (DefaultWireCodec string
+/// "watermark" stored in `__gecko_sync_meta`).
+fn encode_watermark_key() -> Vec<u8> {
+    let mut key = vec![crate::value_codec::TAG_STRING];
+    let wm = b"watermark";
+    key.extend_from_slice(&(wm.len() as u32).to_be_bytes());
+    key.extend_from_slice(wm);
+    key
+}
+
+/// Reads the persisted sync watermark: the highest LSN at or below which every
+/// CLEAN change-log record was already pruned. Absent or malformed values read
+/// as 0.
+fn read_change_log_watermark(transaction: &WriteTransaction) -> Result<u64, WorkerError> {
+    let meta = match transaction.open_table(table_definition("__gecko_sync_meta")) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => {
+            return Ok(0);
+        }
+        Err(error) => {
+            return Err(WorkerError::Storage(error.to_string()));
+        }
+    };
+    let key = encode_watermark_key();
+    let Some(value) = meta
+        .get(key.as_slice())
+        .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+        return Ok(0);
+    };
+    Ok(match crate::value_codec::decode_value(value.value()) {
+        Ok(crate::value_codec::RowValue::Int64(n)) => n.max(0) as u64,
+        _ => 0,
+    })
+}
+
 /// Prunes the pending-sync change log in the given write
 /// transaction when it exceeds [max_entries]. Only NON-DIRTY records (already
 /// synced) are pruned, oldest-first (the log is keyed by `[lsn, ordinal]`, so
 /// table iteration order is commit order). The sync watermark is advanced to
 /// the highest pruned LSN — matching the previous Dart-side behavior, now
 /// executed in the same transaction as the batch that grew the log.
-fn prune_change_log(transaction: &WriteTransaction, max_entries: u64) -> Result<(), WorkerError> {
+///
+/// Pruning is incremental: the total count is read O(1) via the table length,
+/// the scan is bounded to the prunable prefix that starts at `[watermark, 0]`
+/// (every clean record at or below the watermark is already gone), and the
+/// scan stops as soon as `excess` clean records have been collected. Only
+/// keys (never values) are materialized, bounded by the overflow.
+fn prune_change_log(
+    transaction: &WriteTransaction,
+    max_entries: u64,
+    counters: &AtomicCounters
+) -> Result<(), WorkerError> {
     if max_entries == 0 {
         return Ok(());
     }
@@ -2435,26 +3111,45 @@ fn prune_change_log(transaction: &WriteTransaction, max_entries: u64) -> Result<
             return Err(WorkerError::Storage(error.to_string()));
         }
     };
-    let mut count: u64 = 0;
-    let mut non_dirty: Vec<(Vec<u8>, u64)> = Vec::new();
-    for entry in log.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
-        let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-        let row = entry.1.value();
-        count += 1;
-        if !change_record_dirty(row) {
-            non_dirty.push((entry.0.value().to_vec(), change_record_mutation_id(row)));
-        }
-    }
-    let excess = count.saturating_sub(max_entries);
-    if excess == 0 {
+    // O(1) count; when the log is within budget there is nothing to prune and
+    // not a single entry is scanned.
+    let total = log.len().map_err(|error| WorkerError::Storage(error.to_string()))?;
+    if total <= max_entries {
         return Ok(());
     }
+    let excess = total - max_entries;
+
+    // Scan the prunable prefix only. Starting at [watermark, 0] (rather than
+    // watermark + 1) also re-covers clean records that share the watermark
+    // LSN when a previous prune stopped exactly at the excess boundary.
+    let watermark = read_change_log_watermark(transaction)?;
+    let start_key = encode_change_log_key(watermark, 0);
+
+    let mut to_remove: Vec<Vec<u8>> = Vec::with_capacity(excess.min(1024) as usize);
     let mut highest_pruned_lsn: u64 = 0;
-    for (key, lsn) in non_dirty.into_iter().take(excess as usize) {
-        log.remove(key.as_slice()).map_err(|error| WorkerError::Storage(error.to_string()))?;
-        if lsn > highest_pruned_lsn {
-            highest_pruned_lsn = lsn;
+    let range = log
+        .range(start_key.as_slice()..)
+        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    for entry in range {
+        counters.bump(&counters.change_log_scanned, 1);
+        let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+        if to_remove.len() as u64 >= excess {
+            break;
         }
+        let row = entry.1.value();
+        if !change_record_dirty(row) {
+            let lsn = change_record_mutation_id(row);
+            if lsn > highest_pruned_lsn {
+                highest_pruned_lsn = lsn;
+            }
+            to_remove.push(entry.0.value().to_vec());
+        }
+    }
+    for key in &to_remove {
+        log
+            .remove(key.as_slice())
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        counters.bump(&counters.change_log_pruned, 1);
     }
     if highest_pruned_lsn > 0 {
         let mut meta = match transaction.open_table(table_definition("__gecko_sync_meta")) {
@@ -2466,11 +3161,7 @@ fn prune_change_log(transaction: &WriteTransaction, max_entries: u64) -> Result<
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
-        // Watermark key = DefaultWireCodec string "watermark".
-        let mut key = vec![crate::value_codec::TAG_STRING];
-        let wm = b"watermark";
-        key.extend_from_slice(&(wm.len() as u32).to_be_bytes());
-        key.extend_from_slice(wm);
+        let key = encode_watermark_key();
         let old = meta
             .get(key.as_slice())
             .map_err(|error| WorkerError::Storage(error.to_string()))?
@@ -2496,40 +3187,110 @@ fn prune_change_log(transaction: &WriteTransaction, max_entries: u64) -> Result<
     Ok(())
 }
 
-fn index_fields_for<'a>(
-    table: &str,
-    index_definitions: &'a [(String, Vec<String>)]
-) -> Option<&'a [String]> {
-    index_definitions
-        .iter()
-        .find(|(name, _)| name == table)
-        .map(|(_, fields)| fields.as_slice())
+/// Large-delete memory/backpressure policy. DeleteRange and Clear report
+/// every removed primary key to the caller (affected-key reporting), so the
+/// removed key set is inherently materialized. Values are streamed and never
+/// materialized. This cap bounds the key materialization so a pathological
+/// delete cannot allocate without limit; a delete that exceeds it fails
+/// without committing, leaving the whole transaction unchanged (rollback).
+const MAX_DELETE_RANGE_KEYS: u64 = 1_000_000;
+
+fn enforce_delete_memory_policy(keys: &[Vec<u8>]) -> Result<(), WorkerError> {
+    if keys.len() as u64 > MAX_DELETE_RANGE_KEYS {
+        return Err(
+            WorkerError::InvalidOperation(
+                format!(
+                    "delete removes {} rows, exceeding the {MAX_DELETE_RANGE_KEYS} \
+                     row backpressure limit",
+                    keys.len()
+                )
+            )
+        );
+    }
+    Ok(())
 }
 
-fn maintain_durable_index(
-    transaction: &WriteTransaction,
+/// Per-batch durable-index plan: O(1) field lookup per operation and the
+/// stable `[table, field]` encoded key prefix per indexed field, precomputed
+/// once so per-op index maintenance never re-scans `index_definitions` or
+/// re-encodes the prefix.
+struct IndexPlan {
+    /// table name → [(field name, encoded [table, field] key prefix)]
+    by_table: HashMap<String, Vec<(String, Vec<u8>)>>,
+}
+
+impl IndexPlan {
+    fn build(index_definitions: &[(String, Vec<String>)]) -> Self {
+        let mut by_table = HashMap::with_capacity(index_definitions.len());
+        for (table, fields) in index_definitions {
+            if fields.is_empty() || table == "__gecko_index" {
+                continue;
+            }
+            let entries = fields
+                .iter()
+                .map(|field| {
+                    let prefix = {
+                        use crate::value_codec::TAG_LIST;
+                        let mut out = vec![TAG_LIST];
+                        out.extend_from_slice(&(4u32).to_be_bytes());
+                        out.extend_from_slice(&encode_index_string(table));
+                        out.extend_from_slice(&encode_index_string(field));
+                        out
+                    };
+                    (field.clone(), prefix)
+                })
+                .collect();
+            by_table.insert(table.clone(), entries);
+        }
+        Self { by_table }
+    }
+}
+
+/// Maintains the durable index for one primary-row mutation. The index table
+/// is opened at most once per batch ([index_table]); old/new field values are
+/// compared as byte slices before any allocation, and index keys are built in
+/// a caller-provided scratch buffer. The exact `[table, field]` key prefixes
+/// from [plan] preserve the index-key bytes used by query and repair code.
+///
+/// The argument count is inherent to the batch-maintenance contract (open
+/// transaction, cached index handle, plan, row identity, both row versions,
+/// scratch, counters); bundling them would allocate per call on the hot path.
+#[allow(clippy::too_many_arguments)]
+fn maintain_durable_index<'txn>(
+    transaction: &'txn WriteTransaction,
+    index_table: &mut Option<Table<'txn, &'static [u8], &'static [u8]>>,
+    plan: &IndexPlan,
     table: &str,
     record_key: &[u8],
     old_row: Option<&[u8]>,
     new_row: Option<&[u8]>,
-    index_definitions: &[(String, Vec<String>)]
+    scratch: &mut Vec<u8>,
+    counters: &AtomicCounters
 ) -> Result<(), WorkerError> {
-    let Some(fields) = index_fields_for(table, index_definitions) else {
-        return Ok(());
-    };
-    if fields.is_empty() || table == "__gecko_index" {
+    if table == "__gecko_index" {
         return Ok(());
     }
-    let mut index = transaction
-        .open_table(table_definition("__gecko_index"))
-        .map_err(|error| WorkerError::Storage(error.to_string()))?;
-    for field in fields {
+    let Some(entries) = plan.by_table.get(table) else {
+        return Ok(());
+    };
+    if entries.is_empty() {
+        return Ok(());
+    }
+    if index_table.is_none() {
+        let opened = transaction
+            .open_table(table_definition("__gecko_index"))
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        counters.bump(&counters.table_opens, 1);
+        *index_table = Some(opened);
+    }
+    let index = index_table.as_mut().expect("opened just above");
+    for (field, prefix) in entries {
         let old_value = match old_row {
             Some(row) =>
                 crate::value_codec
                     ::find_field_range(row, field)
                     .map_err(|error| WorkerError::Storage(error.to_string()))?
-                    .map(|(start, end)| row[start..end].to_vec()),
+                    .map(|(start, end)| &row[start..end]),
             None => None,
         };
         let new_value = match new_row {
@@ -2537,33 +3298,57 @@ fn maintain_durable_index(
                 crate::value_codec
                     ::find_field_range(row, field)
                     .map_err(|error| WorkerError::Storage(error.to_string()))?
-                    .map(|(start, end)| row[start..end].to_vec()),
+                    .map(|(start, end)| &row[start..end]),
             None => None,
         };
+        // Byte-slice equality: no allocation when the encoded value is
+        // unchanged (the common update-that-touches-other-fields case).
         if old_value == new_value {
             continue;
         }
         if let Some(value) = old_value {
-            index
-                .remove(durable_index_key(table, field, &value, record_key).as_slice())
+            scratch.clear();
+            scratch.extend_from_slice(prefix);
+            scratch.push(crate::value_codec::TAG_ORDERED);
+            crate::value_codec
+                ::push_order_encode_slice(scratch, value)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            scratch.extend_from_slice(record_key);
+            index
+                .remove(scratch.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            counters.bump(&counters.index_maintenance_ops, 1);
         }
         if let Some(value) = new_value {
-            index
-                .insert(durable_index_key(table, field, &value, record_key).as_slice(), record_key)
+            scratch.clear();
+            scratch.extend_from_slice(prefix);
+            scratch.push(crate::value_codec::TAG_ORDERED);
+            crate::value_codec
+                ::push_order_encode_slice(scratch, value)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            scratch.extend_from_slice(record_key);
+            index
+                .insert(scratch.as_slice(), record_key)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            counters.bump(&counters.index_maintenance_ops, 1);
         }
     }
     Ok(())
 }
 
 fn durable_index_key(table: &str, field: &str, value: &[u8], record_key: &[u8]) -> Vec<u8> {
-    use crate::value_codec::TAG_LIST;
+    use crate::value_codec::{ TAG_LIST, TAG_ORDERED };
     let mut out = vec![TAG_LIST];
     out.extend_from_slice(&(4u32).to_be_bytes());
     out.extend_from_slice(&encode_index_string(table));
     out.extend_from_slice(&encode_index_string(field));
-    out.extend_from_slice(value);
+    // Order-preserving value element (Priority 5): byte order == semantic
+    // order for the supported scalar types, so equality/range/prefix scans
+    // are exactly selective instead of broad field spans.
+    out.push(TAG_ORDERED);
+    crate::value_codec
+        ::push_order_encode_slice(&mut out, value)
+        .expect("index value is a valid codec-encoded field value");
     out.extend_from_slice(record_key);
     out
 }
@@ -2586,6 +3371,18 @@ fn durable_index_table(bytes: &[u8]) -> Option<String> {
         Some(crate::value_codec::RowValue::String(table)) => Some(table.clone()),
         _ => None,
     }
+}
+
+fn encode_change_log_key(sequence: u64, ordinal: u64) -> Vec<u8> {
+    let mut out = vec![crate::value_codec::TAG_LIST];
+    out.extend_from_slice(&(2u32).to_be_bytes());
+    let mut seq = vec![crate::value_codec::TAG_INT64];
+    seq.extend_from_slice(&(sequence as i64).to_be_bytes());
+    let mut ord = vec![crate::value_codec::TAG_INT64];
+    ord.extend_from_slice(&(ordinal as i64).to_be_bytes());
+    out.extend_from_slice(&seq);
+    out.extend_from_slice(&ord);
+    out
 }
 
 #[cfg(test)]
@@ -2633,6 +3430,103 @@ mod tests {
     }
 
     #[test]
+    fn prepared_batch_preserves_repeated_previous_values_and_sequence() {
+        let path = temp_path("prepared-repeated");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let first = encode_test_row(&[("n", encode_test_int64(0))]);
+        let second = encode_test_row(&[("n", encode_test_int64(1))]);
+        let third = encode_test_row(&[("n", encode_test_int64(3))]);
+        worker.apply_batch(&[op(OpKind::Put, Some(b"k".to_vec()), Some(first.clone()))]).unwrap();
+        let templates = vec![
+            PreparedChangeTemplate {
+                operation_index: 0,
+                ordinal: 0,
+                sync_state_key: b"state".to_vec(),
+                record_template: encode_change_record_template(0, &first),
+                fill_previous_version: true,
+            },
+            PreparedChangeTemplate {
+                operation_index: 1,
+                ordinal: 1,
+                sync_state_key: b"state".to_vec(),
+                record_template: encode_change_record_template(0, &first),
+                fill_previous_version: true,
+            },
+            PreparedChangeTemplate {
+                operation_index: 2,
+                ordinal: 2,
+                sync_state_key: b"state".to_vec(),
+                record_template: encode_change_record_template(0, &first),
+                fill_previous_version: true,
+            }
+        ];
+        let outcome = worker
+            .apply_prepared_batch(
+                &[
+                    op(OpKind::Put, Some(b"k".to_vec()), Some(second.clone())),
+                    op(OpKind::Delete, Some(b"k".to_vec()), None),
+                    op(OpKind::Put, Some(b"k".to_vec()), Some(third.clone())),
+                ],
+                &[],
+                0,
+                &[0, 1, 2],
+                &[],
+                &templates
+            )
+            .unwrap();
+        assert_eq!(outcome.sequence, 2);
+        assert_eq!(outcome.previous_values, vec![Some(first.clone()), Some(second.clone()), None]);
+        assert_eq!(worker.commit_sequence(), 2);
+        let log = worker.range_scan("__gecko_change_log", None, None).unwrap();
+        assert_eq!(log.len(), 3);
+        let expected_previous = [
+            Some(first),
+            Some(second),
+            Some(vec![crate::value_codec::TAG_NULL]),
+        ];
+        for (ordinal, (_, record)) in log.iter().enumerate() {
+            assert_eq!(change_record_mutation_id(record), 2);
+            assert_eq!(decode_change_record_previous(record), expected_previous[ordinal]);
+        }
+        assert_eq!(worker.get("items", b"k").unwrap(), Some(third));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn counters_are_zero_when_disabled_and_populated_when_enabled() {
+        let path = temp_path("counters");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+
+        // Disabled by default: work happens, but no counter is touched.
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![10]))]).unwrap();
+        let _ = worker.get("items", &[1]).unwrap();
+        assert_eq!(worker.take_counters(), WorkCounters::default());
+
+        // Enabled: writes and reads are counted and drained.
+        worker.enable_counters();
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![2]), Some(vec![20]))]).unwrap();
+        let _ = worker.get("items", &[2]).unwrap();
+        let counters = worker.take_counters();
+        assert_eq!(counters.batches_applied, 1);
+        assert_eq!(counters.rows_written, 1);
+        assert_eq!(counters.rows_returned, 1);
+        assert_eq!(counters.bytes_returned, 1);
+
+        // take_counters resets: a drain with no intervening work is all-zero.
+        assert_eq!(worker.take_counters(), WorkCounters::default());
+
+        // disable_counters resets and stops recording.
+        worker.enable_counters();
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![3]), Some(vec![30]))]).unwrap();
+        worker.disable_counters();
+        assert_eq!(worker.take_counters(), WorkCounters::default());
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![4]), Some(vec![40]))]).unwrap();
+        assert_eq!(worker.take_counters(), WorkCounters::default());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn malformed_write_operation_is_rejected_before_commit() {
         let path = temp_path("invalid");
         let mut worker = RedbWorker::open(&path, false).unwrap();
@@ -2640,6 +3534,199 @@ mod tests {
         assert!(matches!(result, Err(WorkerError::InvalidOperation(_))));
         assert_eq!(worker.commit_sequence(), 0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn prepared_batch_put_modes_fail_without_mutation_or_sequence() {
+        let path = temp_path("put-modes");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker.apply_batch(&[op(OpKind::Put, Some(b"k".to_vec()), Some(vec![1]))]).unwrap();
+        let before = worker.commit_sequence();
+
+        // insertOnly on an existing key: error, no mutation, no sequence.
+        let err = worker
+            .apply_prepared_batch(
+                &[op(OpKind::Put, Some(b"k".to_vec()), Some(vec![2]))],
+                &[],
+                0,
+                &[],
+                &[(0, 1)],
+                &[]
+            )
+            .unwrap_err();
+        assert!(matches!(err, WorkerError::InvalidOperation(_)));
+        assert_eq!(worker.commit_sequence(), before);
+        assert_eq!(worker.get("items", b"k").unwrap(), Some(vec![1]));
+
+        // updateOnly on a missing key: error, no mutation, no sequence.
+        let err = worker
+            .apply_prepared_batch(
+                &[op(OpKind::Put, Some(b"missing".to_vec()), Some(vec![2]))],
+                &[],
+                0,
+                &[],
+                &[(0, 2)],
+                &[]
+            )
+            .unwrap_err();
+        assert!(matches!(err, WorkerError::KeyNotFound(_)));
+        assert_eq!(worker.commit_sequence(), before);
+        assert_eq!(worker.get("items", b"missing").unwrap(), None);
+
+        // Successful updateOnly (mode 2) and insertOnly (mode 1) still work
+        // and report the correct previous values.
+        let outcome = worker
+            .apply_prepared_batch(
+                &[
+                    op(OpKind::Put, Some(b"k".to_vec()), Some(vec![2])),
+                    op(OpKind::Put, Some(b"new".to_vec()), Some(vec![3])),
+                ],
+                &[],
+                0,
+                &[0],
+                &[(0, 2), (1, 1)],
+                &[]
+            )
+            .unwrap();
+        assert_eq!(outcome.sequence, before + 1);
+        assert_eq!(outcome.previous_values, vec![Some(vec![1])]);
+        assert_eq!(worker.get("items", b"k").unwrap(), Some(vec![2]));
+        assert_eq!(worker.get("items", b"new").unwrap(), Some(vec![3]));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn write_batch_caches_table_handles_and_counts_previous_reads() {
+        let path = temp_path("table-handles");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker.enable_counters();
+        // 10 puts across 2 tables: the per-batch handle cache must open each
+        // table exactly once, and every plain upsert performs exactly one
+        // previous-value read (the insert return value).
+        let mut ops = Vec::new();
+        for i in 0..5u8 {
+            ops.push(op(OpKind::Put, Some(vec![i]), Some(vec![i + 1])));
+            ops.push(op_with_table(OpKind::Put, "other", Some(vec![i]), Some(vec![i + 10])));
+        }
+        worker.apply_batch(&ops).unwrap();
+        let counters = worker.take_counters();
+        assert_eq!(counters.table_opens, 2, "each table opened once per batch");
+        assert_eq!(counters.previous_value_reads, 10, "one read per upsert");
+        assert_eq!(counters.rows_written, 10);
+
+        // Repeated keys in one batch: the second put reads the first's value
+        // through the same cached handle.
+        worker
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(b"k".to_vec()), Some(vec![1])),
+                    op(OpKind::Put, Some(b"k".to_vec()), Some(vec![2])),
+                ]
+            )
+            .unwrap();
+        let counters = worker.take_counters();
+        assert_eq!(counters.table_opens, 1);
+        assert_eq!(counters.previous_value_reads, 2);
+        assert_eq!(worker.get("items", b"k").unwrap(), Some(vec![2]));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn index_maintenance_is_batched_and_reuses_scratch() {
+        let path = temp_path("index-batched");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker.enable_counters();
+        let indexes = indexed_definition();
+        let mut ops = Vec::new();
+        for i in 0..4u8 {
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(format!("k{i}").into_bytes()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("age", encode_test_int64(i as i64)),
+                                ("name", encode_test_string(&format!("n{i}"))),
+                            ]
+                        )
+                    )
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        let counters = worker.take_counters();
+        // 4 puts × 2 indexed fields = 8 index maintenance ops; the index table
+        // is opened once and the user table once.
+        assert_eq!(counters.index_maintenance_ops, 8);
+        assert_eq!(counters.table_opens, 2);
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(3), b"k3"), Some(b"k3".to_vec()));
+        assert_eq!(index_value(&worker, "name", &encode_test_string("n1"), b"k1"), Some(b"k1".to_vec()));
+
+        // Update only the name of k0: the unchanged `age` slice must not touch
+        // the index, so exactly one old + one new index op happen.
+        worker
+            .apply_batch_with_indexes(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k0".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("age", encode_test_int64(0)),
+                                    ("name", encode_test_string("renamed")),
+                                ]
+                            )
+                        )
+                    ),
+                ],
+                &indexes
+            )
+            .unwrap();
+        let counters = worker.take_counters();
+        assert_eq!(counters.index_maintenance_ops, 2, "only the changed field touches the index");
+        assert_eq!(index_value(&worker, "name", &encode_test_string("n0"), b"k0"), None);
+        assert_eq!(
+            index_value(&worker, "name", &encode_test_string("renamed"), b"k0"),
+            Some(b"k0".to_vec())
+        );
+        assert_eq!(index_value(&worker, "age", &encode_test_int64(0), b"k0"), Some(b"k0".to_vec()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn table_definition_interns_once_per_unique_name() {
+        let name = format!("interned-{}", std::process::id());
+        let first = table_definition(&name);
+        let first_ptr = first.name() as *const str;
+        // One hundred thousand calls must all return the exact same leaked
+        // allocation: memory does not grow with operation count.
+        for _ in 0..100_000 {
+            let again = table_definition(&name);
+            assert!(std::ptr::eq(again.name(), first_ptr));
+        }
+        // Reserved metadata names intern stably too.
+        let meta = table_definition("__gecko_change_log");
+        let meta_ptr = meta.name() as *const str;
+        for _ in 0..1_000 {
+            assert!(std::ptr::eq(table_definition("__gecko_change_log").name(), meta_ptr));
+        }
+    }
+
+    #[test]
+    fn delete_range_memory_policy_enforces_the_cap() {
+        // The policy bounds the keys materialized for affected-key reporting;
+        // at the cap + 1 it must fail, at the cap it must pass.
+        let mut keys = Vec::with_capacity((MAX_DELETE_RANGE_KEYS + 1) as usize);
+        for i in 0..MAX_DELETE_RANGE_KEYS + 1 {
+            keys.push(vec![(i % 256) as u8]);
+        }
+        assert!(enforce_delete_memory_policy(&keys).is_err());
+        keys.pop();
+        assert!(enforce_delete_memory_policy(&keys).is_ok());
     }
 
     #[test]
@@ -2865,6 +3952,35 @@ mod tests {
     }
 
     #[test]
+    fn compaction_maps_write_in_progress_to_invalid_operation() {
+        use redb::{ CompactionError, StorageError };
+
+        // A write transaction (or savepoint) in progress is an
+        // InvalidOperation — the single-writer discipline means the caller
+        // retries once the writer drains — never a Storage error.
+        for error in [
+            CompactionError::TransactionInProgress,
+            CompactionError::PersistentSavepointExists,
+            CompactionError::EphemeralSavepointExists,
+        ] {
+            let mapped = RedbWorker::map_compaction_error(error);
+            assert!(
+                matches!(mapped, WorkerError::InvalidOperation(ref message) if message.contains("compaction could not start")),
+                "write-in-progress must map to InvalidOperation, got: {mapped:?}"
+            );
+        }
+
+        // A genuine storage failure stays a Storage error.
+        let io_error = CompactionError::Storage(
+            StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, "boom"))
+        );
+        assert!(
+            matches!(RedbWorker::map_compaction_error(io_error), WorkerError::Storage(_)),
+            "storage failures must stay Storage"
+        );
+    }
+
+    #[test]
     fn query_filtered_returns_only_matching_rows() {
         use crate::predicate::{ self, Filter };
         use crate::value_codec::{ RowValue, TAG_BOOL, TAG_INT64, TAG_MAP, TAG_STRING };
@@ -3006,6 +4122,22 @@ mod tests {
         out.extend_from_slice(&(b.len() as u32).to_be_bytes());
         out.extend_from_slice(b);
         out
+    }
+
+    fn encode_change_record_template(sequence: i64, previous: &[u8]) -> Vec<u8> {
+        encode_test_row(
+            &[
+                ("localMutationId", encode_test_int64(sequence)),
+                ("previousVersion", previous.to_vec()),
+            ]
+        )
+    }
+
+    fn decode_change_record_previous(row: &[u8]) -> Option<Vec<u8>> {
+        crate::value_codec
+            ::find_field_range(row, "previousVersion")
+            .unwrap()
+            .map(|(start, end)| row[start..end].to_vec())
     }
 
     fn indexed_definition() -> Vec<(String, Vec<String>)> {
@@ -3654,14 +4786,7 @@ mod tests {
     /// The durable-index composite key `encode([table, field, value, recordId])`
     /// (a 4-element codec list) for the test table.
     fn index_key(table: &str, field: &str, value: &[u8], record_id: &[u8]) -> Vec<u8> {
-        use crate::value_codec::TAG_LIST;
-        let mut out = vec![TAG_LIST];
-        out.extend_from_slice(&(4u32).to_be_bytes());
-        out.extend_from_slice(&encode_test_string(table));
-        out.extend_from_slice(&encode_test_string(field));
-        out.extend_from_slice(value);
-        out.extend_from_slice(record_id);
-        out
+        durable_index_key(table, field, value, record_id)
     }
 
     /// Seeds rows with an `age` field (values 10..=40 step 10 on k0..k3) plus
@@ -3764,6 +4889,52 @@ mod tests {
         let last = end.pop().unwrap();
         end.push(last + 1);
         (prefix, end)
+    }
+
+    /// Tight lower/upper bounds for `min <= field <= max` using the
+    /// order-preserving value element (Priority 5): the start is the index
+    /// key for [min] without its recordId, the end is the incremented key for
+    /// [max] without its recordId. A scan over `start..=end` visits exactly
+    /// the entries whose field value falls in `[min, max]`.
+    fn ordered_range_bounds(
+        table: &str,
+        field: &str,
+        min: &[u8],
+        max: &[u8]
+    ) -> (Vec<u8>, Vec<u8>) {
+        let min_key = index_key(table, field, min, &[crate::value_codec::TAG_NULL]);
+        let start = min_key[..min_key.len() - 1].to_vec();
+        let max_key = index_key(table, field, max, &[crate::value_codec::TAG_NULL]);
+        let mut end = max_key[..max_key.len() - 1].to_vec();
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        (start, end)
+    }
+
+    /// Tight bounds for the string-prefix `field startsWith prefix` using the
+    /// escaped-terminator string element (Priority 5): the escaped prefix
+    /// bytes WITHOUT the terminator form a contiguous range containing exactly
+    /// the strings that start with [prefix].
+    fn ordered_prefix_bounds(table: &str, field: &str, prefix: &str) -> (Vec<u8>, Vec<u8>) {
+        use crate::value_codec::{ TAG_LIST, TAG_ORDERED };
+        let mut start = vec![TAG_LIST];
+        start.extend_from_slice(&(4u32).to_be_bytes());
+        start.extend_from_slice(&encode_test_string(table));
+        start.extend_from_slice(&encode_test_string(field));
+        start.push(TAG_ORDERED);
+        start.push(0x06); // ORD_STRING
+        for &b in prefix.as_bytes() {
+            if b == 0x00 {
+                start.extend_from_slice(&[0x00, 0x01]);
+            } else {
+                start.push(b);
+            }
+        }
+        // No terminator: longer strings that extend the prefix stay inside.
+        let mut end = start.clone();
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        (start, end)
     }
 
     #[test]
@@ -3981,6 +5152,189 @@ mod tests {
             .map(|e| e.0.as_slice())
             .collect();
         assert_eq!(keys, vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn indexed_range_scan_visits_only_matching_entries() {
+        let (path, worker) = seed_indexed_age_fixture("qrange-sel");
+        worker.enable_counters();
+        // Tight bounds for age in [15, 35]: only k1 (20) and k2 (30) match.
+        let (start, end) = ordered_range_bounds(
+            "items",
+            "age",
+            &encode_test_int64(15),
+            &encode_test_int64(35)
+        );
+        let got = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
+        let mut keys: Vec<Vec<u8>> = got.iter().map(|e| e.0.clone()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![b"k1".to_vec(), b"k2".to_vec()],
+            "tight range returns exactly the matching rows"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.index_entries_visited, 2,
+            "the order-preserving element makes the range scan exactly selective"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn indexed_range_scan_with_negative_bounds_is_tight() {
+        let path = temp_path("qrange-neg");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let ages = [-100i64, -5, -1, 0, 10, 40];
+        let mut ops = Vec::new();
+        for (i, age) in ages.iter().enumerate() {
+            let k = format!("k{i}").into_bytes();
+            let row = encode_test_row(&[("age", encode_test_int64(*age))]);
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(k.clone()),
+                value: Some(row),
+                start: None,
+                end: None,
+            });
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "__gecko_index".into(),
+                key: Some(index_key("items", "age", &encode_test_int64(*age), &k)),
+                value: Some(k),
+                start: None,
+                end: None,
+            });
+        }
+        worker.apply_batch(&ops).unwrap();
+        worker.enable_counters();
+        // [-5, 0] with negative bounds: the sign-flipped encoding must make
+        // the scan exactly selective (v1 big-endian two's complement sorted
+        // negatives AFTER positives, so the old broad field span was needed).
+        let (start, end) = ordered_range_bounds(
+            "items",
+            "age",
+            &encode_test_int64(-5),
+            &encode_test_int64(0)
+        );
+        let got = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
+        let mut keys: Vec<Vec<u8>> = got.iter().map(|e| e.0.clone()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()],
+            "negative bounds still return exactly the matching rows"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(counters.index_entries_visited, 3, "exactly selective over negatives");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn indexed_prefix_scan_visits_only_matching_entries() {
+        let path = temp_path("qprefix-sel");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let nicks = ["g0", "g1", "g10", "g12", "g2", "g", "h1"];
+        let mut ops = Vec::new();
+        for (i, nick) in nicks.iter().enumerate() {
+            let k = format!("k{i}").into_bytes();
+            let row = encode_test_row(&[("nick", encode_test_string(nick))]);
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(k.clone()),
+                value: Some(row),
+                start: None,
+                end: None,
+            });
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "__gecko_index".into(),
+                key: Some(index_key("items", "nick", &encode_test_string(nick), &k)),
+                value: Some(k),
+                start: None,
+                end: None,
+            });
+        }
+        worker.apply_batch(&ops).unwrap();
+        worker.enable_counters();
+        // Prefix "g1" matches exactly {"g1", "g10", "g12"} (k1, k2, k3).
+        let (start, end) = ordered_prefix_bounds("items", "nick", "g1");
+        let got = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
+        let mut keys: Vec<Vec<u8>> = got.iter().map(|e| e.0.clone()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()],
+            "a semantic string prefix is a contiguous index range"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.index_entries_visited, 3,
+            "the escaped-terminator encoding makes the prefix scan exactly selective"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_streams_negative_ints_in_semantic_order() {
+        let path = temp_path("qordered-neg");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let ages = [-100i64, -5, -1, 0, 10];
+        let mut ops = Vec::new();
+        for (i, age) in ages.iter().enumerate() {
+            let k = format!("k{i}").into_bytes();
+            let row = encode_test_row(&[("age", encode_test_int64(*age))]);
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "items".into(),
+                key: Some(k.clone()),
+                value: Some(row),
+                start: None,
+                end: None,
+            });
+            ops.push(Op {
+                kind: OpKind::Put,
+                table: "__gecko_index".into(),
+                key: Some(index_key("items", "age", &encode_test_int64(*age), &k)),
+                value: Some(k),
+                start: None,
+                end: None,
+            });
+        }
+        worker.apply_batch(&ops).unwrap();
+        let empty_pred = crate::predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        // Every row carries `age`, so nothing is appended; the stream order
+        // must be the semantic order (v1 two's-complement big-endian would
+        // have put the negatives after the positives).
+        let keys: Vec<Vec<u8>> = got.iter().map(|e| e.0.clone()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                b"k0".to_vec(),
+                b"k1".to_vec(),
+                b"k2".to_vec(),
+                b"k3".to_vec(),
+                b"k4".to_vec(),
+            ],
+            "index stream is in true ascending semantic order"
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -4527,10 +5881,15 @@ mod tests {
 
     // --- change-log pruning in the Rust commit path ---
 
+    /// Production change-log key for the given LSN at ordinal 0 (the same
+    /// `[lsn, ordinal]` list encoding `encode_change_log_key` produces).
     fn encode_log_key(lsn: u64) -> Vec<u8> {
-        let mut out = vec![crate::value_codec::TAG_INT64];
-        out.extend_from_slice(&(lsn as i64).to_be_bytes());
-        out
+        encode_change_log_key(lsn, 0)
+    }
+
+    /// Production change-log key for the given `[lsn, ordinal]` pair.
+    fn encode_log_key_ordinal(lsn: u64, ordinal: u64) -> Vec<u8> {
+        encode_change_log_key(lsn, ordinal)
     }
 
     fn encode_change_record(dirty: bool, lsn: u64) -> Vec<u8> {
@@ -4564,10 +5923,10 @@ mod tests {
     fn change_log_pruning_keeps_dirty_records_and_advances_watermark() {
         let path = temp_path("prune");
         let mut worker = RedbWorker::open(&path, false).unwrap();
-        // 5 non-dirty records (lsn 1..5) + 2 dirty records (lsn 6,7) + a
-        // watermark already at 3.
+        // Watermark already at 3 implies lsns 1..2 were pruned earlier, so the
+        // log holds 3 non-dirty records (lsn 3..5) + 2 dirty records (lsn 6,7).
         let mut seed = Vec::new();
-        for lsn in 1..=5u64 {
+        for lsn in 3..=5u64 {
             seed.push(
                 op_with_table(
                     OpKind::Put,
@@ -4597,8 +5956,9 @@ mod tests {
         );
         worker.apply_batch_with_indexes(&seed, &[]).unwrap();
 
-        // Retention 3: a change-log-touching batch makes count 8 → excess 5,
-        // so the 5 oldest NON-DIRTY records (lsn 1..5) are pruned and the
+        // Retention 3: a change-log-touching batch makes count 6 → excess 3,
+        // so the 3 oldest NON-DIRTY records (lsn 3..5) are pruned from the
+        // prunable prefix (which starts at [watermark, 0] = [3, 0]) and the
         // watermark advances to max(3, 5) = 5.
         let result = worker
             .apply_batch_reactive_with_retention(
@@ -4615,7 +5975,7 @@ mod tests {
             )
             .unwrap();
         assert!(result.deltas.is_empty());
-        for lsn in 1..=5u64 {
+        for lsn in 3..=5u64 {
             assert_eq!(
                 worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap(),
                 None,
@@ -4644,6 +6004,351 @@ mod tests {
         assert!(worker.get("__gecko_change_log", &encode_log_key(6)).unwrap().is_some());
         assert!(worker.get("__gecko_change_log", &encode_log_key(7)).unwrap().is_some());
         assert!(worker.get("__gecko_change_log", &encode_log_key(8)).unwrap().is_some());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn change_log_pruning_under_and_at_limit_scans_nothing() {
+        let path = temp_path("prune-under-at");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut seed = Vec::new();
+        for lsn in 1..=4u64 {
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(false, lsn))
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+        worker.enable_counters();
+
+        // Under the limit: nothing pruned, and the O(1) length check means
+        // zero entries are scanned.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(5)),
+                        Some(encode_change_record(false, 5))
+                    ),
+                ],
+                &[],
+                10
+            )
+            .unwrap();
+        for lsn in 1..=5u64 {
+            assert!(worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap().is_some());
+        }
+        let counters = worker.take_counters();
+        assert_eq!(counters.change_log_scanned, 0, "under-limit prune must scan nothing");
+        assert_eq!(counters.change_log_pruned, 0);
+
+        // Exactly at the limit: still nothing to prune, nothing scanned.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(6)),
+                        Some(encode_change_record(false, 6))
+                    ),
+                ],
+                &[],
+                6
+            )
+            .unwrap();
+        for lsn in 1..=6u64 {
+            assert!(worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap().is_some());
+        }
+        let counters = worker.take_counters();
+        assert_eq!(counters.change_log_scanned, 0, "at-limit prune must scan nothing");
+        assert_eq!(counters.change_log_pruned, 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn change_log_pruning_all_dirty_over_limit_keeps_everything() {
+        let path = temp_path("prune-all-dirty");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut seed = Vec::new();
+        for lsn in 1..=8u64 {
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(true, lsn))
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+        worker.enable_counters();
+        // Over the limit but every record is dirty: nothing is pruned and the
+        // watermark stays absent.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(9)),
+                        Some(encode_change_record(true, 9))
+                    ),
+                ],
+                &[],
+                4
+            )
+            .unwrap();
+        for lsn in 1..=9u64 {
+            assert!(worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap().is_some());
+        }
+        let counters = worker.take_counters();
+        assert_eq!(counters.change_log_pruned, 0);
+        assert_eq!(worker.get("__gecko_sync_meta", &watermark_key()).unwrap(), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn change_log_pruning_same_lsn_ordinals_are_incrementally_covered() {
+        let path = temp_path("prune-same-lsn");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // Two clean records at the same LSN (ordinals 0 and 1) plus one clean
+        // record at the next LSN.
+        let seed = vec![
+            op_with_table(
+                OpKind::Put,
+                "__gecko_change_log",
+                Some(encode_log_key_ordinal(5, 0)),
+                Some(encode_change_record(false, 5))
+            ),
+            op_with_table(
+                OpKind::Put,
+                "__gecko_change_log",
+                Some(encode_log_key_ordinal(5, 1)),
+                Some(encode_change_record(false, 5))
+            ),
+            op_with_table(
+                OpKind::Put,
+                "__gecko_change_log",
+                Some(encode_log_key_ordinal(6, 0)),
+                Some(encode_change_record(false, 6))
+            ),
+        ];
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+
+        // Retention 3: adding [6,1] makes len 4 → excess 1. The first prune
+        // removes only [5, 0] and advances the watermark to 5 even though
+        // [5, 1] is still clean and shares that LSN.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key_ordinal(6, 1)),
+                        Some(encode_change_record(false, 6))
+                    ),
+                ],
+                &[],
+                3
+            )
+            .unwrap();
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key_ordinal(5, 0)).unwrap(), None);
+        assert!(worker.get("__gecko_change_log", &encode_log_key_ordinal(5, 1)).unwrap().is_some());
+        let wm = worker.get("__gecko_sync_meta", &watermark_key()).unwrap();
+        assert_eq!(
+            crate::value_codec::decode_value(&wm.unwrap()).ok(),
+            Some(crate::value_codec::RowValue::Int64(5))
+        );
+
+        // The next prune must still find [5, 1] even though it shares the
+        // watermark LSN — the incremental scan starts at [watermark, 0], which
+        // re-covers the boundary LSN.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key_ordinal(7, 0)),
+                        Some(encode_change_record(false, 7))
+                    ),
+                ],
+                &[],
+                3
+            )
+            .unwrap();
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key_ordinal(5, 1)).unwrap(), None);
+        assert!(worker.get("__gecko_change_log", &encode_log_key_ordinal(6, 0)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key_ordinal(6, 1)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key_ordinal(7, 0)).unwrap().is_some());
+
+        // A third prune advances past LSN 5 once no clean record shares it.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key_ordinal(8, 0)),
+                        Some(encode_change_record(false, 8))
+                    ),
+                ],
+                &[],
+                3
+            )
+            .unwrap();
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key_ordinal(6, 0)).unwrap(), None);
+        assert!(worker.get("__gecko_change_log", &encode_log_key_ordinal(6, 1)).unwrap().is_some());
+        assert!(worker.get("__gecko_change_log", &encode_log_key_ordinal(7, 0)).unwrap().is_some());
+        let wm = worker.get("__gecko_sync_meta", &watermark_key()).unwrap();
+        assert_eq!(
+            crate::value_codec::decode_value(&wm.unwrap()).ok(),
+            Some(crate::value_codec::RowValue::Int64(6))
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn change_log_pruning_reopens_and_resumes_from_watermark() {
+        let path = temp_path("prune-reopen");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut seed = Vec::new();
+        for lsn in 1..=6u64 {
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(false, lsn))
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+        // Retention 4: adding a dirty [7] makes len 7 → excess 3, pruning the
+        // 3 oldest clean records (lsns 1..3) and advancing the watermark to 3.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(7)),
+                        Some(encode_change_record(true, 7))
+                    ),
+                ],
+                &[],
+                4
+            )
+            .unwrap();
+        for lsn in 1..=3u64 {
+            assert_eq!(
+                worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap(),
+                None,
+                "lsn {lsn} should be pruned"
+            );
+        }
+        drop(worker);
+
+        // Reopen: the watermark must be restored, and the next prune must only
+        // scan from [3, 0], pruning lsn 4 to return to the limit.
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let wm = worker.get("__gecko_sync_meta", &watermark_key()).unwrap();
+        assert_eq!(
+            crate::value_codec::decode_value(&wm.unwrap()).ok(),
+            Some(crate::value_codec::RowValue::Int64(3))
+        );
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(8)),
+                        Some(encode_change_record(true, 8))
+                    ),
+                ],
+                &[],
+                4
+            )
+            .unwrap();
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key(3)).unwrap(), None);
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key(4)).unwrap(), None);
+        for lsn in 5..=8u64 {
+            assert!(worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap().is_some());
+        }
+        let wm = worker.get("__gecko_sync_meta", &watermark_key()).unwrap();
+        assert_eq!(
+            crate::value_codec::decode_value(&wm.unwrap()).ok(),
+            Some(crate::value_codec::RowValue::Int64(4))
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn change_log_pruning_does_not_rescan_pruned_region() {
+        let path = temp_path("prune-no-rescan");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut seed = Vec::new();
+        for lsn in 1..=20u64 {
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(false, lsn))
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+        // First prune: retention 10 over 20 clean + 1 dirty → excess 11,
+        // pruning lsns 1..11 and advancing the watermark to 11.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(21)),
+                        Some(encode_change_record(true, 21))
+                    ),
+                ],
+                &[],
+                10
+            )
+            .unwrap();
+        worker.enable_counters();
+        // Second prune: retention 10, adding dirty [22] makes len 11 → excess
+        // 1. The scan starts at [11, 0] and prunes [12, 0]; the 11 already-
+        // pruned records below the watermark are never revisited.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(22)),
+                        Some(encode_change_record(true, 22))
+                    ),
+                ],
+                &[],
+                10
+            )
+            .unwrap();
+        let counters = worker.take_counters();
+        assert_eq!(counters.change_log_pruned, 1);
+        // Far fewer entries scanned than the 20+ records that ever existed;
+        // a full-log scan would visit every live record.
+        assert!(counters.change_log_scanned <= 2, "scanned {}", counters.change_log_scanned);
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key(11)).unwrap(), None);
+        assert_eq!(worker.get("__gecko_change_log", &encode_log_key(12)).unwrap(), None);
+        assert!(worker.get("__gecko_change_log", &encode_log_key(13)).unwrap().is_some());
         let _ = std::fs::remove_file(path);
     }
 
@@ -4693,6 +6398,624 @@ mod tests {
         assert_eq!(keys, vec![&b"d"[..], &b"a"[..]]);
         // A missing sync-state table yields an empty result, never an error.
         assert!(worker.pending_changes().is_ok());
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── TopK + slice_offset_limit unit edges ──────────────────────────────
+
+    fn candidate(key: u8, row: u8) -> SortCandidate {
+        SortCandidate {
+            key: vec![key],
+            row: vec![row],
+            sort_key: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn topk_cap_zero_is_a_noop() {
+        let mut heap = TopK::new(0, |a: &i64, b: &i64| a.cmp(b));
+        heap.push(1);
+        heap.push(2);
+        assert!(heap.into_sorted().is_empty());
+    }
+
+    #[test]
+    fn topk_cap_plus_one_keeps_the_smallest_cap() {
+        let mut heap = TopK::new(3, |a: &i64, b: &i64| a.cmp(b));
+        for v in [5, 1, 3, 2, 4] {
+            heap.push(v);
+        }
+        assert_eq!(heap.into_sorted(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn topk_ties_keep_the_incumbent() {
+        // Only a strictly-Less item replaces the root; an Equal one does not,
+        // so the incumbent (first inserted) survives a tie.
+        let mut heap = TopK::new(2, |a: &(u8, i64), b: &(u8, i64)| a.1.cmp(&b.1));
+        heap.push((1, 7));
+        heap.push((2, 7));
+        heap.push((3, 5)); // 5 < 7 → replaces a 7
+        let sorted = heap.into_sorted();
+        assert_eq!(sorted.len(), 2);
+        assert_eq!(sorted[0].1, 5);
+        assert_eq!(sorted[1].1, 7);
+        // Duplicate keys are kept as a multiset.
+        let mut dup = TopK::new(4, |a: &i64, b: &i64| a.cmp(b));
+        for v in [2, 2, 2] {
+            dup.push(v);
+        }
+        assert_eq!(dup.into_sorted(), vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn topk_unsorted_input_yields_ascending_output() {
+        let mut heap = TopK::new(4, |a: &i64, b: &i64| a.cmp(b));
+        for v in [9, 1, 7, 3] {
+            heap.push(v);
+        }
+        assert_eq!(heap.into_sorted(), vec![1, 3, 7, 9]);
+    }
+
+    #[test]
+    fn topk_property_keeps_the_cap_smallest_with_duplicates() {
+        // Deterministic xorshift64 PRNG (no rand dependency): every round the
+        // result must be exactly the `cap` smallest input values (as a sorted
+        // multiset — duplicates are exercised heavily by the mod-1000 domain),
+        // in ascending order. The documented tie rule (only strictly-Less
+        // replaces the root) preserves the multiset of the K smallest values
+        // even when Equal keys collide.
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        };
+        for round in 0..20 {
+            let cap = 1 + ((next() % 32) as usize);
+            let count = 50 + ((next() % 200) as usize);
+            let values: Vec<i64> = (0..count).map(|_| (next() % 1000) as i64).collect();
+
+            let mut heap = TopK::new(cap, |a: &i64, b: &i64| a.cmp(b));
+            for v in &values {
+                heap.push(*v);
+            }
+            let sorted = heap.into_sorted();
+            assert_eq!(sorted.len(), cap.min(count), "round {round}");
+
+            // Ascending output.
+            for window in sorted.windows(2) {
+                assert!(window[0] <= window[1], "round {round}: not ascending");
+            }
+
+            // The multiset must be exactly the cap smallest input values.
+            let mut expected: Vec<i64> = values.clone();
+            expected.sort_unstable();
+            expected.truncate(cap.min(count));
+            assert_eq!(sorted, expected, "round {round} cap={cap}");
+        }
+    }
+
+    #[test]
+    fn slice_offset_limit_clamps_out_of_range_windows() {
+        fn rows() -> Vec<SortCandidate> {
+            vec![candidate(1, 1), candidate(2, 2), candidate(3, 3), candidate(4, 4)]
+        }
+        // offset == len → empty.
+        assert!(slice_offset_limit(rows(), None, 4).is_empty());
+        // offset > len → empty.
+        assert!(slice_offset_limit(rows(), None, 10).is_empty());
+        // offset + limit saturates past the end → remaining rows.
+        let got = slice_offset_limit(rows(), Some(10), 2);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, vec![3]);
+        assert_eq!(got[1].0, vec![4]);
+        // offset 1, limit 2 → rows 2,3.
+        let got = slice_offset_limit(rows(), Some(2), 1);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, vec![2]);
+        assert_eq!(got[1].0, vec![3]);
+        // No limit → everything after the offset.
+        let got = slice_offset_limit(rows(), None, 1);
+        assert_eq!(got.len(), 3);
+    }
+
+    // ── open / open_encrypted edges ───────────────────────────────────────
+
+    #[test]
+    fn open_second_handle_is_database_locked_and_reopen_after_close_works() {
+        let path = temp_path("open-twice");
+        let worker1 = RedbWorker::open(&path, false).unwrap();
+        let err = match RedbWorker::open(&path, false) {
+            Err(error) => error,
+            Ok(_) => panic!("second open must fail"),
+        };
+        assert!(matches!(err, WorkerError::DatabaseLocked(_)), "got: {err:?}");
+        drop(worker1);
+        let worker2 = RedbWorker::open(&path, false).unwrap();
+        drop(worker2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_invalid_path_is_a_storage_error() {
+        let bogus = std::env
+            ::temp_dir()
+            .join("gecko-no-such-dir-")
+            .join(
+                format!(
+                    "db-{}.redb",
+                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+                )
+            );
+        let err = match RedbWorker::open(&bogus, false) {
+            Err(error) => error,
+            Ok(_) => panic!("opening a path in a missing directory must fail"),
+        };
+        assert!(matches!(err, WorkerError::Storage(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn open_encrypted_rejects_wrong_length_key_and_wrong_key_reopen() {
+        let path = temp_path("open-enc");
+        // Wrong length key → InvalidOperation, no file created.
+        let err = match RedbWorker::open_encrypted(&path, &[0u8; 31], 1) {
+            Err(error) => error,
+            Ok(_) => panic!("31-byte key must be rejected"),
+        };
+        assert!(matches!(err, WorkerError::InvalidOperation(_)), "got: {err:?}");
+        let err = match RedbWorker::open_encrypted(&path, &[0u8; 33], 1) {
+            Err(error) => error,
+            Ok(_) => panic!("33-byte key must be rejected"),
+        };
+        assert!(matches!(err, WorkerError::InvalidOperation(_)));
+        {
+            let mut worker = RedbWorker::open_encrypted(&path, &[7u8; 32], 1).unwrap();
+            worker.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![10]))]).unwrap();
+            assert_eq!(worker.get("items", &[1]).unwrap(), Some(vec![10]));
+        }
+        // Wrong key → storage/decryption error on reopen.
+        let err = match RedbWorker::open_encrypted(&path, &[8u8; 32], 1) {
+            Err(error) => error,
+            Ok(_) => panic!("wrong key must fail to reopen"),
+        };
+        assert!(matches!(err, WorkerError::Storage(_)), "got: {err:?}");
+        // Correct key reopens and reads the data.
+        let worker = RedbWorker::open_encrypted(&path, &[7u8; 32], 1).unwrap();
+        assert_eq!(worker.get("items", &[1]).unwrap(), Some(vec![10]));
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── apply_batch validation matrix ─────────────────────────────────────
+
+    #[test]
+    fn apply_batch_rejects_read_ops_and_missing_bounds() {
+        let path = temp_path("apply-matrix");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // Get inside a write batch → InvalidOperation.
+        let err = worker.apply_batch(&[op(OpKind::Get, Some(vec![1]), None)]);
+        assert!(matches!(err, Err(WorkerError::InvalidOperation(_))));
+        // RangeScan inside a write batch → InvalidOperation.
+        let err = worker.apply_batch(
+            &[
+                Op {
+                    kind: OpKind::RangeScan,
+                    table: "items".into(),
+                    key: None,
+                    value: None,
+                    start: Some(vec![1]),
+                    end: Some(vec![2]),
+                },
+            ]
+        );
+        assert!(matches!(err, Err(WorkerError::InvalidOperation(_))));
+        // DeleteRange without bounds → InvalidOperation.
+        let err = worker.apply_batch(
+            &[
+                Op {
+                    kind: OpKind::DeleteRange,
+                    table: "items".into(),
+                    key: None,
+                    value: None,
+                    start: None,
+                    end: None,
+                },
+            ]
+        );
+        assert!(matches!(err, Err(WorkerError::InvalidOperation(_))));
+        // Delete without a key → InvalidOperation.
+        let err = worker.apply_batch(&[op(OpKind::Delete, None, None)]);
+        assert!(matches!(err, Err(WorkerError::InvalidOperation(_))));
+        // No batch committed: sequence stays 0.
+        assert_eq!(worker.commit_sequence(), 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_only_worker_rejects_all_writes_but_reads_work() {
+        let path = temp_path("ro-writes");
+        {
+            let mut writer = RedbWorker::open(&path, false).unwrap();
+            writer.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![10]))]).unwrap();
+        }
+        let mut ro = RedbWorker::open(&path, true).unwrap();
+        // Every write kind is rejected.
+        assert!(
+            matches!(
+                ro.apply_batch(&[op(OpKind::Put, Some(vec![2]), Some(vec![20]))]),
+                Err(WorkerError::InvalidOperation(_))
+            )
+        );
+        assert!(
+            matches!(
+                ro.apply_batch(&[op(OpKind::Delete, Some(vec![1]), None)]),
+                Err(WorkerError::InvalidOperation(_))
+            )
+        );
+        assert!(
+            matches!(
+                ro.apply_batch(
+                    &[
+                        Op {
+                            kind: OpKind::Clear,
+                            table: "items".into(),
+                            key: None,
+                            value: None,
+                            start: None,
+                            end: None,
+                        },
+                    ]
+                ),
+                Err(WorkerError::InvalidOperation(_))
+            )
+        );
+        // Reads still work.
+        assert_eq!(ro.get("items", &[1]).unwrap(), Some(vec![10]));
+        assert_eq!(ro.range_scan("items", None, None).unwrap().len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── get_many / range_scan / repair_index edges ────────────────────────
+
+    #[test]
+    fn get_many_duplicate_keys_return_one_row_per_occurrence() {
+        let (path, worker) = seed_aggregate_fixture("getmany-dup");
+        let keys: Vec<&[u8]> = vec![b"k1", b"k1", b"kX", b"k1"];
+        let got = worker.get_many("items", &keys).unwrap();
+        // k1 appears once per input occurrence; kX is omitted.
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|entry| entry.0 == b"k1"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn range_scan_inverted_bounds_is_empty() {
+        let (path, worker) = seed_aggregate_fixture("rscan-inv");
+        // start > end → empty, never an error.
+        let got = worker.range_scan("items", Some(&[9]), Some(&[1])).unwrap();
+        assert!(got.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn repair_index_consistent_is_noop_and_read_only_rejected() {
+        let (path, mut worker) = seed_indexed_age_fixture("repair-noop");
+        let seq = worker.commit_sequence();
+        // Consistent → no write transaction, sequence unchanged.
+        worker.repair_index("items", &["age".to_string()]).unwrap();
+        assert_eq!(worker.commit_sequence(), seq);
+        // Missing primary table → Ok, no-op.
+        worker.repair_index("absent", &["age".to_string()]).unwrap();
+        assert_eq!(worker.commit_sequence(), seq);
+        drop(worker);
+        // Read-only rejects repair.
+        let ro = RedbWorker::open(&path, true).unwrap();
+        let mut ro = ro;
+        assert!(
+            matches!(
+                ro.repair_index("items", &["age".to_string()]),
+                Err(WorkerError::InvalidOperation(_))
+            )
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── query_indexed / multi / sorted / ordered edges ────────────────────
+
+    #[test]
+    fn query_indexed_skips_orphaned_entries_and_drift_recheck_wins() {
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::RowValue;
+        let (path, mut worker) = seed_indexed_age_fixture("qidx-orphan");
+        // Orphaned entry: the index points at a primary key that does not
+        // exist → silently skipped by the join.
+        worker
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::Put,
+                        table: "__gecko_index".into(),
+                        key: Some(index_key("items", "age", &encode_test_int64(35), b"kX")),
+                        value: Some(b"kX".to_vec()),
+                        start: None,
+                        end: None,
+                    },
+                ]
+            )
+            .unwrap();
+        let (start, end) = age_field_bounds();
+        let got = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
+        assert!(!got.iter().any(|entry| entry.0 == b"kX"));
+
+        // Drift: overwrite k1's primary age (21) without touching the index
+        // (which still says 20). The predicate recheck in query_indexed_multi
+        // must win over the stale index entry.
+        worker
+            .apply_batch(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k1".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("age", encode_test_int64(21)),
+                                    ("nick", encode_test_string("g0")),
+                                ]
+                            )
+                        )
+                    ),
+                ]
+            )
+            .unwrap();
+        let pred20 = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "age".into(),
+                    value: RowValue::Int64(20),
+                },
+            ]
+        );
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[(start.clone(), end.clone())], &pred20)
+            .unwrap();
+        assert!(!got.iter().any(|entry| entry.0 == b"k1"), "drift must fail the recheck");
+        let pred21 = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "age".into(),
+                    value: RowValue::Int64(21),
+                },
+            ]
+        );
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[(start, end)], &pred21)
+            .unwrap();
+        assert!(
+            got.iter().any(|entry| entry.0 == b"k1"),
+            "drift recheck must admit the new value"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Equality-bound range for `(table, field, value)` in index-key space.
+    fn eq_bounds(table: &str, field: &str, value: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let mut full = index_key(table, field, value, &[crate::value_codec::TAG_NULL]);
+        full.pop(); // strip trailing null → shared prefix
+        let mut end = full.clone();
+        let mut i = end.len() - 1;
+        while i > 0 && end[i] == 0xff {
+            end.pop();
+            i -= 1;
+        }
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        (full, end)
+    }
+
+    #[test]
+    fn query_indexed_multi_empty_and_disjoint_ranges_are_empty() {
+        use crate::predicate::{ self };
+        let (path, worker) = seed_indexed_age_fixture("qmulti-edge");
+        let empty_pred = predicate::encode_predicate(&[]);
+        // Empty ranges → empty result.
+        let got = worker.query_indexed_multi("items", "__gecko_index", &[], &empty_pred).unwrap();
+        assert!(got.is_empty());
+        // Disjoint equality ranges (age == 10 only k0; age == 30 only k2) →
+        // the intersection is empty and the scan exits early.
+        let (a0, a1) = eq_bounds("items", "age", &encode_test_int64(10));
+        let (b0, b1) = eq_bounds("items", "age", &encode_test_int64(30));
+        let got = worker
+            .query_indexed_multi(
+                "items",
+                "__gecko_index",
+                &[
+                    (a0, a1),
+                    (b0, b1),
+                ],
+                &empty_pred
+            )
+            .unwrap();
+        assert!(got.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_sorted_with_empty_specs_is_empty_not_all_rows() {
+        use crate::predicate::{ self };
+        let (path, worker) = seed_aggregate_fixture("qs-empty");
+        // Empty sort specs → empty result (NOT every row, per worker.rs).
+        let got = worker
+            .query_sorted("items", &predicate::encode_predicate(&[]), &[1, 0], Some(10), 0)
+            .unwrap();
+        assert!(got.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_missing_index_table_fallbacks() {
+        use crate::predicate::{ self };
+        let (path, worker) = seed_indexed_age_fixture("qio-missing");
+        let empty_pred = predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        // Missing index table + eq_bounded → empty.
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "nope_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                true,
+                Some(10),
+                0
+            )
+            .unwrap();
+        assert!(got.is_empty());
+        // Missing index table + not eq_bounded → falls back to the full
+        // top-K sort: k0..k3 ascending by age, then the missing-field k4.
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "nope_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                Some(10),
+                0
+            )
+            .unwrap();
+        let keys: Vec<&[u8]> = got
+            .iter()
+            .map(|entry| entry.0.as_slice())
+            .collect();
+        assert_eq!(keys, vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── tables / pending-changes / prune edges ────────────────────────────
+
+    #[test]
+    fn tables_strips_user_prefix_only() {
+        let path = temp_path("tables");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker.apply_batch(&[op(OpKind::Put, Some(vec![1]), Some(vec![1]))]).unwrap();
+        worker
+            .apply_batch(&[op_with_table(OpKind::Put, "users", Some(vec![1]), Some(vec![1]))])
+            .unwrap();
+        // A reserved metadata table keeps its __gecko_ prefix.
+        worker
+            .apply_batch(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(1)),
+                        Some(encode_change_record(true, 1))
+                    ),
+                ]
+            )
+            .unwrap();
+        let tables = worker.tables().unwrap();
+        assert!(tables.contains(&"items".to_string()));
+        assert!(tables.contains(&"users".to_string()));
+        assert!(tables.contains(&"__gecko_change_log".to_string()));
+        // The internal prefix never leaks.
+        assert!(!tables.iter().any(|name| name.contains("__gecko_user_")));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn prune_change_log_retention_zero_disables_pruning() {
+        let path = temp_path("prune-zero");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut seed = Vec::new();
+        for lsn in 1..=5u64 {
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(false, lsn))
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&seed, &[]).unwrap();
+        // Retention 0 = disabled: even with 5 non-dirty records + 1 new one,
+        // nothing is pruned.
+        worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(6)),
+                        Some(encode_change_record(true, 6))
+                    ),
+                ],
+                &[],
+                0
+            )
+            .unwrap();
+        for lsn in 1..=6u64 {
+            assert!(
+                worker.get("__gecko_change_log", &encode_log_key(lsn)).unwrap().is_some(),
+                "lsn {lsn} must survive with retention 0"
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pending_changes_missing_dirty_defaults_to_kept() {
+        let path = temp_path("pending-defaults");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // A record WITHOUT a `dirty` field defaults to dirty → kept.
+        let mut id_bytes = vec![crate::value_codec::TAG_INT64];
+        id_bytes.extend_from_slice(&(42i64).to_be_bytes());
+        let no_dirty = encode_test_row(
+            &[
+                ("localMutationId", id_bytes),
+                ("origin", encode_test_string("user")),
+            ]
+        );
+        // A record WITHOUT localMutationId sorts as lsn 0.
+        let mut no_id = vec![crate::value_codec::TAG_BOOL];
+        no_id.push(1);
+        let no_lsn = encode_test_row(
+            &[
+                ("dirty", no_id),
+                ("origin", encode_test_string("user")),
+            ]
+        );
+        worker
+            .apply_batch(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_sync_state",
+                        Some(b"a".to_vec()),
+                        Some(no_dirty)
+                    ),
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_sync_state",
+                        Some(b"b".to_vec()),
+                        Some(no_lsn)
+                    ),
+                ]
+            )
+            .unwrap();
+        let got = worker.pending_changes().unwrap();
+        assert_eq!(got.len(), 2);
+        // b (lsn 0) sorts before a (lsn 42).
+        assert_eq!(got[0].0, b"b");
+        assert_eq!(got[1].0, b"a");
         let _ = std::fs::remove_file(path);
     }
 }

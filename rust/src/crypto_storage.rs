@@ -1,4 +1,4 @@
-//! Length-preserving physical-page encryption below redb 
+//! Length-preserving physical-page encryption below redb
 //!
 //! redb's `StorageBackend` seam lets us substitute our own file layer. Each
 //! *logical* page of `LOGICAL_PAGE_SIZE` bytes is stored as one *physical*
@@ -24,11 +24,11 @@
 //! marker that lets an interrupted rotation be recovered to *either* the old
 //! or the new key.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::aead::{ Aead, KeyInit, Payload };
+use aes_gcm::{ Aes256Gcm, Nonce };
 use redb::StorageBackend;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::fs::{ File, OpenOptions };
+use std::io::{ self, Read, Seek, SeekFrom, Write };
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -53,18 +53,16 @@ const ROTATION_TMP_SUFFIX: &str = ".rekey.tmp";
 fn encrypt_with(cipher: &Aes256Gcm, key_gen: u8, plaintext: &[u8]) -> io::Result<Vec<u8>> {
     debug_assert_eq!(plaintext.len(), LOGICAL_PAGE_SIZE);
     let mut nonce_bytes = [0u8; 12];
-    getrandom::getrandom(&mut nonce_bytes)
+    getrandom
+        ::getrandom(&mut nonce_bytes)
         .map_err(|e| io::Error::other(format!("entropy source failed: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let aad = [key_gen];
     let ciphertext = cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: plaintext,
-                aad: &aad,
-            },
-        )
+        .encrypt(nonce, Payload {
+            msg: plaintext,
+            aad: &aad,
+        })
         .map_err(|_| io::Error::other("AES-GCM encryption failed"))?;
     let mut out = Vec::with_capacity(PHYSICAL_PAGE_SIZE);
     out.push(key_gen);
@@ -80,26 +78,25 @@ fn decrypt_with(cipher: &Aes256Gcm, key_gen: u8, physical: &[u8]) -> io::Result<
         return Ok(vec![0u8; LOGICAL_PAGE_SIZE]);
     }
     if physical[0] != key_gen {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "page uses a different key generation (wrong key or mid-rotation)",
-        ));
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "page uses a different key generation (wrong key or mid-rotation)"
+            )
+        );
     }
     let nonce = Nonce::from_slice(&physical[physical.len() - 12..]);
     let ct_and_tag = &physical[1..physical.len() - 12];
     let aad = [key_gen];
     cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: ct_and_tag,
-                aad: &aad,
-            },
-        )
+        .decrypt(nonce, Payload {
+            msg: ct_and_tag,
+            aad: &aad,
+        })
         .map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "page authentication failed (wrong key or corrupted page)",
+                "page authentication failed (wrong key or corrupted page)"
             )
         })
 }
@@ -114,9 +111,7 @@ pub struct EncryptingStorageBackend {
 
 impl std::fmt::Debug for EncryptingStorageBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EncryptingStorageBackend")
-            .field("key_gen", &self.key_gen)
-            .finish()
+        f.debug_struct("EncryptingStorageBackend").field("key_gen", &self.key_gen).finish()
     }
 }
 
@@ -147,7 +142,7 @@ impl EncryptingStorageBackend {
         // Never read beyond the underlying file length: redb's FileBackend
         // loops on zero-length reads at EOF on Windows, and a not-yet-written
         // page (or a page past a freshly set_len'd tail) must read as zeros.
-        let start = page * PHYSICAL_PAGE_SIZE as u64;
+        let start = page * (PHYSICAL_PAGE_SIZE as u64);
         let file_len = self.inner.len()?;
         if start >= file_len {
             return Ok(vec![0u8; PHYSICAL_PAGE_SIZE]);
@@ -163,20 +158,20 @@ impl EncryptingStorageBackend {
     }
 
     fn write_physical_page(&self, page: u64, physical: &[u8]) -> io::Result<()> {
-        self.inner.write(page * PHYSICAL_PAGE_SIZE as u64, physical)
+        self.inner.write(page * (PHYSICAL_PAGE_SIZE as u64), physical)
     }
 }
 
 /// Maps a logical length to the physical file length (rounds up to a page).
 fn physical_len(logical: u64) -> u64 {
     let pages = logical.div_ceil(LOGICAL_PAGE_SIZE as u64);
-    pages * PHYSICAL_PAGE_SIZE as u64
+    pages * (PHYSICAL_PAGE_SIZE as u64)
 }
 
 impl StorageBackend for EncryptingStorageBackend {
     fn len(&self) -> io::Result<u64> {
         let phys = self.inner.len()?;
-        Ok(phys / PHYSICAL_PAGE_SIZE as u64 * LOGICAL_PAGE_SIZE as u64)
+        Ok((phys / (PHYSICAL_PAGE_SIZE as u64)) * (LOGICAL_PAGE_SIZE as u64))
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
@@ -185,7 +180,7 @@ impl StorageBackend for EncryptingStorageBackend {
         }
         let page_size = LOGICAL_PAGE_SIZE as u64;
         let start = offset;
-        let end = offset + out.len() as u64;
+        let end = offset + (out.len() as u64);
         let first_page = start / page_size;
         let last_page = (end - 1) / page_size;
         let mut copied = 0usize;
@@ -213,7 +208,7 @@ impl StorageBackend for EncryptingStorageBackend {
         }
         let page_size = LOGICAL_PAGE_SIZE as u64;
         let start = offset;
-        let end = offset + data.len() as u64;
+        let end = offset + (data.len() as u64);
         let first_page = start / page_size;
         let last_page = (end - 1) / page_size;
         let mut data_offset = 0usize;
@@ -226,14 +221,15 @@ impl StorageBackend for EncryptingStorageBackend {
                 end - page_start
             }) as usize;
             // Read-modify-write unless the write covers the whole page.
-            let mut plain = if in_seg_start == 0 && in_seg_end == page_size as usize {
+            let mut plain = if in_seg_start == 0 && in_seg_end == (page_size as usize) {
                 vec![0u8; page_size as usize]
             } else {
                 let physical = self.read_physical_page(page)?;
                 self.decrypt_page(&physical)?
             };
-            plain[in_seg_start..in_seg_end]
-                .copy_from_slice(&data[data_offset..data_offset + (in_seg_end - in_seg_start)]);
+            plain[in_seg_start..in_seg_end].copy_from_slice(
+                &data[data_offset..data_offset + (in_seg_end - in_seg_start)]
+            );
             data_offset += in_seg_end - in_seg_start;
             let physical = self.encrypt_page(&plain)?;
             self.write_physical_page(page, &physical)?;
@@ -268,13 +264,19 @@ pub enum RotationRecovery {
 
 /// Returns the rotation marker path for [path].
 fn rotation_marker_path(path: &Path) -> std::path::PathBuf {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     path.with_extension(format!("{ext}{ROTATION_MARKER_SUFFIX}"))
 }
 
 /// Returns the rekey sibling path for [path].
 fn rotation_tmp_path(path: &Path) -> std::path::PathBuf {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
     path.with_extension(format!("{ext}{ROTATION_TMP_SUFFIX}"))
 }
 
@@ -289,10 +291,7 @@ fn read_rotation_marker(path: &Path) -> io::Result<Option<(u8, u8)>> {
     let mut lines = content.lines();
     let prefix = lines.next().unwrap_or_default();
     if prefix != ROTATION_MARKER_PREFIX {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unrecognized rotation marker",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unrecognized rotation marker"));
     }
     let old_gen: u8 = lines
         .next()
@@ -314,14 +313,13 @@ fn rekey_sibling_complete(path: &Path) -> bool {
     let Ok(len) = file.metadata().map(|m| m.len()) else {
         return false;
     };
-    if len < ROTATION_TMP_FOOTER.len() as u64 {
+    if len < (ROTATION_TMP_FOOTER.len() as u64) {
         return false;
     }
     let mut buf = vec![0u8; ROTATION_TMP_FOOTER.len()];
-    if file
-        .seek(SeekFrom::Start(len - ROTATION_TMP_FOOTER.len() as u64))
-        .is_err()
-        || file.read_exact(&mut buf).is_err()
+    if
+        file.seek(SeekFrom::Start(len - (ROTATION_TMP_FOOTER.len() as u64))).is_err() ||
+        file.read_exact(&mut buf).is_err()
     {
         return false;
     }
@@ -332,12 +330,9 @@ fn rekey_sibling_complete(path: &Path) -> bool {
 /// the rekey completion footer appended during rotation).
 fn truncate_to_page_aligned(path: &Path) -> io::Result<()> {
     let len = File::open(path)?.metadata()?.len();
-    let aligned = len / PHYSICAL_PAGE_SIZE as u64 * PHYSICAL_PAGE_SIZE as u64;
+    let aligned = (len / (PHYSICAL_PAGE_SIZE as u64)) * (PHYSICAL_PAGE_SIZE as u64);
     if len != aligned {
-        OpenOptions::new()
-            .write(true)
-            .open(path)?
-            .set_len(aligned)?;
+        OpenOptions::new().write(true).open(path)?.set_len(aligned)?;
     }
     Ok(())
 }
@@ -355,12 +350,14 @@ pub fn recover_rotation(path: &Path, caller_key_gen: u8) -> io::Result<RotationR
     let sibling_complete = rekey_sibling_complete(&tmp_path);
     if caller_key_gen == new_gen && sibling_complete {
         // The caller holds the new key and the sibling is complete: roll forward.
-        std::fs::rename(&tmp_path, path).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("could not swap rekeyed file into place: {error}"),
-            )
-        })?;
+        std::fs
+            ::rename(&tmp_path, path)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("could not swap rekeyed file into place: {error}")
+                )
+            })?;
         std::fs::remove_file(&marker_path).ok();
         truncate_to_page_aligned(path)?;
         Ok(RotationRecovery::RolledForwardNewKey)
@@ -385,21 +382,33 @@ pub fn rekey_file(
     path: &Path,
     old_key: [u8; 32],
     new_key: [u8; 32],
-    old_gen: u8,
+    old_gen: u8
 ) -> io::Result<()> {
-    let new_gen = old_gen.wrapping_add(1);
+    // Key generations must be >= 1 (0 is the never-written all-zero-page
+    // sentinel). A wrap from 255 to 0 would collide with that sentinel, so
+    // rotation past 255 is rejected before any file work happens.
+    let new_gen = old_gen
+        .checked_add(1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "key generation 255 cannot rotate: the new generation would wrap to 0"
+            )
+        })?;
     let old_cipher = Aes256Gcm::new_from_slice(&old_key).expect("32-byte key");
     let new_cipher = Aes256Gcm::new_from_slice(&new_key).expect("32-byte key");
 
     let mut source = File::open(path)?;
     let len = source.metadata()?.len();
-    if len % PHYSICAL_PAGE_SIZE as u64 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "file length is not a multiple of the physical page size",
-        ));
+    if len % (PHYSICAL_PAGE_SIZE as u64) != 0 {
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file length is not a multiple of the physical page size"
+            )
+        );
     }
-    let pages = len / PHYSICAL_PAGE_SIZE as u64;
+    let pages = len / (PHYSICAL_PAGE_SIZE as u64);
 
     let tmp_path = rotation_tmp_path(path);
     let mut tmp = OpenOptions::new()
@@ -408,12 +417,12 @@ pub fn rekey_file(
         .create(true)
         .truncate(true)
         .open(&tmp_path)?;
-    tmp.set_len(pages * PHYSICAL_PAGE_SIZE as u64)?;
+    tmp.set_len(pages * (PHYSICAL_PAGE_SIZE as u64))?;
 
     let mut physical = vec![0u8; PHYSICAL_PAGE_SIZE];
     let mut plaintext = vec![0u8; LOGICAL_PAGE_SIZE];
     for page in 0..pages {
-        source.seek(SeekFrom::Start(page * PHYSICAL_PAGE_SIZE as u64))?;
+        source.seek(SeekFrom::Start(page * (PHYSICAL_PAGE_SIZE as u64)))?;
         source.read_exact(&mut physical)?;
         // Never-written pages stay zeros in the sibling.
         if physical.iter().all(|b| *b == 0) {
@@ -421,7 +430,7 @@ pub fn rekey_file(
         }
         plaintext = decrypt_with(&old_cipher, old_gen, &physical)?;
         let re_encrypted = encrypt_with(&new_cipher, new_gen, &plaintext)?;
-        tmp.seek(SeekFrom::Start(page * PHYSICAL_PAGE_SIZE as u64))?;
+        tmp.seek(SeekFrom::Start(page * (PHYSICAL_PAGE_SIZE as u64)))?;
         tmp.write_all(&re_encrypted)?;
     }
     // Completion footer proves the sibling is fully written before the swap.
@@ -431,22 +440,17 @@ pub fn rekey_file(
     drop(tmp);
 
     let marker_path = rotation_marker_path(path);
-    let mut marker = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&marker_path)?;
+    let mut marker = OpenOptions::new().write(true).create(true).truncate(true).open(&marker_path)?;
     writeln!(marker, "{ROTATION_MARKER_PREFIX}\n{old_gen}\n{new_gen}")?;
     marker.sync_all()?;
     drop(marker);
 
     // Swap the sibling over the live file, then clear the marker.
-    std::fs::rename(&tmp_path, path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("could not swap rekeyed file into place: {error}"),
-        )
-    })?;
+    std::fs
+        ::rename(&tmp_path, path)
+        .map_err(|error| {
+            io::Error::new(error.kind(), format!("could not swap rekeyed file into place: {error}"))
+        })?;
     std::fs::remove_file(&marker_path).ok();
     truncate_to_page_aligned(path)?;
     Ok(())
@@ -456,7 +460,7 @@ pub fn rekey_file(
 mod tests {
     use super::*;
     use redb::backends::InMemoryBackend;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{ SystemTime, UNIX_EPOCH };
 
     fn key(seed: u8) -> [u8; 32] {
         [seed; 32]
@@ -467,10 +471,7 @@ mod tests {
     }
 
     fn temp_path(label: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("gecko-crypto-{label}-{nonce}.redb"))
     }
 
@@ -487,9 +488,7 @@ mod tests {
     #[test]
     fn tampering_with_the_payload_fails_authentication() {
         let backend = EncryptingStorageBackend::new(Box::new(InMemoryBackend::new()), key(1), 1);
-        let physical = backend
-            .encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, 3))
-            .unwrap();
+        let physical = backend.encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, 3)).unwrap();
         let mut tampered = physical.clone();
         tampered[1 + LOGICAL_PAGE_SIZE / 2] ^= 0x01;
         assert!(backend.decrypt_page(&tampered).is_err());
@@ -498,9 +497,7 @@ mod tests {
     #[test]
     fn wrong_key_fails_authentication() {
         let backend = EncryptingStorageBackend::new(Box::new(InMemoryBackend::new()), key(1), 1);
-        let physical = backend
-            .encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, 3))
-            .unwrap();
+        let physical = backend.encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, 3)).unwrap();
         let wrong = EncryptingStorageBackend::new(Box::new(InMemoryBackend::new()), key(2), 1);
         assert!(wrong.decrypt_page(&physical).is_err());
     }
@@ -508,9 +505,7 @@ mod tests {
     #[test]
     fn wrong_key_generation_is_detected() {
         let backend = EncryptingStorageBackend::new(Box::new(InMemoryBackend::new()), key(1), 2);
-        let physical = backend
-            .encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, 3))
-            .unwrap();
+        let physical = backend.encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, 3)).unwrap();
         let other = EncryptingStorageBackend::new(Box::new(InMemoryBackend::new()), key(1), 1);
         assert!(other.decrypt_page(&physical).is_err());
     }
@@ -528,9 +523,7 @@ mod tests {
         let backend = EncryptingStorageBackend::new(Box::new(InMemoryBackend::new()), key(1), 1);
         let mut seen = std::collections::HashSet::new();
         for seed in 0..50u8 {
-            let physical = backend
-                .encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, seed))
-                .unwrap();
+            let physical = backend.encrypt_page(&plaintext(LOGICAL_PAGE_SIZE, seed)).unwrap();
             let nonce = &physical[physical.len() - 12..];
             assert!(seen.insert(nonce.to_vec()), "nonce reused");
         }
@@ -542,20 +535,14 @@ mod tests {
         inner.set_len((PHYSICAL_PAGE_SIZE * 4) as u64).unwrap();
         let backend = EncryptingStorageBackend::new(Box::new(inner), key(1), 1);
         let payload = plaintext(100, 7);
-        backend
-            .write(LOGICAL_PAGE_SIZE as u64 - 40, &payload)
-            .unwrap();
+        backend.write((LOGICAL_PAGE_SIZE as u64) - 40, &payload).unwrap();
         let mut out = vec![0u8; 100];
-        backend
-            .read(LOGICAL_PAGE_SIZE as u64 - 40, &mut out)
-            .unwrap();
+        backend.read((LOGICAL_PAGE_SIZE as u64) - 40, &mut out).unwrap();
         assert_eq!(out, payload);
         let page = plaintext(LOGICAL_PAGE_SIZE, 9);
         backend.write(LOGICAL_PAGE_SIZE as u64, &page).unwrap();
         let mut read_back = vec![0u8; LOGICAL_PAGE_SIZE];
-        backend
-            .read(LOGICAL_PAGE_SIZE as u64, &mut read_back)
-            .unwrap();
+        backend.read(LOGICAL_PAGE_SIZE as u64, &mut read_back).unwrap();
         assert_eq!(read_back, page);
     }
 
@@ -574,9 +561,9 @@ mod tests {
             let backend = EncryptingStorageBackend::new(
                 Box::new(redb::backends::FileBackend::new(file).unwrap()),
                 key(1),
-                1,
+                1
             );
-            backend.set_len(LOGICAL_PAGE_SIZE as u64 * 3).unwrap();
+            backend.set_len((LOGICAL_PAGE_SIZE as u64) * 3).unwrap();
             let payload = plaintext(LOGICAL_PAGE_SIZE * 2, 11);
             backend.write(0, &payload).unwrap();
             backend.sync_data().unwrap();
@@ -614,9 +601,9 @@ mod tests {
             let backend = EncryptingStorageBackend::new(
                 Box::new(redb::backends::FileBackend::new(file).unwrap()),
                 key(1),
-                1,
+                1
             );
-            backend.set_len(LOGICAL_PAGE_SIZE as u64 * 2).unwrap();
+            backend.set_len((LOGICAL_PAGE_SIZE as u64) * 2).unwrap();
             let payload = plaintext(LOGICAL_PAGE_SIZE, 5);
             backend.write(0, &payload).unwrap();
             backend.sync_data().unwrap();
@@ -648,10 +635,7 @@ mod tests {
             writeln!(marker, "{ROTATION_MARKER_PREFIX}\n1\n2").unwrap();
         }
         // Recover with the NEW key -> roll forward (tmp replaces main).
-        assert_eq!(
-            recover_rotation(&path, 2).unwrap(),
-            RotationRecovery::RolledForwardNewKey
-        );
+        assert_eq!(recover_rotation(&path, 2).unwrap(), RotationRecovery::RolledForwardNewKey);
         assert!(!tmp_path.exists());
         assert!(!marker_path.exists());
         // Main file still decrypts with the old key (it was the old file).
@@ -659,10 +643,7 @@ mod tests {
         let mut first = vec![0u8; PHYSICAL_PAGE_SIZE];
         let mut f = File::open(&path).unwrap();
         f.read_exact(&mut first).unwrap();
-        assert_eq!(
-            decrypt_with(&old_cipher, 1, &first).unwrap(),
-            plaintext(LOGICAL_PAGE_SIZE, 5)
-        );
+        assert_eq!(decrypt_with(&old_cipher, 1, &first).unwrap(), plaintext(LOGICAL_PAGE_SIZE, 5));
         let _ = std::fs::remove_file(path);
     }
 
@@ -680,9 +661,9 @@ mod tests {
             let backend = EncryptingStorageBackend::new(
                 Box::new(redb::backends::FileBackend::new(file).unwrap()),
                 key(1),
-                1,
+                1
             );
-            backend.set_len(LOGICAL_PAGE_SIZE as u64 * 2).unwrap();
+            backend.set_len((LOGICAL_PAGE_SIZE as u64) * 2).unwrap();
             backend.write(0, &plaintext(LOGICAL_PAGE_SIZE, 5)).unwrap();
             backend.sync_data().unwrap();
         }
@@ -706,12 +687,167 @@ mod tests {
                 .unwrap();
             writeln!(marker, "{ROTATION_MARKER_PREFIX}\n1\n2").unwrap();
         }
-        assert_eq!(
-            recover_rotation(&path, 2).unwrap(),
-            RotationRecovery::RolledBackOldKey
-        );
+        assert_eq!(recover_rotation(&path, 2).unwrap(), RotationRecovery::RolledBackOldKey);
         assert!(!tmp_path.exists());
         assert!(!marker_path.exists());
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── key-gen wrap, length mapping, marker corruption ────────────────────
+
+    #[test]
+    fn rekey_rejects_key_gen_255_wrap() {
+        // old_gen 255 would wrap new_gen to 0 (the all-zero-page sentinel);
+        // the guard fires before any file work, so the path need not exist.
+        let missing = temp_path("wrap-255");
+        let err = rekey_file(&missing, key(1), key(2), 255).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("255"), "got: {err}");
+        // 254 → 255 is legal (checked_add succeeds).
+        let missing2 = temp_path("wrap-ok");
+        let err = rekey_file(&missing2, key(1), key(2), 254).unwrap_err();
+        // It must fail with a FILE error (no such file), NOT the wrap guard.
+        assert_ne!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn len_floors_non_multiple_physical_lengths() {
+        let path = temp_path("len-floor");
+        // A raw file whose length is NOT a multiple of the physical page size.
+        std::fs::write(&path, vec![0u8; 10000]).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let backend = EncryptingStorageBackend::new(
+            Box::new(redb::backends::FileBackend::new(file).unwrap()),
+            key(1),
+            1
+        );
+        // 10000 / 4125 = 2 physical pages → 2 * 4096 = 8192 logical bytes.
+        assert_eq!(backend.len().unwrap(), 8192);
+        // An empty file reports 0.
+        let empty_path = temp_path("len-zero");
+        std::fs::write(&empty_path, []).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&empty_path).unwrap();
+        let backend = EncryptingStorageBackend::new(
+            Box::new(redb::backends::FileBackend::new(file).unwrap()),
+            key(1),
+            1
+        );
+        assert_eq!(backend.len().unwrap(), 0);
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(empty_path);
+    }
+
+    #[test]
+    fn read_physical_page_past_eof_returns_zeros() {
+        let path = temp_path("past-eof");
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .unwrap();
+            let backend = EncryptingStorageBackend::new(
+                Box::new(redb::backends::FileBackend::new(file).unwrap()),
+                key(1),
+                1
+            );
+            backend.set_len(LOGICAL_PAGE_SIZE as u64).unwrap();
+            // Read at a logical offset spanning pages past EOF → zeros, no
+            // error and no zero-length-read loop.
+            let mut out = vec![0xFFu8; 100];
+            backend.read((LOGICAL_PAGE_SIZE as u64) * 3, &mut out).unwrap();
+            assert!(out.iter().all(|byte| *byte == 0));
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn set_len_rounds_up_to_physical_pages() {
+        let path = temp_path("set-len");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        let backend = EncryptingStorageBackend::new(
+            Box::new(redb::backends::FileBackend::new(file).unwrap()),
+            key(1),
+            1
+        );
+        // 5000 logical → ceil(5000/4096) = 2 physical pages → 2*4125 = 8250.
+        backend.set_len(5000).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), (PHYSICAL_PAGE_SIZE as u64) * 2);
+        // Exact multiple stays exact: 4096 → 4125.
+        backend.set_len(LOGICAL_PAGE_SIZE as u64).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), PHYSICAL_PAGE_SIZE as u64);
+        // Zero → zero.
+        backend.set_len(0).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rotation_marker_corruption_is_a_typed_error() {
+        let path = temp_path("marker-corrupt");
+        let marker_path = rotation_marker_path(&path);
+        // Wrong prefix.
+        std::fs::write(&marker_path, "not-gecko\n1\n2\n").unwrap();
+        let err = read_rotation_marker(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        // Truncated payload (only the prefix line).
+        std::fs::write(&marker_path, "gecko_rekey_v1\n").unwrap();
+        let err = read_rotation_marker(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        // Non-numeric generation bytes.
+        std::fs::write(&marker_path, "gecko_rekey_v1\nx\n2\n").unwrap();
+        assert!(read_rotation_marker(&path).is_err());
+        std::fs::write(&marker_path, "gecko_rekey_v1\n1\ny\n").unwrap();
+        assert!(read_rotation_marker(&path).is_err());
+        // A missing marker is None, never an error.
+        std::fs::remove_file(&marker_path).ok();
+        assert!(read_rotation_marker(&path).unwrap().is_none());
+        let _ = std::fs::remove_file(marker_path);
+    }
+
+    #[test]
+    fn reverse_rotation_returns_to_the_original_key() {
+        let path = temp_path("reverse-rotate");
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .unwrap();
+            let backend = EncryptingStorageBackend::new(
+                Box::new(redb::backends::FileBackend::new(file).unwrap()),
+                key(1),
+                1
+            );
+            backend.set_len((LOGICAL_PAGE_SIZE as u64) * 2).unwrap();
+            let payload = plaintext(LOGICAL_PAGE_SIZE, 5);
+            backend.write(0, &payload).unwrap();
+            backend.sync_data().unwrap();
+        }
+        // Forward: key(1) → key(2), gen 1 → 2.
+        rekey_file(&path, key(1), key(2), 1).unwrap();
+        // Reverse: key(2) → key(1), gen 2 → 3.
+        rekey_file(&path, key(2), key(1), 2).unwrap();
+        // The file is readable with the original key under gen 3.
+        let cipher = Aes256Gcm::new_from_slice(&key(1)).unwrap();
+        let mut first = vec![0u8; PHYSICAL_PAGE_SIZE];
+        let mut f = File::open(&path).unwrap();
+        f.read_exact(&mut first).unwrap();
+        let plain = decrypt_with(&cipher, 3, &first).unwrap();
+        assert_eq!(&plain[..64], &plaintext(LOGICAL_PAGE_SIZE, 5)[..64]);
+        // The intermediate key no longer authenticates.
+        let old_cipher = Aes256Gcm::new_from_slice(&key(2)).unwrap();
+        assert!(decrypt_with(&old_cipher, 2, &first).is_err());
         let _ = std::fs::remove_file(path);
     }
 }

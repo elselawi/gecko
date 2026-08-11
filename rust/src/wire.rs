@@ -121,7 +121,13 @@ impl Op {
             );
         }
         let count = r.read_varint()?;
-        let mut ops = Vec::with_capacity(count as usize);
+        // Each op is at least 5 bytes (kind + empty table string + 4 presence
+        // bytes), so the remaining input bounds how many ops can possibly be
+        // present. Capping the pre-allocation prevents a hostile count (up to
+        // u64::MAX) from requesting a giant allocation before the bounds
+        // checks fail.
+        let cap = (count as usize).min(r.remaining());
+        let mut ops = Vec::with_capacity(cap);
         for _ in 0..count {
             let kind = OpKind::from_u8(r.read_u8()?).ok_or_else(||
                 WireError("Unknown op kind".into())
@@ -302,5 +308,149 @@ mod tests {
         let mut good = Op::encode_batch(&sample());
         good.extend_from_slice(&[0xaa, 0xbb]);
         assert!(matches!(Op::decode_batch(&good), Err(WireError(_))));
+    }
+
+    #[test]
+    fn varint_boundaries_round_trip() {
+        // Encode a batch with `value` ops (all Clear) and decode; the count
+        // crosses every LEB128 boundary.
+        for value in [0u64, 1, 127, 128, 16383, 16384, 2097151, 2097152] {
+            let ops: Vec<Op> = (0..value)
+                .map(|_| Op {
+                    kind: OpKind::Clear,
+                    table: "t".into(),
+                    key: None,
+                    value: None,
+                    start: None,
+                    end: None,
+                })
+                .collect();
+            let decoded = Op::decode_batch(&Op::encode_batch(&ops)).unwrap();
+            assert_eq!(decoded.len() as u64, value);
+        }
+    }
+
+    #[test]
+    fn varint_overflow_is_a_typed_error() {
+        // Ten continuation bytes push the shift past 63 → typed overflow.
+        let bytes = vec![
+            WIRE_VERSION,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0x01
+        ];
+        let err = Op::decode_batch(&bytes).unwrap_err();
+        assert!(err.0.contains("Varint overflow"), "got: {err:?}");
+    }
+
+    #[test]
+    fn hostile_varint_count_is_bounded_not_allocated() {
+        // A huge-but-valid count (0x01 << 63) must not panic with a capacity
+        // overflow; it must return a typed error promptly.
+        let mut bytes = vec![WIRE_VERSION, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01];
+        bytes.push(0); // at least one byte remains so remaining() > 0
+        let err = Op::decode_batch(&bytes).unwrap_err();
+        assert!(err.0.contains("end of input"), "got: {err:?}");
+    }
+
+    #[test]
+    fn invalid_utf8_table_name_is_a_typed_error() {
+        // version, count=1, kind=Put(0), then table string with invalid UTF-8.
+        // string = varint len(1) + 0xFF.
+        let mut bytes = vec![WIRE_VERSION, 1, 0, 1, 0xff];
+        // then four null presence bytes.
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        let err = Op::decode_batch(&bytes).unwrap_err();
+        assert!(err.0.contains("UTF-8"), "got: {err:?}");
+    }
+
+    #[test]
+    fn presence_byte_leniency_any_nonzero_is_present() {
+        // A Put op whose value presence byte is 0x02 (non-canonical) must
+        // decode as present, matching the Dart-side tolerance.
+        let mut bytes = vec![WIRE_VERSION, 1, 0]; // Put
+        // table "" (len 0)
+        bytes.push(0);
+        // key: absent (0)
+        bytes.push(0);
+        // value: present with NON-CANONICAL presence byte 0x02, len 1, [9]
+        bytes.extend_from_slice(&[0x02, 1, 9]);
+        // start, end absent
+        bytes.extend_from_slice(&[0, 0]);
+        let ops = Op::decode_batch(&bytes).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, OpKind::Put);
+        assert_eq!(ops[0].value, Some(vec![9]));
+    }
+
+    #[test]
+    fn count_over_claim_is_a_truncation_error() {
+        // version, count=100, but no ops follow → typed error, no panic.
+        let bytes = vec![WIRE_VERSION, 100];
+        let err = Op::decode_batch(&bytes).unwrap_err();
+        assert!(err.0.contains("end of input"), "got: {err:?}");
+    }
+
+    #[test]
+    fn empty_batch_decodes_to_no_ops() {
+        let ops = Op::decode_batch(&[WIRE_VERSION, 0]).unwrap();
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn large_payload_round_trips() {
+        // An ~8 MB value round-trips byte-for-byte.
+        let big: Vec<u8> = (0..8 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let op = Op {
+            kind: OpKind::Put,
+            table: "big".into(),
+            key: Some(vec![1, 2, 3]),
+            value: Some(big.clone()),
+            start: None,
+            end: None,
+        };
+        let bytes = Op::encode_batch(&[op]);
+        let decoded = Op::decode_batch(&bytes).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].value.as_deref(), Some(big.as_slice()));
+    }
+
+    #[test]
+    fn semantically_invalid_but_decodable_ops_are_ok() {
+        // Validation is the worker's job, not the codec's: an op that decodes
+        // but is semantically invalid (e.g. a Put with a key but null value)
+        // must decode fine here and be rejected later by the worker.
+        let op = Op {
+            kind: OpKind::Put,
+            table: "items".into(),
+            key: Some(vec![1]),
+            value: None,
+            start: None,
+            end: None,
+        };
+        let bytes = Op::encode_batch(&[op]);
+        let decoded = Op::decode_batch(&bytes).unwrap();
+        assert_eq!(decoded[0].kind, OpKind::Put);
+        assert_eq!(decoded[0].key, Some(vec![1]));
+        assert_eq!(decoded[0].value, None);
+        // A Get op with extra optional fields also decodes fine.
+        let get = Op {
+            kind: OpKind::Get,
+            table: "items".into(),
+            key: Some(vec![1]),
+            value: Some(vec![9]),
+            start: Some(vec![0]),
+            end: Some(vec![1]),
+        };
+        let decoded = Op::decode_batch(&Op::encode_batch(&[get])).unwrap();
+        assert_eq!(decoded[0].kind, OpKind::Get);
     }
 }

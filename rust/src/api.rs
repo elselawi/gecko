@@ -4,7 +4,15 @@
 //! generated Dart bindings do not need to hold Rust transaction handles.
 
 use crate::compatibility::CompatibilityHandshake;
-use crate::worker::{ ByteEntry, GroupedChildEntries, RedbWorker, StorageStats, WorkerError };
+use crate::worker::{
+    ByteEntry,
+    GroupedChildEntries,
+    PreparedChangeTemplate,
+    RedbWorker,
+    StorageStats,
+    WorkCounters,
+    WorkerError,
+};
 
 const NATIVE_BUILD_ID: &str = concat!(env!("CARGO_PKG_VERSION"), "+rust");
 
@@ -23,6 +31,7 @@ fn encode_worker_error(error: WorkerError) -> String {
         WorkerError::InvalidOperation(_) | WorkerError::Wire(_) => {
             crate::error::GeckoErrorType::InvalidOperation
         }
+        WorkerError::KeyNotFound(_) => crate::error::GeckoErrorType::KeyNotFound,
         WorkerError::DatabaseLocked(_) => crate::error::GeckoErrorType::DatabaseLocked,
         WorkerError::Storage(_) => crate::error::GeckoErrorType::Unknown,
     };
@@ -37,6 +46,19 @@ fn encode_worker_error(error: WorkerError) -> String {
 pub struct ApplyBatchResult {
     pub sequence: u64,
     pub deltas: Vec<QueryDelta>,
+    pub previous_values: Vec<Option<Vec<u8>>>,
+    pub removed_keys: Vec<(String, Vec<u8>)>,
+}
+
+/// Additional metadata for one change record completed by Rust inside the
+/// prepared write transaction.
+#[derive(Debug, Clone)]
+pub struct PreparedChange {
+    pub operation_index: u64,
+    pub ordinal: u64,
+    pub sync_state_key: Vec<u8>,
+    pub record_template: Vec<u8>,
+    pub fill_previous_version: bool,
 }
 
 /// one per-registration delta produced by a committed batch.
@@ -159,6 +181,65 @@ impl NativeWorker {
         Ok(ApplyBatchResult {
             sequence: result.sequence,
             deltas: result.deltas.into_iter().map(QueryDelta::from).collect(),
+            previous_values: result.previous_values,
+            removed_keys: result.removed_keys,
+        })
+    }
+
+    pub async fn apply_prepared_batch(
+        &mut self,
+        encoded_ops: Vec<u8>,
+        index_definitions: Vec<(String, Vec<String>)>,
+        change_log_max_entries: u64,
+        previous_operation_indexes: Vec<String>,
+        put_modes: Vec<(u64, u8)>,
+        changes: Vec<PreparedChange>
+    ) -> Result<ApplyBatchResult, String> {
+        let operations = crate::wire::Op
+            ::decode_batch(&encoded_ops)
+            .map_err(|error| {
+                crate::error::GeckoErrorEnvelope
+                    ::new(crate::error::GeckoErrorType::InvalidOperation, error.to_string())
+                    .encode()
+            })?;
+        let templates = changes
+            .into_iter()
+            .map(|change| PreparedChangeTemplate {
+                operation_index: change.operation_index as usize,
+                ordinal: change.ordinal,
+                sync_state_key: change.sync_state_key,
+                record_template: change.record_template,
+                fill_previous_version: change.fill_previous_version,
+            })
+            .collect::<Vec<_>>();
+        let indexes = previous_operation_indexes
+            .into_iter()
+            .map(|index| {
+                index
+                    .parse::<usize>()
+                    .map_err(|_| WorkerError::InvalidOperation("invalid previous index".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(encode_worker_error)?;
+        let modes = put_modes
+            .into_iter()
+            .map(|(index, mode)| (index as usize, mode))
+            .collect::<Vec<_>>();
+        let result = self.worker
+            .apply_prepared_batch(
+                &operations,
+                &index_definitions,
+                change_log_max_entries,
+                &indexes,
+                &modes,
+                &templates
+            )
+            .map_err(encode_worker_error)?;
+        Ok(ApplyBatchResult {
+            sequence: result.sequence,
+            deltas: result.deltas.into_iter().map(QueryDelta::from).collect(),
+            previous_values: result.previous_values,
+            removed_keys: result.removed_keys,
         })
     }
 
@@ -323,6 +404,20 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// direct multi-range indexed query.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_indexed_multi(
+        &self,
+        table: String,
+        index_table: String,
+        ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_indexed_multi(&table, &index_table, &ranges, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
     /// snapshot-bound count over durable-index candidates. The complete
     /// predicate is rechecked in Rust and only the scalar count crosses FRB.
     #[allow(clippy::too_many_arguments)]
@@ -336,6 +431,20 @@ impl NativeWorker {
     ) -> Result<u64, String> {
         self.worker
             .snapshot_query_indexed_count(snapshot, &table, &index_table, &ranges, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
+    /// direct count over durable-index candidates.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_indexed_count(
+        &self,
+        table: String,
+        index_table: String,
+        ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>
+    ) -> Result<u64, String> {
+        self.worker
+            .query_indexed_count(&table, &index_table, &ranges, &predicate_bytes)
             .map_err(encode_worker_error)
     }
 
@@ -362,6 +471,22 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// Direct indexed distinct extraction using one worker-owned read
+    /// transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_indexed_distinct(
+        &self,
+        table: String,
+        index_table: String,
+        ranges: Vec<(Vec<u8>, Vec<u8>)>,
+        predicate_bytes: Vec<u8>,
+        field: String
+    ) -> Result<Vec<Vec<u8>>, String> {
+        self.worker
+            .query_indexed_distinct(&table, &index_table, &ranges, &predicate_bytes, &field)
+            .map_err(encode_worker_error)
+    }
+
     /// step 2: full-scan with a pushed predicate. Scans every row in
     /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
     /// (decoding only the referenced fields), and returns only the matching
@@ -375,10 +500,7 @@ impl NativeWorker {
         self.worker.query_filtered(&table, &predicate_bytes).map_err(encode_worker_error)
     }
 
-    /// full-scan + predicate with an early LIMIT/OFFSET — skips the first
-    /// [offset] matches and returns at most [limit] of the rest, stopping the
-    /// scan as soon as the window fills (matching rows beyond it are never
-    /// transferred).
+    /// direct full-scan + predicate with an early LIMIT/OFFSET.
     pub async fn query_filtered_limited(
         &self,
         table: String,
@@ -391,24 +513,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// Snapshot-bound variant of [Self::query_filtered_limited].
-    pub async fn snapshot_query_filtered_limited(
-        &self,
-        snapshot: u64,
-        table: String,
-        predicate_bytes: Vec<u8>,
-        limit: Option<u64>,
-        offset: u64
-    ) -> Result<Vec<ByteEntry>, String> {
-        self.worker
-            .snapshot_query_filtered_limited(snapshot, &table, &predicate_bytes, limit, offset)
-            .map_err(encode_worker_error)
-    }
-
-    /// index-served query with an early LIMIT/OFFSET. Streams the durable
-    /// index range `[start..=end]`, joins to rows, applies [predicate_bytes]
-    /// (so early-stop is correct with additional filters), and stops once the
-    /// window fills.
+    /// direct indexed query with an early LIMIT/OFFSET.
     #[allow(clippy::too_many_arguments)]
     pub async fn query_indexed_limited(
         &self,
@@ -430,6 +535,63 @@ impl NativeWorker {
                 limit,
                 offset
             )
+            .map_err(encode_worker_error)
+    }
+
+    /// direct Rust top-K sorted query.
+    pub async fn query_sorted(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        sort_spec_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_sorted(&table, &predicate_bytes, &sort_spec_bytes, limit, offset)
+            .map_err(encode_worker_error)
+    }
+
+    /// direct index-ordered sorted query.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_indexed_ordered(
+        &self,
+        table: String,
+        index_table: String,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        predicate_bytes: Vec<u8>,
+        sort_field: String,
+        eq_bounded: bool,
+        limit: Option<u64>,
+        offset: u64
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .query_indexed_ordered(
+                &table,
+                &index_table,
+                &start,
+                &end,
+                &predicate_bytes,
+                &sort_field,
+                eq_bounded,
+                limit,
+                offset
+            )
+            .map_err(encode_worker_error)
+    }
+
+    /// Snapshot-bound variant of [Self::query_filtered_limited].
+    pub async fn snapshot_query_filtered_limited(
+        &self,
+        snapshot: u64,
+        table: String,
+        predicate_bytes: Vec<u8>,
+        limit: Option<u64>,
+        offset: u64
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .snapshot_query_filtered_limited(snapshot, &table, &predicate_bytes, limit, offset)
             .map_err(encode_worker_error)
     }
 
@@ -460,23 +622,6 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
-    /// `[offset, offset+limit)` window ordered by [sort_spec_bytes] (a port of
-    /// Dart `compareRows`), keeping only the window in memory — the full
-    /// candidate set is never materialized or transferred.
-    pub async fn query_sorted(
-        &self,
-        table: String,
-        predicate_bytes: Vec<u8>,
-        sort_spec_bytes: Vec<u8>,
-        limit: Option<u64>,
-        offset: u64
-    ) -> Result<Vec<ByteEntry>, String> {
-        self.worker
-            .query_sorted(&table, &predicate_bytes, &sort_spec_bytes, limit, offset)
-            .map_err(encode_worker_error)
-    }
-
     /// Snapshot-bound variant of [Self::query_sorted].
     pub async fn snapshot_query_sorted(
         &self,
@@ -493,42 +638,6 @@ impl NativeWorker {
                 &table,
                 &predicate_bytes,
                 &sort_spec_bytes,
-                limit,
-                offset
-            )
-            .map_err(encode_worker_error)
-    }
-
-    /// index-ordered early-stop sort. Streams the durable-index range
-    /// `[start..=end]` in index-key order (the same order Dart's stable sort of
-    /// the field produces), joins to rows, applies [predicate_bytes], and
-    /// stops once `offset + limit` matches are collected. [eq_bounded]
-    /// indicates `start..=end` is an equality bound on [sort_field] (so
-    /// index-key order is correct for either direction); when false, the
-    /// stream covers all values of [sort_field] (ascending only; missing-field
-    /// rows are appended if the window is not filled).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn query_indexed_ordered(
-        &self,
-        table: String,
-        index_table: String,
-        start: Vec<u8>,
-        end: Vec<u8>,
-        predicate_bytes: Vec<u8>,
-        sort_field: String,
-        eq_bounded: bool,
-        limit: Option<u64>,
-        offset: u64
-    ) -> Result<Vec<ByteEntry>, String> {
-        self.worker
-            .query_indexed_ordered(
-                &table,
-                &index_table,
-                &start,
-                &end,
-                &predicate_bytes,
-                &sort_field,
-                eq_bounded,
                 limit,
                 offset
             )
@@ -716,6 +825,23 @@ impl NativeWorker {
         self.worker.storage_stats().map_err(encode_worker_error)
     }
 
+    /// Starts recording physical-work counters (zero-cost when off by
+    /// default). Drain with [Self::take_counters].
+    pub async fn enable_counters(&self) {
+        self.worker.enable_counters();
+    }
+
+    /// Stops recording and resets all physical-work counters to zero.
+    pub async fn disable_counters(&self) {
+        self.worker.disable_counters();
+    }
+
+    /// Snapshots and resets the physical-work counters accumulated since the
+    /// last drain. Returns a zeroed snapshot when counters are disabled.
+    pub async fn take_counters(&self) -> WorkCounters {
+        self.worker.take_counters()
+    }
+
     pub async fn tables(&self) -> Result<Vec<String>, String> {
         self.worker.tables().map_err(encode_worker_error)
     }
@@ -728,3 +854,216 @@ impl NativeWorker {
 // Keep WorkerError visible to generated documentation and future typed mapping.
 #[allow(dead_code)]
 fn _worker_error_type(_: WorkerError) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{ GeckoErrorEnvelope, GeckoErrorType };
+    use std::time::{ SystemTime, UNIX_EPOCH };
+
+    /// Runs an async fn to completion. All `NativeWorker` methods are async
+    /// only so the wasm build dispatches through the FRB async runtime; on
+    /// native they contain no real awaits, so a noop-waker poll loop is
+    /// sufficient.
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(fut);
+        loop {
+            match fut.as_mut().poll(&mut cx) {
+                std::task::Poll::Ready(value) => {
+                    return value;
+                }
+                std::task::Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        std::env::temp_dir().join(format!("gecko-api-{label}-{nonce}.redb"))
+    }
+
+    fn decode_envelope(s: &str) -> GeckoErrorEnvelope {
+        serde_json::from_str(s).expect("error envelope must be valid JSON")
+    }
+
+    // ── encode_worker_error mapping ────────────────────────────────────────
+
+    #[test]
+    fn encode_worker_error_maps_invalid_operation_and_wire() {
+        let invalid = decode_envelope(
+            &encode_worker_error(WorkerError::InvalidOperation("bad".into()))
+        );
+        assert_eq!(invalid.error_type, GeckoErrorType::InvalidOperation);
+        assert!(invalid.details.is_none());
+
+        let wire = decode_envelope(&encode_worker_error(WorkerError::Wire("bad bytes".into())));
+        assert_eq!(wire.error_type, GeckoErrorType::InvalidOperation);
+        assert!(wire.details.is_none());
+    }
+
+    #[test]
+    fn encode_worker_error_maps_database_locked_with_retryable_details() {
+        let envelope = decode_envelope(
+            &encode_worker_error(WorkerError::DatabaseLocked("already open".into()))
+        );
+        assert_eq!(envelope.error_type, GeckoErrorType::DatabaseLocked);
+        let details = envelope.details.expect("DatabaseLocked must carry details");
+        assert_eq!(details["reason"], "already open");
+        assert_eq!(details["retryable"], true);
+    }
+
+    #[test]
+    fn encode_worker_error_maps_storage_to_unknown() {
+        let envelope = decode_envelope(
+            &encode_worker_error(WorkerError::Storage("disk full".into()))
+        );
+        assert_eq!(envelope.error_type, GeckoErrorType::Unknown);
+        assert!(envelope.details.is_none());
+        assert!(envelope.message.contains("disk full"));
+    }
+
+    #[test]
+    fn encode_worker_error_never_produces_decryption_type() {
+        // `GeckoErrorType::Decryption` is declared on the Dart side but the
+        // worker→envelope mapping never emits it today (encryption failures
+        // surface as Unknown via the `Storage` arm). Pin that so a future
+        // change is deliberate.
+        let storage = decode_envelope(
+            &encode_worker_error(WorkerError::Storage("auth failed".into()))
+        );
+        assert_ne!(storage.error_type, GeckoErrorType::Decryption);
+        let wire = decode_envelope(&encode_worker_error(WorkerError::Wire("x".into())));
+        assert_ne!(wire.error_type, GeckoErrorType::Decryption);
+        let locked = decode_envelope(&encode_worker_error(WorkerError::DatabaseLocked("x".into())));
+        assert_ne!(locked.error_type, GeckoErrorType::Decryption);
+        let invalid = decode_envelope(
+            &encode_worker_error(WorkerError::InvalidOperation("x".into()))
+        );
+        assert_ne!(invalid.error_type, GeckoErrorType::Decryption);
+    }
+
+    // ── rekey_encrypted_file key-length pre-check ──────────────────────────
+
+    #[test]
+    fn rekey_rejects_wrong_length_keys_before_any_fs_work() {
+        // The path does not exist; only the length pre-check can reject.
+        let missing = temp_path("rekey-missing");
+        let short = vec![0u8; 31];
+        let long = vec![0u8; 33];
+        let err = block_on(
+            NativeWorker::rekey_encrypted_file(
+                missing.display().to_string(),
+                short.clone(),
+                vec![0u8; 32],
+                1
+            )
+        ).unwrap_err();
+        let envelope = decode_envelope(&err);
+        assert_eq!(envelope.error_type, GeckoErrorType::InvalidOperation);
+        assert!(envelope.message.contains("exactly 32 bytes"));
+
+        let err = block_on(
+            NativeWorker::rekey_encrypted_file(
+                missing.display().to_string(),
+                vec![0u8; 32],
+                long,
+                1
+            )
+        ).unwrap_err();
+        let envelope = decode_envelope(&err);
+        assert_eq!(envelope.error_type, GeckoErrorType::InvalidOperation);
+        let _ = short;
+    }
+
+    #[test]
+    fn rekey_accepts_all_zero_32_byte_key_length_only() {
+        // A 32-byte all-zero key passes the length pre-check; the failure that
+        // follows must be a rotation/fs error (Unknown), NOT the length error.
+        let missing = temp_path("rekey-zero");
+        let err = block_on(
+            NativeWorker::rekey_encrypted_file(
+                missing.display().to_string(),
+                vec![0u8; 32],
+                vec![0u8; 32],
+                1
+            )
+        ).unwrap_err();
+        let envelope = decode_envelope(&err);
+        assert_ne!(envelope.error_type, GeckoErrorType::InvalidOperation);
+        assert_eq!(envelope.error_type, GeckoErrorType::Unknown);
+        assert!(envelope.message.contains("key rotation failed"));
+    }
+
+    // ── open / apply_batch / register_live_query through the API surface ──
+
+    #[test]
+    fn open_and_apply_batch_undecodable_bytes_is_invalid_operation() {
+        let path = temp_path("apply-undecodable");
+        let worker = block_on(NativeWorker::open(path.display().to_string(), false)).unwrap();
+        let mut worker = worker;
+        // Garbage that cannot decode as an op batch → InvalidOperation.
+        let err = block_on(
+            worker.apply_batch(vec![0xde, 0xad, 0xbe, 0xef], vec![], 0)
+        ).unwrap_err();
+        let envelope = decode_envelope(&err);
+        assert_eq!(envelope.error_type, GeckoErrorType::InvalidOperation);
+        // A well-formed empty batch applies cleanly (an empty write
+        // transaction still commits, advancing the worker sequence to 1).
+        let ok = block_on(worker.apply_batch(vec![1, 0], vec![], 0)).unwrap();
+        assert_eq!(ok.sequence, 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn register_live_query_invalid_kind_is_invalid_operation() {
+        let path = temp_path("reg-kind");
+        let worker = block_on(NativeWorker::open(path.display().to_string(), false)).unwrap();
+        let mut worker = worker;
+        let err = block_on(
+            worker.register_live_query("items".into(), vec![1, 0], vec![1, 0], 99)
+        ).unwrap_err();
+        let envelope = decode_envelope(&err);
+        assert_eq!(envelope.error_type, GeckoErrorType::InvalidOperation);
+        assert!(envelope.message.contains("kind"));
+        // Valid kind registers.
+        let result = block_on(
+            worker.register_live_query("items".into(), vec![1, 0], vec![1, 0], 0)
+        ).unwrap();
+        assert_eq!(result.id, 0);
+        assert!(result.initial.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_build_id_format() {
+        // `NATIVE_BUILD_ID` = "<package-version>+rust".
+        assert!(NATIVE_BUILD_ID.ends_with("+rust"));
+        let version = NATIVE_BUILD_ID.strip_suffix("+rust").expect("+rust suffix");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        assert!(!version.is_empty());
+        // It round-trips through the compatibility handshake (must not panic).
+        let worker_path = temp_path("build-id");
+        let worker = block_on(
+            NativeWorker::open(worker_path.display().to_string(), false)
+        ).unwrap();
+        let handshake = block_on(worker.compatibility_handshake());
+        // The handshake JSON embeds the build id (camelCase field).
+        let value: serde_json::Value = serde_json::from_str(&handshake).expect("valid JSON");
+        assert_eq!(value["nativeBuildId"], NATIVE_BUILD_ID);
+        assert_eq!(value["packageVersion"], env!("CARGO_PKG_VERSION"));
+        let _ = std::fs::remove_file(worker_path);
+    }
+
+    #[test]
+    fn open_maps_database_already_open_to_locked_envelope() {
+        let path = temp_path("open-locked");
+        let worker = block_on(NativeWorker::open(path.display().to_string(), false)).unwrap();
+        drop(worker);
+        // Reopening after close must succeed (release of the handle).
+        let reopened = block_on(NativeWorker::open(path.display().to_string(), false)).unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_file(path);
+    }
+}

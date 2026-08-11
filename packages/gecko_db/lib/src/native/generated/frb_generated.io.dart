@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api.dart';
+import 'counters.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
@@ -78,6 +79,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<Uint8List?> dco_decode_list_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<PreparedChange> dco_decode_list_prepared_change(dynamic raw);
+
+  @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
 
   @protected
@@ -91,9 +98,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_record_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<(String, Uint8List)> dco_decode_list_record_string_list_prim_u_8_strict(
+    dynamic raw,
+  );
+
+  @protected
   List<(String, List<String>)> dco_decode_list_record_string_list_string(
     dynamic raw,
   );
+
+  @protected
+  List<(BigInt, int)> dco_decode_list_record_u_64_u_8(dynamic raw);
 
   @protected
   (Uint8List, Uint8List)?
@@ -108,6 +123,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  PreparedChange dco_decode_prepared_change(dynamic raw);
+
+  @protected
   QueryDelta dco_decode_query_delta(dynamic raw);
 
   @protected
@@ -115,7 +133,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_record_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  (String, Uint8List) dco_decode_record_string_list_prim_u_8_strict(
+    dynamic raw,
+  );
+
+  @protected
   (String, List<String>) dco_decode_record_string_list_string(dynamic raw);
+
+  @protected
+  (BigInt, int) dco_decode_record_u_64_u_8(dynamic raw);
 
   @protected
   RegisterLiveQueryResult dco_decode_register_live_query_result(dynamic raw);
@@ -134,6 +160,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt dco_decode_usize(dynamic raw);
+
+  @protected
+  WorkCounters dco_decode_work_counters(dynamic raw);
 
   @protected
   NativeWorker
@@ -196,6 +225,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<Uint8List?> sse_decode_list_opt_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<PreparedChange> sse_decode_list_prepared_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
 
   @protected
@@ -211,7 +250,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<(String, Uint8List)> sse_decode_list_record_string_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(String, List<String>)> sse_decode_list_record_string_list_string(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<(BigInt, int)> sse_decode_list_record_u_64_u_8(
     SseDeserializer deserializer,
   );
 
@@ -228,6 +277,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  PreparedChange sse_decode_prepared_change(SseDeserializer deserializer);
+
+  @protected
   QueryDelta sse_decode_query_delta(SseDeserializer deserializer);
 
   @protected
@@ -237,9 +289,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  (String, Uint8List) sse_decode_record_string_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   (String, List<String>) sse_decode_record_string_list_string(
     SseDeserializer deserializer,
   );
+
+  @protected
+  (BigInt, int) sse_decode_record_u_64_u_8(SseDeserializer deserializer);
 
   @protected
   RegisterLiveQueryResult sse_decode_register_live_query_result(
@@ -260,6 +320,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
+
+  @protected
+  WorkCounters sse_decode_work_counters(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -335,6 +398,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_opt_list_prim_u_8_strict(
+    List<Uint8List?> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prepared_change(
+    List<PreparedChange> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
@@ -356,8 +431,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_record_string_list_prim_u_8_strict(
+    List<(String, Uint8List)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_string_list_string(
     List<(String, List<String>)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_record_u_64_u_8(
+    List<(BigInt, int)> self,
     SseSerializer serializer,
   );
 
@@ -378,6 +465,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_prepared_change(
+    PreparedChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_query_delta(QueryDelta self, SseSerializer serializer);
 
   @protected
@@ -387,10 +480,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_record_string_list_prim_u_8_strict(
+    (String, Uint8List) self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_record_string_list_string(
     (String, List<String>) self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_record_u_64_u_8((BigInt, int) self, SseSerializer serializer);
 
   @protected
   void sse_encode_register_live_query_result(
@@ -412,6 +514,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_work_counters(WorkCounters self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);

@@ -3,12 +3,13 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import 'counters.dart';
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'worker.dart';
 
 // These functions are ignored because they are not marked as `pub`: `_worker_error_type`, `encode_worker_error`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>>
 abstract class NativeWorker implements RustOpaqueInterface {
@@ -16,6 +17,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
     required BigInt changeLogMaxEntries,
+  });
+
+  Future<ApplyBatchResult> applyPreparedBatch({
+    required List<int> encodedOps,
+    required List<(String, List<String>)> indexDefinitions,
+    required BigInt changeLogMaxEntries,
+    required List<String> previousOperationIndexes,
+    required List<(BigInt, int)> putModes,
+    required List<PreparedChange> changes,
   });
 
   /// Explicitly releases the redb file handle before the Dart object is
@@ -38,7 +48,14 @@ abstract class NativeWorker implements RustOpaqueInterface {
   /// at creation time, not later writes.
   Future<BigInt> createSnapshot();
 
+  /// Stops recording and resets all physical-work counters to zero.
+  Future<void> disableCounters();
+
   Future<void> dropSnapshot({required BigInt snapshot});
+
+  /// Starts recording physical-work counters (zero-cost when off by
+  /// default). Drain with [Self::take_counters].
+  Future<void> enableCounters();
 
   Future<Uint8List?> get_({required String table, required List<int> key});
 
@@ -114,10 +131,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String field,
   });
 
-  /// full-scan + predicate with an early LIMIT/OFFSET — skips the first
-  /// [offset] matches and returns at most [limit] of the rest, stopping the
-  /// scan as soon as the window fills (matching rows beyond it are never
-  /// transferred).
+  /// direct full-scan + predicate with an early LIMIT/OFFSET.
   Future<List<(Uint8List, Uint8List)>> queryFilteredLimited({
     required String table,
     required List<int> predicateBytes,
@@ -132,10 +146,25 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> end,
   });
 
-  /// index-served query with an early LIMIT/OFFSET. Streams the durable
-  /// index range `[start..=end]`, joins to rows, applies [predicate_bytes]
-  /// (so early-stop is correct with additional filters), and stops once the
-  /// window fills.
+  /// direct count over durable-index candidates.
+  Future<BigInt> queryIndexedCount({
+    required String table,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> ranges,
+    required List<int> predicateBytes,
+  });
+
+  /// Direct indexed distinct extraction using one worker-owned read
+  /// transaction.
+  Future<List<Uint8List>> queryIndexedDistinct({
+    required String table,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> ranges,
+    required List<int> predicateBytes,
+    required String field,
+  });
+
+  /// direct indexed query with an early LIMIT/OFFSET.
   Future<List<(Uint8List, Uint8List)>> queryIndexedLimited({
     required String table,
     required String indexTable,
@@ -146,14 +175,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
-  /// index-ordered early-stop sort. Streams the durable-index range
-  /// `[start..=end]` in index-key order (the same order Dart's stable sort of
-  /// the field produces), joins to rows, applies [predicate_bytes], and
-  /// stops once `offset + limit` matches are collected. [eq_bounded]
-  /// indicates `start..=end` is an equality bound on [sort_field] (so
-  /// index-key order is correct for either direction); when false, the
-  /// stream covers all values of [sort_field] (ascending only; missing-field
-  /// rows are appended if the window is not filled).
+  /// direct multi-range indexed query.
+  Future<List<(Uint8List, Uint8List)>> queryIndexedMulti({
+    required String table,
+    required String indexTable,
+    required List<(Uint8List, Uint8List)> ranges,
+    required List<int> predicateBytes,
+  });
+
+  /// direct index-ordered sorted query.
   Future<List<(Uint8List, Uint8List)>> queryIndexedOrdered({
     required String table,
     required String indexTable,
@@ -166,10 +196,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
-  /// full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
-  /// `[offset, offset+limit)` window ordered by [sort_spec_bytes] (a port of
-  /// Dart `compareRows`), keeping only the window in memory — the full
-  /// candidate set is never materialized or transferred.
+  /// direct Rust top-K sorted query.
   Future<List<(Uint8List, Uint8List)>> querySorted({
     required String table,
     required List<int> predicateBytes,
@@ -390,6 +417,10 @@ abstract class NativeWorker implements RustOpaqueInterface {
 
   Future<List<String>> tables();
 
+  /// Snapshots and resets the physical-work counters accumulated since the
+  /// last drain. Returns a zeroed snapshot when counters are disabled.
+  Future<WorkCounters> takeCounters();
+
   /// removes a live-query registration (idempotent).
   Future<void> unregisterLiveQuery({required BigInt id});
 }
@@ -399,11 +430,22 @@ abstract class NativeWorker implements RustOpaqueInterface {
 class ApplyBatchResult {
   final BigInt sequence;
   final List<QueryDelta> deltas;
+  final List<Uint8List?> previousValues;
+  final List<(String, Uint8List)> removedKeys;
 
-  const ApplyBatchResult({required this.sequence, required this.deltas});
+  const ApplyBatchResult({
+    required this.sequence,
+    required this.deltas,
+    required this.previousValues,
+    required this.removedKeys,
+  });
 
   @override
-  int get hashCode => sequence.hashCode ^ deltas.hashCode;
+  int get hashCode =>
+      sequence.hashCode ^
+      deltas.hashCode ^
+      previousValues.hashCode ^
+      removedKeys.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -411,7 +453,46 @@ class ApplyBatchResult {
       other is ApplyBatchResult &&
           runtimeType == other.runtimeType &&
           sequence == other.sequence &&
-          deltas == other.deltas;
+          deltas == other.deltas &&
+          previousValues == other.previousValues &&
+          removedKeys == other.removedKeys;
+}
+
+/// Additional metadata for one change record completed by Rust inside the
+/// prepared write transaction.
+class PreparedChange {
+  final BigInt operationIndex;
+  final BigInt ordinal;
+  final Uint8List syncStateKey;
+  final Uint8List recordTemplate;
+  final bool fillPreviousVersion;
+
+  const PreparedChange({
+    required this.operationIndex,
+    required this.ordinal,
+    required this.syncStateKey,
+    required this.recordTemplate,
+    required this.fillPreviousVersion,
+  });
+
+  @override
+  int get hashCode =>
+      operationIndex.hashCode ^
+      ordinal.hashCode ^
+      syncStateKey.hashCode ^
+      recordTemplate.hashCode ^
+      fillPreviousVersion.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PreparedChange &&
+          runtimeType == other.runtimeType &&
+          operationIndex == other.operationIndex &&
+          ordinal == other.ordinal &&
+          syncStateKey == other.syncStateKey &&
+          recordTemplate == other.recordTemplate &&
+          fillPreviousVersion == other.fillPreviousVersion;
 }
 
 /// one per-registration delta produced by a committed batch.

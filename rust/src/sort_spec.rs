@@ -1,4 +1,4 @@
-//! Sort-spec wire format + comparator 
+//! Sort-spec wire format + comparator
 //!
 //! The Dart query engine serializes its sort specs (`Query.sort(List<SortSpec>)`)
 //! into a version-prefixed payload that Rust decodes here, so an `ORDER BY`
@@ -9,7 +9,7 @@
 //!   count    : uvarint
 //!   per spec : field : string (uvarint len + UTF-8), descending : u8 (0/1)
 
-use crate::value_codec::{self, RowValue};
+use crate::value_codec::{ self, RowValue };
 
 pub const SORT_SPEC_WIRE_VERSION: u8 = 1;
 
@@ -37,12 +37,19 @@ pub fn decode_sort_specs(bytes: &[u8]) -> Result<SortSpecs> {
     let mut r = Reader::new(bytes);
     let version = r.read_u8()?;
     if version != SORT_SPEC_WIRE_VERSION {
-        return Err(format!(
-            "Unsupported sort-spec wire version {version} (expected {SORT_SPEC_WIRE_VERSION})"
-        ));
+        return Err(
+            format!(
+                "Unsupported sort-spec wire version {version} (expected {SORT_SPEC_WIRE_VERSION})"
+            )
+        );
     }
     let count = r.read_varint()? as usize;
-    let mut specs = Vec::with_capacity(count);
+    // Each spec is at least two bytes (an empty field string + a descending
+    // byte), so the remaining input bounds how many specs can be present.
+    // Capping the pre-allocation prevents a hostile count from requesting a
+    // giant allocation before the bounds checks fail.
+    let cap = (count as usize).min(r.remaining() / 2);
+    let mut specs = Vec::with_capacity(cap);
     for _ in 0..count {
         let field = r.read_string()?;
         let descending = r.read_u8()? != 0;
@@ -69,8 +76,7 @@ impl<'a> Reader<'a> {
     }
 
     fn read_u8(&mut self) -> Result<u8> {
-        let b = *self
-            .bytes
+        let b = *self.bytes
             .get(self.pos)
             .ok_or_else(|| "Unexpected end of sort-specs".to_string())?;
         self.pos += 1;
@@ -83,7 +89,7 @@ impl<'a> Reader<'a> {
         loop {
             let b = self.read_u8()?;
             value |= ((b & 0x7f) as u64) << shift;
-            if b & 0x80 == 0 {
+            if (b & 0x80) == 0 {
                 break;
             }
             shift += 7;
@@ -99,7 +105,8 @@ impl<'a> Reader<'a> {
         if len > self.remaining() {
             return Err("Sort-spec string length out of range".into());
         }
-        let s = std::str::from_utf8(&self.bytes[self.pos..self.pos + len])
+        let s = std::str
+            ::from_utf8(&self.bytes[self.pos..self.pos + len])
             .map_err(|_| "Invalid UTF-8 in sort-spec".to_string())?;
         self.pos += len;
         Ok(s.to_string())
@@ -172,19 +179,16 @@ pub fn encode_sort_specs(specs: &[SortSpec]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value_codec::{RowValue, TAG_MAP, TAG_STRING};
+    use crate::value_codec::{ RowValue, TAG_MAP, TAG_STRING };
 
     fn map_row(entries: &[(&str, &str)]) -> RowValue {
         RowValue::Map(
             entries
                 .iter()
                 .map(|(k, v)| {
-                    (
-                        RowValue::String(k.to_string()),
-                        RowValue::String(v.to_string()),
-                    )
+                    (RowValue::String(k.to_string()), RowValue::String(v.to_string()))
                 })
-                .collect(),
+                .collect()
         )
     }
 
@@ -202,9 +206,7 @@ mod tests {
         let decoded = decode_sort_specs(&bytes).unwrap();
         assert_eq!(decoded.specs, specs);
         // Empty list round-trips.
-        assert!(decode_sort_specs(&encode_sort_specs(&[]))
-            .unwrap()
-            .is_empty());
+        assert!(decode_sort_specs(&encode_sort_specs(&[])).unwrap().is_empty());
         // Bad version rejected.
         assert!(decode_sort_specs(&[99, 0]).is_err());
         // Trailing garbage rejected.
@@ -219,67 +221,47 @@ mod tests {
         let specs = [spec("name", false)];
         // Present before missing (ascending).
         assert_eq!(
-            compare_rows(
-                &map_row(&[("name", "a")]),
-                &map_row(&[("other", "x")]),
-                &specs
-            ),
+            compare_rows(&map_row(&[("name", "a")]), &map_row(&[("other", "x")]), &specs),
             Ordering::Less
         );
         assert_eq!(
-            compare_rows(
-                &map_row(&[("other", "x")]),
-                &map_row(&[("name", "a")]),
-                &specs
-            ),
+            compare_rows(&map_row(&[("other", "x")]), &map_row(&[("name", "a")]), &specs),
             Ordering::Greater
         );
         // Lexical ascending.
         assert_eq!(
-            compare_rows(
-                &map_row(&[("name", "a")]),
-                &map_row(&[("name", "b")]),
-                &specs
-            ),
+            compare_rows(&map_row(&[("name", "a")]), &map_row(&[("name", "b")]), &specs),
             Ordering::Less
         );
         // Descending reverses value order but missing still first.
         let desc = [spec("name", true)];
         assert_eq!(
-            compare_rows(
-                &map_row(&[("name", "b")]),
-                &map_row(&[("name", "a")]),
-                &desc
-            ),
+            compare_rows(&map_row(&[("name", "b")]), &map_row(&[("name", "a")]), &desc),
             Ordering::Less
         );
         assert_eq!(
-            compare_rows(
-                &map_row(&[("other", "x")]),
-                &map_row(&[("name", "a")]),
-                &desc
-            ),
+            compare_rows(&map_row(&[("other", "x")]), &map_row(&[("name", "a")]), &desc),
             Ordering::Less
         );
         // Ties (equal values) → Equal (stable).
         assert_eq!(
-            compare_rows(
-                &map_row(&[("name", "a")]),
-                &map_row(&[("name", "a")]),
-                &specs
-            ),
+            compare_rows(&map_row(&[("name", "a")]), &map_row(&[("name", "a")]), &specs),
             Ordering::Equal
         );
         // Multi-field: name ties break on age (descending).
         let multi = [spec("name", false), spec("age", true)];
-        let a = RowValue::Map(vec![
-            (RowValue::String("n".into()), RowValue::String("x".into())),
-            (RowValue::String("age".into()), RowValue::Int64(1)),
-        ]);
-        let b = RowValue::Map(vec![
-            (RowValue::String("n".into()), RowValue::String("x".into())),
-            (RowValue::String("age".into()), RowValue::Int64(2)),
-        ]);
+        let a = RowValue::Map(
+            vec![
+                (RowValue::String("n".into()), RowValue::String("x".into())),
+                (RowValue::String("age".into()), RowValue::Int64(1))
+            ]
+        );
+        let b = RowValue::Map(
+            vec![
+                (RowValue::String("n".into()), RowValue::String("x".into())),
+                (RowValue::String("age".into()), RowValue::Int64(2))
+            ]
+        );
         assert_eq!(compare_rows(&a, &b, &multi), Ordering::Greater); // age 1 > age 2 desc
         let _ = (TAG_MAP, TAG_STRING); // suppress unused import noise
     }
@@ -306,5 +288,101 @@ mod tests {
             crate::value_codec::sort_compare(&RowValue::String("a".into()), &RowValue::Null),
             Ordering::Greater
         );
+    }
+
+    // ── malformed decode ───────────────────────────────────────────────────
+
+    #[test]
+    fn malformed_decode_is_a_typed_error() {
+        // Truncated field: version + count=1, then nothing.
+        assert!(decode_sort_specs(&[SORT_SPEC_WIRE_VERSION, 1]).is_err());
+        // Count over-claim: version + count=9 with no specs.
+        assert!(decode_sort_specs(&[SORT_SPEC_WIRE_VERSION, 9]).is_err());
+        // Invalid UTF-8 in the field name.
+        let mut bad = vec![SORT_SPEC_WIRE_VERSION, 1, 1, 0xff];
+        bad.push(0); // descending byte
+        let err = decode_sort_specs(&bad).unwrap_err();
+        assert!(err.contains("UTF-8"), "got: {err:?}");
+        // Truncated descending byte.
+        let bad = vec![SORT_SPEC_WIRE_VERSION, 1, 1, b'a'];
+        assert!(decode_sort_specs(&bad).is_err());
+        // Empty payload (missing version) is an error.
+        assert!(decode_sort_specs(&[]).is_err());
+    }
+
+    #[test]
+    fn descending_leniency_any_nonzero_byte_is_true() {
+        // The descending byte 0x02 (non-canonical) must decode as descending.
+        let bytes = vec![SORT_SPEC_WIRE_VERSION, 1, 1, b'a', 0x02];
+        let decoded = decode_sort_specs(&bytes).unwrap();
+        assert_eq!(decoded.specs.len(), 1);
+        assert_eq!(decoded.specs[0].field, "a");
+        assert!(decoded.specs[0].descending);
+        // 0x01 is also descending (canonical).
+        let bytes = vec![SORT_SPEC_WIRE_VERSION, 1, 1, b'a', 0x01];
+        assert!(decode_sort_specs(&bytes).unwrap().specs[0].descending);
+        // 0x00 is ascending.
+        let bytes = vec![SORT_SPEC_WIRE_VERSION, 1, 1, b'a', 0x00];
+        assert!(!decode_sort_specs(&bytes).unwrap().specs[0].descending);
+    }
+
+    // ── compare_rows edges ─────────────────────────────────────────────────
+
+    fn row_with(entries: &[(&str, Option<RowValue>)]) -> RowValue {
+        RowValue::Map(
+            entries
+                .iter()
+                .filter_map(|(k, v)| {
+                    v.as_ref().map(|value| (RowValue::String(k.to_string()), value.clone()))
+                })
+                .collect()
+        )
+    }
+
+    #[test]
+    fn compare_rows_both_missing_moves_to_next_spec() {
+        use std::cmp::Ordering;
+        // Both rows miss the first spec field; the second spec breaks the tie.
+        let specs = [spec("missing1", false), spec("age", true)];
+        let a = row_with(&[("age", Some(RowValue::Int64(1)))]);
+        let b = row_with(&[("age", Some(RowValue::Int64(2)))]);
+        // age 1 > age 2 descending.
+        assert_eq!(compare_rows(&a, &b, &specs), Ordering::Greater);
+        // Both missing both fields → Equal.
+        let x = row_with(&[("other", Some(RowValue::Int64(1)))]);
+        let y = row_with(&[("other", Some(RowValue::Int64(2)))]);
+        assert_eq!(compare_rows(&x, &y, &specs), Ordering::Equal);
+    }
+
+    #[test]
+    fn compare_rows_null_is_distinct_from_missing() {
+        use std::cmp::Ordering;
+        let specs = [spec("name", false)];
+        // A present-but-null field is distinct from a missing field: present
+        // sorts before missing for ascending.
+        let present_null = row_with(&[("name", Some(RowValue::Null))]);
+        let missing = row_with(&[("other", Some(RowValue::Int64(1)))]);
+        assert_eq!(compare_rows(&present_null, &missing, &specs), Ordering::Less);
+        assert_eq!(compare_rows(&missing, &present_null, &specs), Ordering::Greater);
+        // null vs a string: null sorts by '' (before any non-empty string).
+        let present_str = row_with(&[("name", Some(RowValue::String("a".into())))]);
+        assert_eq!(compare_rows(&present_null, &present_str, &specs), Ordering::Less);
+        // Two present nulls are Equal.
+        let other_null = row_with(
+            &[
+                ("name", Some(RowValue::Null)),
+                ("x", Some(RowValue::Int64(1))),
+            ]
+        );
+        assert_eq!(compare_rows(&present_null, &other_null, &specs), Ordering::Equal);
+    }
+
+    #[test]
+    fn compare_rows_empty_specs_are_equal_for_everything() {
+        use std::cmp::Ordering;
+        let a = row_with(&[("name", Some(RowValue::String("a".into())))]);
+        let b = row_with(&[("other", Some(RowValue::Int64(99)))]);
+        assert_eq!(compare_rows(&a, &b, &[]), Ordering::Equal);
+        assert_eq!(compare_rows(&a, &a, &[]), Ordering::Equal);
     }
 }

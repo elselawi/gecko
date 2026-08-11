@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod compatibility;
+pub mod counters;
 pub mod crypto_storage;
 pub mod error;
 pub mod format_header;
