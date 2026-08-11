@@ -29,16 +29,26 @@
 //                        the query path pays per candidate row when cold.
 //   8. rawGetHot       — `RawEngine.rawGet` on an LRU-resident key: the
 //                        cache-hit path; only LRU + map copy, no backend.
+//   9. wireDecode      — `DefaultWireCodec.decode` of one encoded row: the
+//                        Dart-side wire cost after transport (no boundary).
+//  10. mapCopy         — `Map<String, Object?>.from(...)` of a decoded row.
+//  11. fromRow         — model mapping of a decoded row.
+//  12. fullQuery       — end-to-end query on a one-row table: Dart API →
+//                        worker isolate → Rust query → transport → decode →
+//                        map → fromRow.
+//  13. watchDeliver    — time from put until the change event is delivered.
 //
 // Run from the repo root:
-//   dart run benchmark/boundary.dart            # table
+//   dart run benchmark/boundary.dart            # table (p50/p95/mean)
 //   dart run benchmark/boundary.dart --json     # machine-readable JSON
 //
 // The native backend needs the release artifact:
 //   cd rust && cargo build --release
 //
 // Numbers are indicative and depend on hardware/JIT state — this is a
-// breakdown for the roadmap, not a publishable marketing claim.
+// breakdown for the roadmap, not a publishable marketing claim. Each stage
+// reports a full distribution (p50/p95/p99/min/max/stddev) and the JSON
+// carries environment/artifact metadata so numbers can be reproduced.
 // `tool/perf_gate.dart` does NOT consume this harness (it is a breakdown, not
 // a regression gate); `benchmark/bench.dart` remains the regression gate.
 library;
@@ -46,6 +56,7 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' show sha256;
 import 'package:gecko_db/gecko_db.dart';
 import 'package:gecko_db/src/native/external_library_loader.dart'
     show resolveExternalLibrary;
@@ -79,10 +90,64 @@ String _nativeLibraryPath(String root) {
       'target${Platform.pathSeparator}release${Platform.pathSeparator}$name';
 }
 
+/// Per-op latency distribution, in microseconds.
+class _Dist {
+  const _Dist({
+    required this.meanUs,
+    required this.p50Us,
+    required this.p95Us,
+    required this.p99Us,
+    required this.minUs,
+    required this.maxUs,
+    required this.stddevUs,
+    required this.samples,
+  });
+
+  factory _Dist.fromMicros(List<int> micros) {
+    final sorted = [...micros]..sort();
+    final n = sorted.length;
+    double percentile(double q) {
+      if (n == 0) return 0;
+      if (n == 1) return sorted[0].toDouble();
+      return sorted[(q * (n - 1)).round()].toDouble();
+    }
+
+    final mean = micros.isEmpty ? 0.0 : micros.reduce((a, b) => a + b) / n;
+    var variance = 0.0;
+    for (final m in micros) {
+      variance += (m - mean) * (m - mean);
+    }
+    final stddev = n <= 1
+        ? 0.0
+        : (variance / (n - 1)).clamp(0.0, double.infinity).toDouble();
+
+    return _Dist(
+      meanUs: mean,
+      p50Us: percentile(0.50),
+      p95Us: percentile(0.95),
+      p99Us: percentile(0.99),
+      minUs: sorted.isEmpty ? 0 : sorted.first.toDouble(),
+      maxUs: sorted.isEmpty ? 0 : sorted.last.toDouble(),
+      stddevUs: stddev,
+      samples: n,
+    );
+  }
+
+  final double meanUs;
+  final double p50Us;
+  final double p95Us;
+  final double p99Us;
+  final double minUs;
+  final double maxUs;
+  final double stddevUs;
+  final int samples;
+}
+
 class _Boundary {
-  _Boundary(this.stage, this.microsPerOp);
+  _Boundary(this.stage, this.dist);
   final String stage;
-  final double microsPerOp;
+  final _Dist dist;
+  double get microsPerOp => dist.meanUs;
   double get msPerOp => microsPerOp / 1000;
   double get opsPerSec => (1e6 / microsPerOp).roundToDouble();
 }
@@ -248,6 +313,59 @@ Future<List<_Boundary>> _run(
     }),
   );
 
+  // 9-11. Wire decode / map copy / model mapping of one encoded row — the
+  //   Dart-side costs a result row pays after transport (advisory; no
+  //   boundary crossing).
+  final decodedRow = const DefaultWireCodec().decode(_valueBytes);
+  results.add(
+    await _measure('wireDecode', (_) async {
+      const DefaultWireCodec().decode(_valueBytes);
+    }),
+  );
+  results.add(
+    await _measure('mapCopy', (_) async {
+      Map<String, Object?>.from(decodedRow as Map);
+    }),
+  );
+  results.add(
+    await _measure('fromRow', (_) async {
+      _rFromRow(decodedRow);
+    }),
+  );
+
+  // 12. Full end-to-end query on the one-row table: Dart API → worker
+  //   isolate → Rust query → transport back → decode → map → fromRow.
+  final col = db.collection<_Row>(
+    _table,
+    toRow: _rToRow,
+    fromRow: _rFromRow,
+    id: _rId,
+  );
+  results.add(
+    await _measure('fullQuery', (_) async {
+      await col.where({'group': 'g0'}).findAll();
+    }),
+  );
+
+  // 13. Watch delivery: time from put until the change event is delivered.
+  var received = 0;
+  final sub = db.watchAll().listen((_) => received++);
+  results.add(
+    await _measure('watchDeliver', (i) async {
+      final before = received;
+      await col.put(_Row('w$i', i, 'g0'));
+      var waited = 0;
+      while (received == before && waited < 10000) {
+        await Future<void>.delayed(Duration.zero);
+        waited++;
+      }
+      if (received == before) {
+        throw StateError('watch event was not delivered');
+      }
+    }, ops: 200),
+  );
+  await sub.cancel();
+
   await db.close();
   try {
     await directWorker?.close();
@@ -274,16 +392,19 @@ Future<_Boundary> _measure(
   String stage,
   Future<void> Function(int i) fn, {
   int ops = _ops,
+  int warmup = _warmup,
 }) async {
-  for (var i = 0; i < _warmup; i++) {
+  for (var i = 0; i < warmup; i++) {
     await fn(i % 97);
   }
-  final watch = Stopwatch()..start();
+  final micros = <int>[];
   for (var i = 0; i < ops; i++) {
+    final sw = Stopwatch()..start();
     await fn(i);
+    sw.stop();
+    micros.add(sw.elapsedMicroseconds);
   }
-  watch.stop();
-  return _Boundary(stage, watch.elapsedMicroseconds / ops);
+  return _Boundary(stage, _Dist.fromMicros(micros));
 }
 
 String _fmtTime(double microsPerOp) => microsPerOp >= 1000
@@ -292,25 +413,36 @@ String _fmtTime(double microsPerOp) => microsPerOp >= 1000
 
 void _printTable(List<_Boundary> rows) {
   final header =
-      '${'stage'.padRight(18)} ${'per-op'.padLeft(12)} ${'ops/s'.padLeft(12)}';
+      '${'stage'.padRight(18)} ${'p50'.padLeft(10)} ${'p95'.padLeft(10)} '
+      '${'mean'.padLeft(10)} ${'ops/s'.padLeft(12)}';
   stdout.writeln(header);
   stdout.writeln('-' * header.length);
   for (final row in rows) {
     stdout.writeln(
       '${row.stage.padRight(18)} '
-      '${_fmtTime(row.microsPerOp).padLeft(12)} '
+      '${_fmtTime(row.dist.p50Us).padLeft(10)} '
+      '${_fmtTime(row.dist.p95Us).padLeft(10)} '
+      '${_fmtTime(row.microsPerOp).padLeft(10)} '
       '${row.opsPerSec.toStringAsFixed(0).padLeft(12)}',
     );
   }
 }
 
 /// Machine-readable JSON (advisory; not consumed by tool/perf_gate.dart).
+/// Carries a schema version, environment/artifact metadata, and per-stage
+/// latency distributions.
 void _printJson(List<_Boundary> rows) {
   final doc = {
     'benchmark': 'gecko_db_boundary',
+    'schemaVersion': 1,
     'platform': Platform.operatingSystem,
     'dart': Platform.version.split(' ').first,
     'generatedAt': DateTime.now().toUtc().toIso8601String(),
+    'metadata': {
+      'cpus': Platform.numberOfProcessors,
+      'osVersion': Platform.operatingSystemVersion,
+      'nativeLibrarySha256': _nativeSha256(),
+    },
     'results': [
       for (final r in rows)
         {
@@ -318,8 +450,24 @@ void _printJson(List<_Boundary> rows) {
           'microsPerOp': r.microsPerOp,
           'msPerOp': r.msPerOp,
           'opsPerSec': r.opsPerSec,
+          'p50UsPerOp': r.dist.p50Us,
+          'p95UsPerOp': r.dist.p95Us,
+          'p99UsPerOp': r.dist.p99Us,
+          'minUsPerOp': r.dist.minUs,
+          'maxUsPerOp': r.dist.maxUs,
+          'stddevUsPerOp': r.dist.stddevUs,
+          'samples': r.dist.samples,
         },
     ],
   };
   stdout.writeln(const JsonEncoder.withIndent('  ').convert(doc));
+}
+
+String _nativeSha256() {
+  try {
+    final bytes = File(_nativeLibraryPath(_repoRoot())).readAsBytesSync();
+    return sha256.convert(bytes).toString();
+  } catch (_) {
+    return '';
+  }
 }

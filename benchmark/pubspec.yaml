@@ -14,6 +14,8 @@ environment:
 dependencies:
   gecko_db:
     path: ../packages/gecko_db
+  # Artifact SHA-256 metadata in the benchmark harness (bench.dart / boundary.dart).
+  crypto: ^3.0.3
   # Comparative benchmark targets (VM-only, dev tooling).
   hive_ce: ^2.19.3
   sembast: ">=3.8.0 <3.8.7"

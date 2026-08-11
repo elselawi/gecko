@@ -1,89 +1,83 @@
 {
   "benchmark": "gecko_db_local_stopgap",
+  "schemaVersion": 2,
   "platform": "windows",
   "dart": "3.10.8",
-  "generatedAt": "2026-08-10T09:30:57.990445Z",
+  "generatedAt": "2026-08-11T08:57:26.451365Z",
   "tolerance": 0.3,
+  "metadata": {
+    "commit": "57a4057",
+    "dirty": true,
+    "os": "windows",
+    "osVersion": "\"Windows 11 Home Single Language\" 10.0 (Build 26200)",
+    "cpus": 32,
+    "rustCrateVersion": "0.0.1",
+    "nativeLibrary": {
+      "path": "C:\\Users\\alias\\Coding\\gecko\\rust\\target\\release\\gecko_db_rust.dll",
+      "sha256": "f1dbc2bf15a3122238cd7e93d0618b4aeb2f80086067a3bc4359515351564d5d"
+    },
+    "dataset": {
+      "seedRows": 1000,
+      "shape": "narrow",
+      "batch": 500,
+      "distinctGroups": 100,
+      "indexed": false,
+      "indexedRows": 0,
+      "changeLogMaxEntries": 0
+    },
+    "durability": "redb default (Immediate fsync)",
+    "freshFile": true,
+    "countersEnabled": false,
+    "cacheWarmth": "hotRead: r0 LRU-resident; coldRead: cycling r0..r999"
+  },
   "results": [
     {
-      "backend": "in-memory",
-      "workload": "insert",
-      "msPerOp": 3.401592
-    },
-    {
-      "backend": "in-memory",
-      "workload": "bulkInsert",
-      "msPerOp": 0.28263
-    },
-    {
-      "backend": "in-memory",
-      "workload": "hotRead",
-      "msPerOp": 0.0012662
-    },
-    {
-      "backend": "in-memory",
-      "workload": "coldRead",
-      "msPerOp": 0.0018812
-    },
-    {
-      "backend": "in-memory",
-      "workload": "rangeScan",
-      "msPerOp": 59.52943333333334
-    },
-    {
-      "backend": "in-memory",
-      "workload": "filteredQuery",
-      "msPerOp": 49.3565
-    },
-    {
-      "backend": "in-memory",
-      "workload": "watch",
-      "msPerOp": 130.9737
-    },
-    {
-      "backend": "in-memory",
-      "workload": "txnCommit",
-      "msPerOp": 133.238885
-    },
-    {
       "backend": "native file",
       "workload": "insert",
-      "msPerOp": 1.144542
+      "msPerOp": 1.747542,
+      "p95MsPerOp": 2.443
     },
     {
       "backend": "native file",
       "workload": "bulkInsert",
-      "msPerOp": 0.065693
+      "msPerOp": 0.08653,
+      "p95MsPerOp": 0.09108799999999999
     },
     {
       "backend": "native file",
       "workload": "hotRead",
-      "msPerOp": 0.0016313999999999999
+      "msPerOp": 0.0021746,
+      "p95MsPerOp": 0.004
     },
     {
       "backend": "native file",
       "workload": "coldRead",
-      "msPerOp": 0.0221564
+      "msPerOp": 0.028192799999999997,
+      "p95MsPerOp": 0.145
     },
     {
       "backend": "native file",
-      "workload": "rangeScan",
-      "msPerOp": 99.43003333333334
+      "workload": "rangeScanUnindexed",
+      "msPerOp": 112.74486666666667,
+      "p95MsPerOp": 144.105
     },
     {
       "backend": "native file",
       "workload": "filteredQuery",
-      "msPerOp": 9.399833333333333
+      "msPerOp": 11.6742,
+      "p95MsPerOp": 17.817
     },
     {
       "backend": "native file",
       "workload": "watch",
-      "msPerOp": 1.53523
+      "msPerOp": 1.71524,
+      "p95MsPerOp": 2.512
     },
     {
       "backend": "native file",
       "workload": "txnCommit",
-      "msPerOp": 1.7785250000000001
+      "msPerOp": 1.708545,
+      "p95MsPerOp": 2.511
     }
   ]
 }
