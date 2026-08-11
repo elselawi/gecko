@@ -1,4 +1,4 @@
-//! M8: Rust-owned reactive registry (ADR-0030).
+//! Rust-owned reactive registry 
 //!
 //! Live watches (`watchAll`, `watchAllDiff`, unbounded `query.watch`) register a
 //! query with the worker. On every committed batch the worker re-evaluates only

@@ -53,7 +53,7 @@ void main() {
         try {
           final path = '${dir.path}${Platform.pathSeparator}db.redb';
           // No `nativeLibraryPath`: the resolver's bundled-artifact fallback
-          // must load the worker (Workstream 7 no-build-steps path).
+          // must load the worker (no-build-steps path).
           final db = await DatabaseImpl.open(path);
           const codec = DefaultWireCodec();
           await db.engine.rawPut(
@@ -105,7 +105,7 @@ void main() {
       await db.close();
     });
 
-    test('watch streams are reactive after Phase 4', () async {
+    test('watch streams are reactive after ', () async {
       final db = await openNativeTestDatabase('edge5');
       final col = db.collection<_M>(
         'c',
@@ -119,7 +119,7 @@ void main() {
       await db.close();
     });
 
-    test('patch on an existing record updates it (Phase 3)', () async {
+    test('patch on an existing record updates it ()', () async {
       final db = await openNativeTestDatabase('edge6');
       final col = db.collection<_M>(
         'c',
@@ -133,7 +133,7 @@ void main() {
       await db.close();
     });
 
-    test('where(query) builds a query after Phase 5', () async {
+    test('where(query) builds a query after ', () async {
       final db = await openNativeTestDatabase('edge7');
       final col = db.collection<_M>(
         'c',
@@ -174,7 +174,7 @@ void main() {
           );
           expect(viaGet!.v, '1');
           await txn.commit();
-          await txn.rollback(); // both must be no-ops in Phase 2
+          await txn.rollback(); // both must be no-ops in 
         });
         await db.close();
       },

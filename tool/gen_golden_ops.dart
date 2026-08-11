@@ -8,8 +8,9 @@
 //
 // Usage: dart run tool/gen_golden_ops.dart
 //
-// This fixture is the contract artifact from Phase 0; regenerate only with an
-// ADR, and commit the produced .bin to the repo.
+// This fixture is a cross-language contract artifact; regenerate it only
+// alongside an intentional wire-format change and commit the produced .bin
+// to the repo.
 
 import 'dart:io';
 

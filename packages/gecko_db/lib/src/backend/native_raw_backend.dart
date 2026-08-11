@@ -24,7 +24,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
 
   final NativeWorkerClient _worker;
   final bool _readOnly;
-  /// M10: pending-sync change-log retention (0 = disabled); pruned in the
+  /// pending-sync change-log retention (0 = disabled); pruned in the
   /// Rust commit path when a batch grows the log beyond this bound.
   final int _changeLogMaxEntries;
   final Map<String, List<String>> _durableIndexes = <String, List<String>>{};
@@ -44,14 +44,14 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
   bool get isReadOnly => _readOnly;
 
   /// Whether the worker isolate is alive and has completed its startup
-  /// handshake. Test/qualification surface (ADR-0005).
+  /// handshake. Test/qualification surface 
   bool get workerAlive => _worker.isWorkerAlive;
 
   /// The worker isolate's own name, proving reads/writes execute off the
-  /// caller's isolate. Test/qualification surface (ADR-0005).
+  /// caller's isolate. Test/qualification surface 
   String? get workerIsolateName => _worker.workerIsolateName;
 
-  /// Test/qualification surface (ADR-0005): runs the [`Finalizer`] teardown
+  /// Test/qualification surface runs the [`Finalizer`] teardown
   /// path deterministically (instead of waiting for garbage collection),
   /// after which the worker isolate is shut down and [workerAlive] is false.
   Future<void> disposeForTest() => _worker.debugFinalize();
@@ -63,7 +63,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
 
   /// Returns the current commit LSN (sequence number) via a single
   /// worker-isolate round trip with trivial Rust work. A perf-instrumentation
-  /// probe (Phase 1 boundary benchmark): measures the isolate/port + FRB
+  /// probe (boundary benchmark): measures the isolate/port + FRB
   /// marshalling cost in isolation, not a storage operation.
   Future<int> commitSequenceProbe() async {
     try {
@@ -73,7 +73,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// Compacts the database file in place (Workstream 5). Returns true when
+  /// Compacts the database file in place Returns true when
   /// space was reclaimed. Requires no open snapshots and a writable database.
   Future<bool> compact() async {
     try {
@@ -188,7 +188,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// M8 (ADR-0030): registers a live query with the worker's reactive registry.
+  /// registers a live query with the worker's reactive registry.
   @override
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
@@ -208,7 +208,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  /// removes a live-query registration (idempotent).
   @override
   Future<void> unregisterLiveQuery(int id) async {
     try {
@@ -228,7 +228,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// M10: aggregates pending local changes in Rust; Dart only decodes the
+  /// aggregates pending local changes in Rust; Dart only decodes the
   /// returned records.
   @override
   Future<List<RawEntry>> pendingChanges() async {
@@ -250,7 +250,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     );
   }
 
-  /// M8: single-hop batched point-read — all [keys] are read under ONE Rust
+  /// single-hop batched point-read — all [keys] are read under ONE Rust
   /// read transaction (consistent batch read) with a single FRB boundary
   /// crossing and no snapshot create/drop. See [RawBackend.getMany].
   @override
@@ -267,7 +267,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// M7: verifies and atomically repairs the durable index entries for [table]
+  /// verifies and atomically repairs the durable index entries for [table]
   /// from the primary rows in Rust. Native queries do not rebuild a Dart index.
   Future<void> repairIndex({
     required String table,
@@ -280,7 +280,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// Phase 2 native query fast path: range-scans the durable `__gecko_index`
+  /// native query fast path: range-scans the durable `__gecko_index`
   /// table for keys in `[start..=end]`, joins each entry's value (the
   /// user-table row key) back to its row in [table], and returns the
   /// `(recordId → row)` pairs in ONE boundary crossing. [start]/[end] are the
@@ -308,7 +308,7 @@ class NativeRawBackend implements RawBackend, DurableIndexRegistrar {
     }
   }
 
-  /// Phase 2 step 2: full-scan with a pushed predicate (no snapshot). Scans
+  /// step 2: full-scan with a pushed predicate (no snapshot). Scans
   /// every row in [table], evaluates [predicateBytes] against each row's
   /// encoded bytes IN RUST (decoding only the referenced fields), and returns
   /// only the matching `(recordId → row)` pairs in one boundary crossing.
@@ -490,7 +490,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// Phase 2 native query fast path, snapshot-bound: the index→row join
+  /// native query fast path, snapshot-bound: the index→row join
   /// observes the same consistent committed state as the snapshot's other
   /// reads. See [NativeRawBackend.queryIndexed] for the semantics.
   Future<List<RawEntry>> queryIndexed({
@@ -499,7 +499,7 @@ class NativeRawSnapshot implements RawSnapshot {
     required ByteKey end,
     String indexTable = geckoIndexTable,
   }) async {
-    // coverage:ignore-start M11 no longer called kept as public API surface
+    // coverage:ignore-start no longer called kept as public API surface
     try {
       final pairs = await _worker.snapshotQueryIndexed(
         snapshot: _snapshotId,
@@ -515,7 +515,7 @@ class NativeRawSnapshot implements RawSnapshot {
     // coverage:ignore-end
   }
 
-  /// Phase 2 step 2, snapshot-bound: the full scan + predicate evaluation
+  /// step 2, snapshot-bound: the full scan + predicate evaluation
   /// observe the snapshot's consistent committed state. See
   /// [NativeRawBackend.queryFiltered] for the semantics.
   Future<List<RawEntry>> queryFiltered({
@@ -534,7 +534,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M3: batched point-read, snapshot-bound — all reads observe one
+  /// batched point-read, snapshot-bound — all reads observe one
   /// consistent committed state. See [NativeRawBackend.getMany].
   @override
   Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) async {
@@ -550,7 +550,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M3: aggregate pushdown, snapshot-bound. See
+  /// aggregate pushdown, snapshot-bound. See
   /// [NativeRawBackend.queryFilteredCount].
   Future<int> queryFilteredCount({
     required String table,
@@ -567,7 +567,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M3: aggregate pushdown, snapshot-bound. See
+  /// aggregate pushdown, snapshot-bound. See
   /// [NativeRawBackend.queryFilteredDistinct].
   Future<List<List<int>>> queryFilteredDistinct({
     required String table,
@@ -586,7 +586,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M7.1: snapshot-bound parent lookup with Rust-side FK extraction.
+  /// snapshot-bound parent lookup with Rust-side FK extraction.
   Future<RawEntry?> relationshipParent({
     required String childTable,
     required ByteKey childKey,
@@ -607,7 +607,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M7.1/M11: snapshot-bound child retrieval using Rust FK matching. The
+  /// /snapshot-bound child retrieval using Rust FK matching. The
   /// worker classifies matching rows by FK and returns them grouped by parent
   /// id, so Dart never re-decodes every candidate row to bucket it.
   Future<List<GroupedChildren>> relationshipChildren({
@@ -645,7 +645,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  /// snapshot-bound many-to-many join ID retrieval.
   Future<List<List<int>>> relationshipJoinIds({
     required String joinTable,
     required String field,
@@ -663,7 +663,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M4: full-scan + predicate with an early LIMIT/OFFSET, snapshot-bound.
+  /// full-scan + predicate with an early LIMIT/OFFSET, snapshot-bound.
   /// Returns at most [limit] matching rows after skipping [offset], stopping
   /// the scan as soon as the window fills.
   Future<List<RawEntry>> queryFilteredLimited({
@@ -686,7 +686,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M7.1: counts matching rows from durable-index candidates without
+  /// counts matching rows from durable-index candidates without
   /// transferring primary rows to Dart.
   Future<int> queryIndexedCount({
     required String table,
@@ -707,7 +707,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M7.1: extracts only the requested field bytes from durable-index
+  /// extracts only the requested field bytes from durable-index
   /// candidates. Dart performs the final decode and insertion-order dedup.
   Future<List<List<int>>> queryIndexedDistinct({
     required String table,
@@ -730,7 +730,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M5: intersects multiple durable-index candidate ranges in Rust and
+  /// intersects multiple durable-index candidate ranges in Rust and
   /// rechecks the complete predicate in the same MVCC snapshot.
   Future<List<RawEntry>> queryIndexedMulti({
     required String table,
@@ -752,7 +752,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M4: index-served query with an early LIMIT/OFFSET, snapshot-bound.
+  /// index-served query with an early LIMIT/OFFSET, snapshot-bound.
   Future<List<RawEntry>> queryIndexedLimited({
     required String table,
     required ByteKey start,
@@ -779,7 +779,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M4: full-scan + top-K sort, snapshot-bound. Returns the
+  /// full-scan + top-K sort, snapshot-bound. Returns the
   /// `[offset, offset+limit)` window ordered by [sortSpecBytes] (a Rust port
   /// of Dart `compareRows`); the full candidate set is never materialized.
   Future<List<RawEntry>> querySorted({
@@ -804,7 +804,7 @@ class NativeRawSnapshot implements RawSnapshot {
     }
   }
 
-  /// M4: index-ordered early-stop sort, snapshot-bound. Streams the durable
+  /// index-ordered early-stop sort, snapshot-bound. Streams the durable
   /// index range `[start..=end]` in index-key order, applies [predicateBytes],
   /// and stops once `offset + limit` matches are collected. [eqBounded] marks
   /// an equality bound on [sortField] (index-key order is correct for either

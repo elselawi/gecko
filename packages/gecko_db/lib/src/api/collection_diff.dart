@@ -1,4 +1,4 @@
-/// Phase 12 per-row collection watch differences.
+/// per-row collection watch differences.
 library;
 
 /// A row-level delta between consecutive collection snapshots.

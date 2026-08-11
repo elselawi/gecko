@@ -84,7 +84,7 @@ void main() {
     });
 
     test(
-      'put without an id extractor auto-assigns a stable id (Phase 3)',
+      'put without an id extractor auto-assigns a stable id ()',
       () async {
         final db = await openNativeTestDatabase('database-e');
         final col = db.collection<_User>(

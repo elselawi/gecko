@@ -217,7 +217,7 @@ class NativeWorkerClient {
   /// Test/qualification surface.
   String? get workerIsolateName => _workerIsolateName;
 
-  /// Test/qualification surface (ADR-0005): runs the [`Finalizer`] teardown
+  /// Test/qualification surface runs the [`Finalizer`] teardown
   /// path deterministically instead of waiting for an actual garbage
   /// collection (which is inherently non-deterministic). The worker isolate
   /// is asked to shut down and its termination is observed before this
@@ -258,10 +258,10 @@ class NativeWorkerClient {
     _isolate?.kill(priority: Isolate.immediate);
   }
 
-  /// M8 (ADR-0030): applies a batch and returns the reactive-registry deltas
+  /// applies a batch and returns the reactive-registry deltas
   /// the worker produced for it (empty when no live registration was touched).
   /// [changeLogMaxEntries] (0 = disabled) prunes the pending-sync change log
-  /// in the same write transaction when the batch touched it (M10).
+  /// in the same write transaction when the batch touched it 
   Future<List<RegistryDelta>> applyBatch(
     List<int> encodedOps, {
     List<(String, List<String>)> indexDefinitions = const [],
@@ -285,7 +285,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registers a live query with the worker's reactive
   /// registry, returning the registration id and initial result set.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
@@ -304,7 +304,7 @@ class NativeWorkerClient {
     );
   }
 
-  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  /// removes a live-query registration (idempotent).
   Future<void> unregisterLiveQuery(int id) async {
     await _request('unregisterLiveQuery', <Object?>[id.toString()]);
   }
@@ -315,7 +315,7 @@ class NativeWorkerClient {
     return int.parse(result as String);
   }
 
-  /// M10: aggregates pending local changes (dirty, non-remote, sorted by
+  /// aggregates pending local changes (dirty, non-remote, sorted by
   /// localMutationId) in Rust; returns (key, record) pairs for Dart to decode.
   Future<List<RawEntry>> pendingChanges() async {
     final result = await _request('pendingChanges', const <Object?>[]);
@@ -331,7 +331,7 @@ class NativeWorkerClient {
       ),
   ];
 
-  /// M7: verifies and atomically repairs durable index entries for [table].
+  /// verifies and atomically repairs durable index entries for [table].
   Future<void> repairIndex({
     required String table,
     required List<String> fields,
@@ -347,7 +347,7 @@ class NativeWorkerClient {
     return result == null ? null : List<int>.from(result as List);
   }
 
-  /// M3: batched point-read, snapshot-bound — fetches N keys in ONE read
+  /// batched point-read, snapshot-bound — fetches N keys in ONE read
   /// transaction, returning `(key, row)` pairs for keys that exist. Absent
   /// keys are omitted; a missing table is an empty result, never an error.
   /// Kills the relationship N+1 (one boundary crossing instead of one per id).
@@ -367,7 +367,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M8: batched point-read (no explicit snapshot handle) — fetches N keys in
+  /// batched point-read (no explicit snapshot handle) — fetches N keys in
   /// ONE read transaction, returning `(key, row)` pairs for keys that exist.
   /// Absent keys are omitted; a missing table is an empty result. Used by the
   /// incremental watch path to keep per-batch update cost at a single FRB hop.
@@ -436,7 +436,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// Phase 2 native query fast path (no snapshot): range-scans the durable
+  /// native query fast path (no snapshot): range-scans the durable
   /// index table [indexTable] for keys in `[start..=end]`, joins each entry's
   /// value (the user-table row key) back to its row in [table], and returns
   /// the `(recordId, row)` pairs in one boundary crossing. Eliminates the
@@ -482,7 +482,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// Phase 2 step 2: full-scan with a pushed predicate (no snapshot). Scans
+  /// step 2: full-scan with a pushed predicate (no snapshot). Scans
   /// every row in [table], evaluates [predicateBytes] against each row's
   /// encoded bytes IN RUST (decoding only the referenced fields), and returns
   /// only the matching `(recordId, row)` pairs in one boundary crossing.
@@ -520,7 +520,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M3: aggregate pushdown, snapshot-bound — counts matching rows WITHOUT
+  /// aggregate pushdown, snapshot-bound — counts matching rows WITHOUT
   /// transferring them. Scans [table], evaluates [predicateBytes] against each
   /// row's bytes IN RUST, and returns only the count. A `count()` query no
   /// longer pays the decode + transfer cost of every matching row.
@@ -538,7 +538,7 @@ class NativeWorkerClient {
     );
   }
 
-  /// M3: aggregate pushdown, snapshot-bound — emits only the bytes of [field]
+  /// aggregate pushdown, snapshot-bound — emits only the bytes of [field]
   /// for each matching row, so a `distinct(field)` query transfers one value
   /// per row instead of the whole row. Returns a list of raw encoded
   /// `RowValue` bytes (self-delimiting); the caller decodes and dedups them.
@@ -558,7 +558,7 @@ class NativeWorkerClient {
     return [for (final b in (result as List)) List<int>.from(b as List)];
   }
 
-  /// M7.1: snapshot-bound parent lookup with Rust-side FK extraction.
+  /// snapshot-bound parent lookup with Rust-side FK extraction.
   Future<(List<int>, List<int>)?> snapshotRelationshipParent({
     required int snapshot,
     required String childTable,
@@ -578,7 +578,7 @@ class NativeWorkerClient {
     return (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List));
   }
 
-  /// M7.1/M11: snapshot-bound child retrieval with Rust-side FK matching and
+  /// /snapshot-bound child retrieval with Rust-side FK matching and
   /// grouping. Returns `(parentIdBytes, entries)` groups; the worker already
   /// classified each row by its FK value.
   Future<List<(List<int>, List<(List<int>, List<int>)>)>>
@@ -617,7 +617,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  /// snapshot-bound many-to-many join ID retrieval.
   Future<List<List<int>>> snapshotRelationshipJoinIds({
     required int snapshot,
     required String joinTable,
@@ -635,7 +635,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M4: full-scan + predicate with an early LIMIT/OFFSET (snapshot-bound).
+  /// full-scan + predicate with an early LIMIT/OFFSET (snapshot-bound).
   /// Returns at most [limit] matching rows after skipping [offset], stopping
   /// the scan as soon as the window fills.
   Future<List<(List<int>, List<int>)>> snapshotQueryFilteredLimited({
@@ -658,7 +658,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M5: snapshot-bound intersection of multiple durable-index candidate
+  /// snapshot-bound intersection of multiple durable-index candidate
   /// ranges. Rust rechecks the complete predicate before returning rows.
   Future<List<(List<int>, List<int>)>> snapshotQueryIndexedMulti({
     required int snapshot,
@@ -682,7 +682,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M7.1: snapshot-bound count over durable-index candidates.
+  /// snapshot-bound count over durable-index candidates.
   Future<int> snapshotQueryIndexedCount({
     required int snapshot,
     required String table,
@@ -703,7 +703,7 @@ class NativeWorkerClient {
     );
   }
 
-  /// M7.1: snapshot-bound distinct field extraction over durable-index
+  /// snapshot-bound distinct field extraction over durable-index
   /// candidates. Returns encoded field values; Dart performs final dedup.
   Future<List<List<int>>> snapshotQueryIndexedDistinct({
     required int snapshot,
@@ -728,7 +728,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M4: index-served query with an early LIMIT/OFFSET (snapshot-bound).
+  /// index-served query with an early LIMIT/OFFSET (snapshot-bound).
   Future<List<(List<int>, List<int>)>> snapshotQueryIndexedLimited({
     required int snapshot,
     required String table,
@@ -755,7 +755,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M4: full-scan + top-K sort (snapshot-bound). Returns the
+  /// full-scan + top-K sort (snapshot-bound). Returns the
   /// `[offset, offset+limit)` window ordered by [sortSpecBytes].
   Future<List<(List<int>, List<int>)>> snapshotQuerySorted({
     required int snapshot,
@@ -779,7 +779,7 @@ class NativeWorkerClient {
     ];
   }
 
-  /// M4: index-ordered early-stop sort (snapshot-bound). Streams the durable
+  /// index-ordered early-stop sort (snapshot-bound). Streams the durable
   /// index range in index-key order and stops once `offset + limit` matches
   /// are collected.
   Future<List<(List<int>, List<int>)>> snapshotQueryIndexedOrdered({
@@ -847,13 +847,13 @@ class NativeWorkerClient {
   Future<int> commitSequence() async =>
       _asInt(await _request('commitSequence', const <Object?>[]));
 
-  /// Compacts the database file in place (Workstream 5). Returns true when
+  /// Compacts the database file in place Returns true when
   /// space was reclaimed, false when already fully compacted. The worker
   /// rejects the request with a typed error if any MVCC snapshot is open.
   Future<bool> compact() async =>
       await _request('compact', const <Object?>[]) as bool;
 
-  /// Reports physical/logical size and health counters (Workstream 5).
+  /// Reports physical/logical size and health counters 
   Future<StorageStats> storageStats() async =>
       await _request('storageStats', const <Object?>[]) as StorageStats;
 

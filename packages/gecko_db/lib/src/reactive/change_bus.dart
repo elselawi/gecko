@@ -1,9 +1,9 @@
-/// Phase 4 change bus.
+/// change bus.
 ///
 /// A single-writer broadcast hub for change events. The engine publishes one
 /// coalesced [`ChangeSet`] per committed batch; the sequence number is assigned
 /// monotonically at publish time so `database.watchAll()` consumers can track
-/// exactly which changes they have seen (feeds Phase 7's sync interface).
+/// exactly which changes they have seen (feeds 's sync interface).
 library;
 
 import 'dart:async';

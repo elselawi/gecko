@@ -1,4 +1,4 @@
-/// Phase 8 conflict-resolution contracts.
+/// conflict-resolution contracts.
 ///
 /// Strategies are pure functions. They receive immutable local, remote, and
 /// optional common-base versions and return a value-only [Resolution]. They
@@ -149,7 +149,7 @@ class ConflictResolutionResult {
   bool get deferred => resolution.kind == ResolutionKind.manualReview;
 }
 
-/// Database-backed Phase 8 conflict resolution surface.
+/// Database-backed conflict resolution surface.
 abstract class ConflictApi {
   /// Reads the local version and resolves [request] atomically.
   Future<ConflictResolutionResult> resolve(

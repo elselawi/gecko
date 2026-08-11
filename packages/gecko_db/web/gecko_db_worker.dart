@@ -9,7 +9,7 @@
 // Then `new Worker('gecko_db_worker.js')` and speak the protocol documented
 // in `lib/src/worker/web_worker_protocol.dart` (see `WebWorkerClient`).
 //
-// What this worker does (ADR-0013):
+// What this worker does 
 //   1. Loads the wasm-bindgen glue with `importScripts` (the FRB default
 //      loader needs document.head, which a worker lacks).
 //   2. Aliases `self.wasm_bindgen` (the glue declares a lexical `let`) and

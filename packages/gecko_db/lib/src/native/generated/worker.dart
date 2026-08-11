@@ -6,7 +6,7 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// M11: one group of child rows sharing the same foreign-key value (parent
+/// one group of child rows sharing the same foreign-key value (parent
 /// id). The worker classifies matching child rows by FK so Dart receives
 /// pre-grouped candidates instead of re-decoding each row's FK field.
 class GroupedChildEntries {
@@ -30,7 +30,7 @@ class GroupedChildEntries {
           entries == other.entries;
 }
 
-/// Storage-level size/health report (Workstream 5).
+/// Storage-level size/health report
 class StorageStats {
   /// Bytes the database file occupies on disk (physical).
   final BigInt physicalBytes;

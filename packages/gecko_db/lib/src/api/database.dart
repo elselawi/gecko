@@ -1,6 +1,6 @@
 /// Tier 1/2/3 public API contract surface.
 ///
-/// Phase 0 defines these as abstract interfaces with no implementation, so
+/// defines these as abstract interfaces with no implementation, so
 /// later phases don't reshape the foundation underneath already-tested code.
 /// Everything here is deliberately abstract — no concrete logic leaks into the
 /// contracts.
@@ -62,11 +62,11 @@ class DatabaseConfig {
   final int encryptionKeyGeneration;
 
   /// Explicit path to a prebuilt native library. When null, the platform
-  /// native resolver (Phase 1) selects one automatically.
+  /// native resolver () selects one automatically.
   final String? nativeLibraryPath;
 
   /// Backpressure bound: max in-flight write batches before callers await
-  /// queue drain (Phase 2). Null → engine default.
+  /// queue drain (). Null → engine default.
   final int? inFlightBatchLimit;
 
   /// Point-read cache entry bound. Null → engine default.
@@ -90,7 +90,7 @@ class DatabaseConfig {
   /// unversioned (no compatibility gate).
   final int maxKnownSchemaVersion;
 
-  /// Slow-query logging threshold in microseconds (Workstream 5). 0 (default)
+  /// Slow-query logging threshold in microseconds 0 (default)
   /// disables slow-query logging entirely; when set, queries taking at least
   /// this long are recorded with their plan (indexed vs full-scan) and are
   /// visible through diagnostics. Near-zero overhead when disabled.
@@ -145,7 +145,7 @@ abstract class Database {
   });
 
   /// Atomically runs [body] inside a write transaction spanning one or more
-  /// collections, rolling back on any thrown error (Phase 7).
+  /// collections, rolling back on any thrown error ().
   Future<void> writeTxn(WriteCallback body);
 
   /// Additive sync-facing surface, backed by the same database file.
@@ -158,7 +158,7 @@ abstract class Database {
   AttachmentApi get attachments;
 
   /// Additive schema-versioning/migration surface backed by the same database
-  /// file (Phase 10).
+  /// file ().
   SchemaApi get schema;
 
   /// Applies known bulk mutations in one atomic commit. One coalesced change
@@ -169,10 +169,10 @@ abstract class Database {
   DiagnosticsApi get diagnostics;
 
   /// Compaction/maintenance controller and storage size reporting
-  /// (Workstream 5).
+  /// 
   MaintenanceApi get maintenance;
 
-  /// Global, cross-collection change feed (Phase 4). Primarily for
+  /// Global, cross-collection change feed (). Primarily for
   /// diagnostics and future sync-engine consumption.
   Stream<ChangeSet> watchAll();
 

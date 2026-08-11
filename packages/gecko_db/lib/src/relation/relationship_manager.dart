@@ -1,4 +1,4 @@
-/// Phase 6 relationship manager.
+/// relationship manager.
 ///
 /// Declares and enforces relationships between collections at the row level,
 /// built on the raw engine (`RawEngine`) so all constraint enforcement and
@@ -108,7 +108,7 @@ class RelationshipManager {
   /// Loads the children of [parentId] for a one-to-many relationship whose
   /// child rows reference the parent via [relationship]. Uses the child
   /// collection's index on the foreign-key field when one is declared
-  /// (WS3: FK helpers wired to indexes).
+  /// ( FK helpers wired to indexes).
   Future<List<Map<Object?, Object?>>> children(
     Relationship relationship,
     Object? parentId,
@@ -147,10 +147,9 @@ class RelationshipManager {
         table: r.childCollection,
         start: ByteKey(start),
         end: ByteKey(end),
-        predicateBytes: encodePredicate(
-          [Filter.eq(fk, parentId)],
-          codec: _codec,
-        ),
+        predicateBytes: encodePredicate([
+          Filter.eq(fk, parentId),
+        ], codec: _codec),
       );
       return [
         for (final entry in entries)
@@ -358,10 +357,7 @@ class RelationshipManager {
       final field = isLeft ? 'left' : 'right';
       final entries = await (snap as NativeRawSnapshot).queryFiltered(
         table: table,
-        predicateBytes: encodePredicate(
-          [Filter.eq(field, id)],
-          codec: _codec,
-        ),
+        predicateBytes: encodePredicate([Filter.eq(field, id)], codec: _codec),
       );
       return [for (final entry in entries) RawDelete(table, entry.key)];
     } finally {
@@ -369,7 +365,7 @@ class RelationshipManager {
     }
   }
 
-  /// Reactive one-to-many relationship query (WS3): emits the children of
+  /// Reactive one-to-many relationship query emits the children of
   /// [parentId] immediately, then re-emits whenever a change touches either
   /// the child collection or the parent collection (so writes on either side
   /// are observed).
@@ -398,7 +394,7 @@ class RelationshipManager {
     return controller.stream;
   }
 
-  /// Reactive reverse lookup (WS3): emits the parent row of [childId]
+  /// Reactive reverse lookup emits the parent row of [childId]
   /// immediately, then re-emits when the parent or child row changes.
   Stream<Map<Object?, Object?>?> watchParent(
     Relationship relationship,
@@ -425,7 +421,7 @@ class RelationshipManager {
     return controller.stream;
   }
 
-  /// Reactive many-to-many (WS3): emits the right-side ids of [leftId]
+  /// Reactive many-to-many emits the right-side ids of [leftId]
   /// immediately, then re-emits when the join table changes.
   ///
   /// Join rows live in a reserved `__gecko_join_*` table that the public
@@ -544,7 +540,7 @@ class RelationshipManager {
   /// Atomically deletes [parentId] along with its cascade/restrict/setNull
   /// effects, including transitive cascades for one-to-many cascade chains.
   ///
-  /// WS3: this is the single transaction coordinator — constraint
+  /// this is the single transaction coordinator — constraint
   /// enforcement, cascades, set-null rewrites, application hooks, and
   /// many-to-many join cleanup are collected and committed in ONE redb write
   /// transaction (with the LSN and change-feed events), under the engine's
@@ -603,7 +599,7 @@ class RelationshipManager {
       return;
     }
     final ownDelete = relationship.deleteBehavior;
-    // Check restrict entirely first (restrict wins over cascade per §plan).
+    // Check restrict entirely first (restrict wins over cascade).
     if (ownDelete == DeleteBehavior.restrict) {
       final dependents = await _childRows(
         relationship,

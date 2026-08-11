@@ -1,4 +1,4 @@
-/// Reserved-name policy (per §0.5 contract 5 and Phase 2).
+/// Reserved-name policy.
 ///
 /// All engine-internal metadata lives in reserved `__gecko_*` tables inside the
 /// same `redb` file, written in the same transaction as the data that triggers
@@ -13,7 +13,7 @@ import 'errors/errors.dart';
 /// metadata, etc.).
 const String geckoReservedPrefix = '__gecko_';
 
-/// Reserved metadata tables used by the Phase 7 sync adapter.
+/// Reserved metadata tables used by the sync adapter.
 const String geckoChangeLogTable = '__gecko_change_log';
 const String geckoSyncMetaTable = '__gecko_sync_meta';
 const String geckoSyncStateTable = '__gecko_sync_state';

@@ -1,6 +1,6 @@
 /// Key sort ordering rules (contract, not convenience).
 ///
-/// This is the **one place** key ordering is decided, and Phase 5 secondary
+/// This is the **one place** key ordering is decided, and secondary
 /// indexes inherit it. Fixed-width big-endian integers and byte-wise strings
 /// guarantee deterministic, cross-platform ordering so indexed/range scans
 /// behave identically everywhere.

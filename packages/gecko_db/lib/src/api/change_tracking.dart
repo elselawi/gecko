@@ -1,8 +1,8 @@
-/// Change-tracking / sync-hook contract (Phase 7).
+/// Change-tracking / sync-hook contract ().
 ///
 /// The sync **transport**, identity, and conflict policies are out of scope.
 /// In scope here is the local, transactional change-tracking metadata a sync
-/// engine *would* consume, and local conflict resolution against it (Phase 8).
+/// engine *would* consume, and local conflict resolution against it ().
 library;
 
 import 'change.dart';
@@ -11,7 +11,7 @@ import 'sync_state.dart';
 /// The origin of a change. Origin tagging prevents sync loops.
 enum ChangeOrigin { user, remoteSync, migration, backgroundProcess }
 
-/// A single change-tracking record, as specified by Phase 7.
+/// A single change-tracking record, as specified by 
 class ChangeRecord {
   const ChangeRecord({
     required this.localMutationId,
@@ -130,7 +130,7 @@ class PendingChange {
   final ChangeRecord change;
 }
 
-/// The small sync-facing interface a sync engine consumes (Phase 7).
+/// The small sync-facing interface a sync engine consumes ().
 ///
 /// Implemented by the engine against the same `redb` file — no second
 /// persistence system.

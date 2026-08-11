@@ -1,4 +1,4 @@
-/// Sync state contract (Phase 7/8 surface).
+/// Sync state contract (/8 surface).
 library;
 
 /// The phase of a record's sync lifecycle.

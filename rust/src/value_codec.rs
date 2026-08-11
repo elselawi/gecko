@@ -1,5 +1,5 @@
 //! The value wire codec — a byte-for-byte Rust port of the Dart
-//! `DefaultWireCodec` (Phase 2 step 2).
+//! `DefaultWireCodec` (step 2).
 //!
 //! The codec encodes a `RowValue` (null, bool, int64, bigint, f64, string,
 //! bytes, list, map, datetime) as a single tag byte followed by a payload.
@@ -153,7 +153,7 @@ enum NumVal {
     F(f64),
 }
 
-/// M4: sort comparison over two decoded field values — a byte-for-byte port of
+/// sort comparison over two decoded field values — a byte-for-byte port of
 /// Dart `compareFieldValues` (`sorting.dart`), NOT the range-filter `compare`.
 /// The contracts differ: `compare` uses the Dart `Filter._compare` fallback
 /// (type-rank), while sorting uses Dart `num.compareTo` for all numerics, then

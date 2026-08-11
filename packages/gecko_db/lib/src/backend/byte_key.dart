@@ -2,7 +2,7 @@
 ///
 /// Keys at the engine boundary are raw bytes (wire-encoded). Ordering is
 /// byte-wise (unsigned), matching the sort ordering contract in
-/// `wire/sort_rules.dart`. Phase 3 layers the typed encodings on top.
+/// `wire/sort_rules.dart`. layers the typed encodings on top.
 library;
 
 import 'dart:typed_data';

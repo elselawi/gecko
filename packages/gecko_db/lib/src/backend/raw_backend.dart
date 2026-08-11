@@ -1,9 +1,8 @@
-/// The raw byte-level backend interface (Phase 2 core).
+/// The raw byte-level backend interface (core).
 ///
 /// This is the seam the Rust `redb` worker (native) implements; a single
-/// parametrized test suite guards the backend contract. Per §0.5 contract 5,
-/// all metadata lives in reserved `__gecko_*` tables in the same store as the
-/// data.
+/// parametrized test suite guards the backend contract. All metadata lives in
+/// reserved `__gecko_*` tables in the same store as the data.
 library;
 
 import 'byte_key.dart';
@@ -54,7 +53,7 @@ class RawEntry {
   final List<int>? value;
 }
 
-/// M11: child rows sharing one foreign-key value (parent id), grouped in the
+/// child rows sharing one foreign-key value (parent id), grouped in the
 /// Rust worker. The worker classifies candidates by FK so Dart only decodes
 /// the rows that already belong to the requested parents.
 class GroupedChildren {
@@ -76,7 +75,7 @@ abstract class RawSnapshot {
   /// Reads the value at [key] in [table], or null if absent.
   Future<List<int>?> read(String table, ByteKey key);
 
-  /// M3: batched point-read — reads [keys] in [table], returning `(key,
+  /// batched point-read — reads [keys] in [table], returning `(key,
   /// value)` pairs for keys that exist in input order. Absent keys are
   /// omitted. Backends with a native batch primitive (the Rust worker)
   /// implement this as one boundary crossing; in-memory backends loop over
@@ -110,7 +109,7 @@ abstract class DurableIndexRegistrar {
   void registerDurableIndex(String table, List<String> fields);
 }
 
-/// M8 (ADR-0030): one per-registration delta produced by a committed batch.
+/// one per-registration delta produced by a committed batch.
 /// All lists are ordered: [added], [updated], [removed] follow the batch's
 /// change order; [snapshot] is the full current result set in result order
 /// (byte-key order for unsorted registrations, comparator order for sorted).
@@ -144,7 +143,7 @@ class RegistryDelta {
   final bool unchanged;
 }
 
-/// M8 (ADR-0030): the outcome of one committed batch at the raw layer — the
+/// the outcome of one committed batch at the raw layer — the
 /// affected (table, key) pairs plus one [RegistryDelta] per touched live
 /// registration.
 class ApplyBatchResult {
@@ -153,14 +152,16 @@ class ApplyBatchResult {
   final List<RegistryDelta> deltas;
 }
 
-/// M8 (ADR-0030): the kind of live result a registration maintains (mirrors
+/// the kind of live result a registration maintains (mirrors
 /// `rust::registry::LiveQueryKind`).
 enum LiveQueryKind {
   /// `collection.watchAll()` — full set, emits every relevant batch.
   watchAll(0),
+
   /// `collection.watchAllDiff()` — full set + per-batch diff; suppresses
   /// emissions when nothing observable changed.
   watchAllDiff(1),
+
   /// `query.where(...).watch()` — filtered (optionally sorted) set.
   query(2);
 
@@ -168,7 +169,7 @@ enum LiveQueryKind {
   final int value;
 }
 
-/// M8 (ADR-0030): a registered live query — its id plus the initial result
+/// a registered live query — its id plus the initial result
 /// set in result order.
 class LiveQueryRegistration {
   const LiveQueryRegistration({required this.id, required this.initial});
@@ -184,10 +185,10 @@ abstract class RawBackend {
 
   /// Applies [ops] atomically: either all take effect or none do (single
   /// write transaction). Returns the affected (table, key) pairs plus any
-  /// M8 reactive-registry deltas produced by the batch.
+  /// reactive-registry deltas produced by the batch.
   Future<ApplyBatchResult> applyBatch(RawBatch ops);
 
-  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registers a live query with the worker's reactive
   /// registry and materializes its initial result set. [kind] is 0 = watchAll,
   /// 1 = watchAllDiff, 2 = query. [predicateBytes]/[sortBytes] are the encoded
   /// predicate/sort payloads (empty predicate matches everything).
@@ -198,13 +199,13 @@ abstract class RawBackend {
     required int kind,
   });
 
-  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  /// removes a live-query registration (idempotent).
   Future<void> unregisterLiveQuery(int id);
 
   /// Number of active live-query registrations (diagnostics).
   Future<int> liveQueryCount();
 
-  /// M10: aggregates the pending local changes from the sync-state table
+  /// aggregates the pending local changes from the sync-state table
   /// (dirty, non-remote, ordered by localMutationId). The scan/filter/sort
   /// executes in Rust; Dart decodes the returned (key, record) pairs.
   Future<List<RawEntry>> pendingChanges();
@@ -212,7 +213,7 @@ abstract class RawBackend {
   /// Captures a consistent snapshot for reading.
   Future<RawSnapshot> snapshot();
 
-  /// M8: batched point-read without an explicit snapshot handle. Reads all
+  /// batched point-read without an explicit snapshot handle. Reads all
   /// [keys] in [table] under ONE consistent read transaction, returning
   /// `(key, value)` pairs for keys that exist in input order; absent keys are
   /// omitted. On the native backend this is a single boundary crossing (one

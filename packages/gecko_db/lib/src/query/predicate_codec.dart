@@ -1,4 +1,4 @@
-// Predicate wire serialization for the Rust query fast path (Phase 2 step 2).
+// Predicate wire serialization for the Rust query fast path (step 2).
 //
 // Serializes a query's [`FilterGroup`] into a self-delimiting byte payload that
 // the Rust `predicate::decode_predicate` evaluator consumes. The format mirrors

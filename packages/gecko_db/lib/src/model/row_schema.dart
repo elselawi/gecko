@@ -1,4 +1,4 @@
-/// Codegen-free typed modeling (Phase 3).
+/// Codegen-free typed modeling ().
 ///
 /// Provides the missing/null/default distinction, optional-field awareness for
 /// `patch`, and schema validation — all against the plain row maps that the

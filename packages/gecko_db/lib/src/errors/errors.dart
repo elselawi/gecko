@@ -2,7 +2,7 @@
 ///
 /// Every remotely-contractual failure is a typed [`GeckoError`] subclass.
 /// Raw Rust panics, `StateError`, and untyped `Exception`s are **not** an API.
-/// Later phases attach their own leaves (e.g. a Phase 7 `SyncStateError`) to
+/// Later phases attach their own leaves (e.g. a `SyncStateError`) to
 /// this same root rather than inventing parallel taxonomies.
 library;
 
@@ -16,7 +16,7 @@ import 'package:collection/collection.dart';
 /// [details] may carry structured context (e.g. the offending field name).
 ///
 /// Instances round-trip across the Dart↔native boundary without losing type or
-/// message. This is enforced by dedicated tests in Phase 0.
+/// message. This is enforced by dedicated tests in 
 class GeckoError implements Exception {
   const GeckoError(this.type, this.message, {this.details});
 
@@ -66,7 +66,7 @@ class GeckoError implements Exception {
 
 /// The canonical, nameable set of error variants.
 enum GeckoErrorType {
-  // Core taxonomy (Phase 0).
+  // Core taxonomy ().
   unknown,
   keyNotFound,
   collectionNotFound,
@@ -79,7 +79,7 @@ enum GeckoErrorType {
   checksumMismatch,
   invalidOperation,
 
-  // Open-leaf markers for later phases (mirrors plan phase attachments).
+  // Open-leaf markers for the extensible error taxonomy.
   syncState,
   conflict,
   attachment,

@@ -1,4 +1,4 @@
-// Workstream 7: cross-platform artifact build/verify/bundle tests.
+// cross-platform artifact build/verify/bundle tests.
 //
 // Verifies the target registry, host-buildability classification, manifest
 // generation + SHA-256 verification round-trip, and that the bundled native

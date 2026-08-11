@@ -51,7 +51,7 @@ String _registryKey(String path) {
 final Map<String, DatabaseImpl> _openDatabases = <String, DatabaseImpl>{};
 final Set<String> _openingDatabases = <String>{};
 
-/// The Phase 2 concrete [`Database`].
+/// The concrete [`Database`].
 class DatabaseImpl implements Database {
   DatabaseImpl._(
     this.path,
@@ -136,9 +136,9 @@ class DatabaseImpl implements Database {
 
   RelationshipManager? _relationships;
 
-  /// The relationship manager bound to this database (Phase 6). FK lookups are
+  /// The relationship manager bound to this database (). FK lookups are
   /// wired to the collection indexes so children/parents queries use an index
-  /// when the foreign-key field is indexed (WS3).
+  /// when the foreign-key field is indexed 
   RelationshipManager get relationships => _relationships ??=
       RelationshipManager(_engine, indexLookup: (table) => _indexes[table]);
 
@@ -257,7 +257,7 @@ class DatabaseImpl implements Database {
           ...index.prefixFields,
         ]);
       }
-      // M7.5: Rust is the sole durable-index authority. Run the one-time
+      // Rust is the sole durable-index authority. Run the one-time
       // per-session repair so rows written before the index was declared are
       // covered, and drift is corrected (the worker compares expected entries
       // derived from primary rows against `__gecko_index`). Fire-and-forget:
@@ -275,7 +275,7 @@ class DatabaseImpl implements Database {
     );
   }
 
-  /// Prepares [index] for queries (M7.5 native-only). Rust repairs the
+  /// Prepares [index] for queries (native-only). Rust repairs the
   /// durable index from the primary rows in one atomic worker transaction;
   /// no Dart index is built. Coalesced: only the first `collection()` call
   /// per table runs the repair; later calls observe [CollectionIndex.isReady]
@@ -360,7 +360,7 @@ class DatabaseImpl implements Database {
           } else {
             ops.add(RawDelete(mutation.table, ByteKey(keyBytes)));
           }
-          // Change tracking in the same batch (Phase 7 contract).
+          // Change tracking in the same batch (contract).
           final record = ChangeRecord(
             localMutationId: lsn,
             recordId: mutation.key,
@@ -388,7 +388,7 @@ class DatabaseImpl implements Database {
             ),
           );
         }
-        // M10: change-log pruning executes in the Rust commit path (retention
+        // change-log pruning executes in the Rust commit path (retention
         // from DatabaseConfig.changeLogMaxEntries); no Dart scan/prune here.
         return ops;
       },
@@ -406,7 +406,7 @@ class DatabaseImpl implements Database {
     return _engine.changes.stream;
   }
 
-  /// Raw access for engine-level callers (Phase 3+ build on this).
+  /// Raw access for engine-level callers (+ build on this).
   Future<List<int>?> rawGet(String table, ByteKey key) {
     _assertOpen();
     return _engine.rawGet(table, key);
@@ -504,7 +504,7 @@ class _CollectionImpl<T> implements Collection<T> {
       }
       return rows;
     }
-    // M3: one `get_many` Rust call fetches every key in a single read
+    // one `get_many` Rust call fetches every key in a single read
     // transaction (kills the N+1). The engine is always native.
     final snap = await _db.engine.backend.snapshot() as NativeRawSnapshot;
     try {
@@ -681,7 +681,7 @@ class _CollectionImpl<T> implements Collection<T> {
     return controller.stream;
   }
 
-  /// M8 (ADR-0030): the full-set diff stream is maintained by the worker's
+  /// the full-set diff stream is maintained by the worker's
   /// reactive registry. Dart registers on listen, emits the initial snapshot,
   /// and forwards worker deltas (suppressing no-op emissions) — no Dart-side
   /// result-set computation.
@@ -764,7 +764,7 @@ class _CollectionImpl<T> implements Collection<T> {
     return controller.stream;
   }
 
-  /// M8 (ADR-0030): the full-set stream is maintained by the worker's reactive
+  /// the full-set stream is maintained by the worker's reactive
   /// registry. Dart registers on listen, emits the initial snapshot, and
   /// forwards worker deltas — no Dart-side result-set computation.
   @override
@@ -1034,7 +1034,7 @@ class _TxnImpl implements Transaction {
             ),
           );
         }
-        // M10: change-log pruning executes in the Rust commit path (retention
+        // change-log pruning executes in the Rust commit path (retention
         // from DatabaseConfig.changeLogMaxEntries); no Dart scan/prune here.
         return ops;
       },
@@ -1251,7 +1251,7 @@ class _SyncHookImpl implements SyncHookApi {
   @override
   Future<List<PendingChange>> readLocallyChanged() async {
     _db._assertOpen();
-    // M10: the aggregation (scan + dirty/non-remote filter + localMutationId
+    // the aggregation (scan + dirty/non-remote filter + localMutationId
     // sort) executes in Rust; Dart decodes the returned records into the
     // public model.
     final records = [
@@ -2255,7 +2255,7 @@ class _AttachmentApiImpl implements AttachmentApi {
   }
 }
 
-/// Phase 10 schema-versioning/migration implementation.
+/// schema-versioning/migration implementation.
 ///
 /// The version lives in the reserved `__gecko_schema` table (same redb file,
 /// no second persistence system). Steps are applied in order, each in its own
@@ -2337,7 +2337,7 @@ class _SchemaApiImpl implements SchemaApi {
           await _rewriteRecords(step);
         } else {
           // Additive fast path: bump the version only; rows are interpreted
-          // lazily via Phase 3's missing/null/default semantics, so no
+          // lazily via 's missing/null/default semantics, so no
           // full-table rewrite is needed.
           await _stampFrom(snapshot, step.toVersion);
         }

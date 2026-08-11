@@ -1,4 +1,4 @@
-# Workstream 7 / M12: RELEASE-ONLY CI — the only CI in the repo.
+# RELEASE-ONLY CI — the only CI in the repo.
 #
 # This workflow exists for exactly two things the maintainer cannot do
 # locally: (a) run builds on Apple hardware (macOS runners, and iOS once the
@@ -20,12 +20,11 @@
 # audits) is a LOCAL step: run `dart run tool/release_checklist.dart` before
 # triggering this workflow.
 #
-# Targets explicitly marked "release-pending" in docs/compatibility.md (iOS
-# device builds) are intentionally not given jobs here until the supporting
-# sub-project lands — a release is blocked unless every target is either built
-# or explicitly marked unsupported. Web (FRB glue + OPFS) is implemented and
-# exercised by the `web` job below (wasm build + glue + headless Chromium
-# smoke via CDP).
+# Targets that are not yet built (iOS device builds) are intentionally not
+# given jobs here until the supporting sub-project lands — a release is
+# blocked unless every target is either built or explicitly marked
+# unsupported. Web (FRB glue + OPFS) is implemented and exercised by the `web`
+# job below (wasm build + glue + headless Chromium smoke via CDP).
 
 name: release-matrix
 
@@ -57,8 +56,8 @@ jobs:
         run: >
           dart test
           packages/gecko_db/test/raw_backend_contract_test.dart
-          packages/gecko_db/test/phase2_differential_test.dart
-          packages/gecko_db/test/phase5_index_ws3_test.dart
+          packages/gecko_db/test/differential_test.dart
+          packages/gecko_db/test/index_query_test.dart
           --reporter=compact
       - uses: actions/upload-artifact@v4
         with:
@@ -83,7 +82,7 @@ jobs:
         run: >
           dart test
           packages/gecko_db/test/raw_backend_contract_test.dart
-          packages/gecko_db/test/phase2_differential_test.dart
+          packages/gecko_db/test/differential_test.dart
           --reporter=compact
       - uses: actions/upload-artifact@v4
         with:
@@ -115,7 +114,7 @@ jobs:
         run: >
           dart test
           packages/gecko_db/test/raw_backend_contract_test.dart
-          packages/gecko_db/test/phase2_differential_test.dart
+          packages/gecko_db/test/differential_test.dart
           --reporter=compact
       - uses: actions/upload-artifact@v4
         with:
@@ -203,9 +202,8 @@ jobs:
           name: artifact-wasm32
           path: build/native/
 
-  # iOS device builds require the FRB iOS plugin scaffold (Xcode) and are
-  # explicitly marked "release-pending" in docs/compatibility.md — a release is
-  # blocked until they are either built here or remain explicitly marked
-  # unsupported. Web (FRB glue + OPFS) is fully implemented (ADR-0013) and is
-  # exercised by the smoke step above; in-memory `Database.open` also works on
-  # the main thread without any worker.
+  # iOS device builds require the FRB iOS plugin scaffold (Xcode) and are not
+  # built here yet — a release is blocked until they are either built here or
+  # explicitly marked unsupported. Web (FRB glue + OPFS) is fully implemented
+  # and is exercised by the smoke step above; in-memory `Database.open` also
+  # works on the main thread without any worker.

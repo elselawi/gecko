@@ -1,15 +1,15 @@
 #!/usr/bin/env dart
 
-// Workstream 7: cross-platform native artifact build orchestrator.
+// cross-platform native artifact build orchestrator.
 //
 // Builds the `gecko_db_rust` cdylib for every release target from a pinned
 // Rust toolchain, copies the artifact to an output directory, and writes a
 // checksum + provenance manifest (the artifact the native resolver verifies).
 //
 // Targets buildable on the current host are built locally; the others are
-// built by the CI release matrix (`.github/workflows/release-matrix.yml`) and
-// are explicitly marked in `docs/compatibility.md` — a target is never
-// silently skipped.
+// built by the CI release matrix (`.github/workflows/release-matrix.yml`),
+// whose target set mirrors this registry — a target is never silently
+// skipped.
 //
 // Usage:
 //   dart run tool/build_artifacts.dart list
@@ -58,7 +58,7 @@ class BuildTarget {
       : 'lib$artifactName';
 }
 
-/// The full target registry (mirrors `docs/compatibility.md`).
+/// The full target registry (see the platform table in the README).
 const List<BuildTarget> kTargets = [
   BuildTarget(
     name: 'windows-x64',

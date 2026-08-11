@@ -1,6 +1,6 @@
 #!/usr/bin/env dart
 
-// Workstream 8 — static security review gate.
+// static security review gate.
 //
 // Scans the gecko_db Dart + Rust sources for the classes of mistakes that
 // matter for a local-first database holding user data:

@@ -1,5 +1,5 @@
 #!/usr/bin/env dart
-// Verifies that public contract changes are accompanied by an ADR or version
+// Verifies that public contract changes are accompanied by a package version
 // bump. Intended for CI, where the repository has a merge-base reference.
 //
 // Usage:
@@ -54,16 +54,13 @@ void main(List<String> args) {
     return;
   }
 
-  final hasAdr = changed.any(
-    (path) => path.startsWith('docs/adr/') && path != 'docs/adr/README.md',
-  );
   final hasVersionBump =
       changed.contains('packages/gecko_db/pubspec.yaml') ||
       changed.contains('pubspec.yaml');
-  if (!hasAdr && !hasVersionBump) {
+  if (!hasVersionBump) {
     stderr.writeln(
-      'API CONTRACT GATE FAILED: public contract changes require an ADR '
-      'or package version bump.',
+      'API CONTRACT GATE FAILED: public contract changes require a '
+      'package version bump (pubspec.yaml).',
     );
     stderr.writeln('Changed contract files:');
     for (final path in contractChanged) {
@@ -74,7 +71,7 @@ void main(List<String> args) {
   }
 
   stdout.writeln(
-    'API CONTRACT GATE PASSED: public changes have an ADR or version bump.',
+    'API CONTRACT GATE PASSED: public changes have a version bump.',
   );
 }
 

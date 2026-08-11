@@ -1,7 +1,7 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-/// Exercises the public value/contract types that Phase 0 locks in, raising
+/// Exercises the public value/contract types that locks in, raising
 /// coverage of the API surface to satisfy the ≥95% gate.
 void main() {
   group('Change', () {

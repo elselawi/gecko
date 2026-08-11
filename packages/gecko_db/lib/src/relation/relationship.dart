@@ -1,4 +1,4 @@
-/// Phase 6 relationship model.
+/// relationship model.
 ///
 /// A relationship is declared between two typed collections. The engine uses
 /// a foreign-key field in the child row to hold the parent record id (for

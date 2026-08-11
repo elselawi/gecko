@@ -1,4 +1,4 @@
-/// Pure-Dart native artifact resolver (Phase 1 foundation).
+/// Pure-Dart native artifact resolver (foundation).
 ///
 /// The resolver chooses a checksum-verified native artifact without requiring a
 /// consumer compiler toolchain. Actual `DynamicLibrary.open` is intentionally

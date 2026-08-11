@@ -1,4 +1,4 @@
-// Unit tests for the durable-index eq-bounds helper (Phase 2).
+// Unit tests for the durable-index eq-bounds helper ().
 //
 // The bounds must form a lexicographic range that matches exactly the durable
 // `__gecko_index` keys whose 4-element composite is `[table, field, value, *]`,
@@ -98,7 +98,7 @@ void main() {
       'fieldBounds is a broad candidate span, not semantic value ordering',
       () {
         // DefaultWireCodec v1 length-prefixes strings and does not sort all
-        // numeric encodings by semantic value. M5 therefore uses fieldBounds
+        // numeric encodings by semantic value. therefore uses fieldBounds
         // only to generate candidates and rechecks the predicate in Rust.
         final codec = const DefaultWireCodec();
         final values = ['z', 'aa', 'prefix-long'];

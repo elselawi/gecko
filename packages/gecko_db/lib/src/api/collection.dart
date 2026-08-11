@@ -30,7 +30,7 @@ abstract class Collection<T> {
   /// Fetches the record with [id], or null if absent.
   Future<T?> get(Object? id);
 
-  /// M3: batched point-read — fetches the records for [ids] in ONE backend
+  /// batched point-read — fetches the records for [ids] in ONE backend
   /// read (on the native backend, one Rust call in a single read
   /// transaction), returning rows in the same order as [ids]. Ids with no
   /// record are skipped, so the result may be shorter than [ids]. This is the
@@ -45,7 +45,7 @@ abstract class Collection<T> {
   /// documented no-op.
   Future<void> delete(Object? id);
 
-  /// Partial update of [fields] on the record with [id] (Phase 3), without a
+  /// Partial update of [fields] on the record with [id] (), without a
   /// full record rewrite. Missing/null/default are distinct states.
   Future<void> patch(Object? id, Map<String, Object?> fields);
 
@@ -60,7 +60,7 @@ abstract class Collection<T> {
   Stream<T?> watch(Object? id);
 
   /// Watches the whole collection — a coarse `Stream<List<T>>` re-emitting
-  /// the full list on any relevant change (per-row diffing is Phase 5/12).
+  /// the full list on any relevant change (per-row diffing is /12).
   Stream<List<T>> watchAll();
 
   /// Per-row diff mode for large watched collections. The initial emission

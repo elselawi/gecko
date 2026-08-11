@@ -29,7 +29,7 @@ const TABLE_PREFIX: &str = "__gecko_user_";
 pub(crate) type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
 pub type ByteEntry = (Vec<u8>, Vec<u8>);
 
-/// M11: one group of child rows sharing the same foreign-key value (parent
+/// one group of child rows sharing the same foreign-key value (parent
 /// id). The worker classifies matching child rows by FK so Dart receives
 /// pre-grouped candidates instead of re-decoding each row's FK field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub struct GroupedChildEntries {
     pub entries: Vec<ByteEntry>,
 }
 
-/// M8 (ADR-0030): the outcome of one committed batch — the worker sequence plus
+/// the outcome of one committed batch — the worker sequence plus
 /// one [`crate::registry::RegistryDelta`] per touched live registration.
 #[derive(Debug, Clone)]
 pub struct ApplyBatchOutcome {
@@ -48,7 +48,7 @@ pub struct ApplyBatchOutcome {
     pub deltas: Vec<crate::registry::RegistryDelta>,
 }
 
-/// Storage-level size/health report (Workstream 5).
+/// Storage-level size/health report
 #[derive(Debug, Clone)]
 pub struct StorageStats {
     /// Bytes the database file occupies on disk (physical).
@@ -108,11 +108,11 @@ pub struct RedbWorker {
     /// time, even after later write transactions commit.
     snapshots: HashMap<u64, ReadTransaction>,
     next_snapshot_id: u64,
-    /// M8: live-query registry (ADR-0030). Non-durable; dies with the worker.
+    /// live-query registry Non-durable; dies with the worker.
     registry: crate::registry::LiveRegistry,
 }
 
-/// A candidate row held by the M4 top-K sort heap: the record key, the raw row
+/// A candidate row held by the top-K sort heap: the record key, the raw row
 /// bytes, and the precomputed sort-key tuple (one `Option<RowValue>` per sort
 /// spec — `None` = the row lacks that field, which sorts last for ascending /
 /// first for descending, exactly like Dart `compareRows`).
@@ -331,7 +331,7 @@ impl RedbWorker {
     /// Opens a database over an OPFS sync-access handle (wasm32 only). See the
     /// module-level docs on `crate::opfs` for the acquisition protocol.
     ///
-    /// M7.5: there is no in-memory or `:memory:` mode. Every supported web
+    /// there is no in-memory or `:memory:` mode. Every supported web
     /// store is an OPFS file, so the worker must have an OPFS sync-access
     /// handle registered for the path before opening.
     #[cfg(target_arch = "wasm32")]
@@ -362,7 +362,7 @@ impl RedbWorker {
         })
     }
 
-    /// Creates or opens an *encrypted* database (Workstream 4). Every physical
+    /// Creates or opens an *encrypted* database Every physical
     /// page is AES-256-GCM authenticated under [key] (32 bytes). The key is
     /// held only in this worker's memory and never written to disk. Only
     /// read-write mode is supported for encrypted files.
@@ -451,11 +451,10 @@ impl RedbWorker {
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)]
     ) -> Result<u64, WorkerError> {
-        self.apply_batch_reactive(operations, index_definitions)
-            .map(|result| result.sequence)
+        self.apply_batch_reactive(operations, index_definitions).map(|result| result.sequence)
     }
 
-    /// M8 (ADR-0030): applies a batch and also evaluates every touched live
+    /// applies a batch and also evaluates every touched live
     /// registration, returning the worker sequence plus one
     /// [`crate::registry::RegistryDelta`] per registration. The reactive
     /// registry is updated in the same write transaction the batch commits in.
@@ -467,14 +466,14 @@ impl RedbWorker {
         self.apply_batch_impl(operations, index_definitions, 0)
     }
 
-    /// M8/M10: like [Self::apply_batch_reactive], but also prunes the
+    /// /like [Self::apply_batch_reactive], but also prunes the
     /// pending-sync change log in the same transaction when the batch touched
     /// it and [change_log_max_entries] (0 = disabled) is exceeded.
     pub fn apply_batch_reactive_with_retention(
         &mut self,
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)],
-        change_log_max_entries: u64,
+        change_log_max_entries: u64
     ) -> Result<ApplyBatchOutcome, WorkerError> {
         self.apply_batch_impl(operations, index_definitions, change_log_max_entries)
     }
@@ -483,7 +482,7 @@ impl RedbWorker {
         &mut self,
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)],
-        change_log_max_entries: u64,
+        change_log_max_entries: u64
     ) -> Result<ApplyBatchOutcome, WorkerError> {
         if self.read_only {
             return Err(
@@ -498,7 +497,7 @@ impl RedbWorker {
             WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
         };
 
-        // M8: collect the affected (table, key) pairs and wholesale-cleared
+        // collect the affected (table, key) pairs and wholesale-cleared
         // tables so the reactive registry can re-evaluate them before commit.
         let mut affected: Vec<(String, Vec<u8>)> = Vec::new();
         let mut cleared: Vec<String> = Vec::new();
@@ -674,12 +673,13 @@ impl RedbWorker {
             }
         }
 
-        // M8: re-evaluate every touched live registration in the same write
+        // re-evaluate every touched live registration in the same write
         // transaction (the registry reads the just-applied state), then commit.
-        // M10: prune the pending-sync change log in the same transaction when
+        // prune the pending-sync change log in the same transaction when
         // the batch grew it and a retention limit is configured.
-        if change_log_max_entries > 0
-            && affected.iter().any(|(table, _)| table == "__gecko_change_log")
+        if
+            change_log_max_entries > 0 &&
+            affected.iter().any(|(table, _)| table == "__gecko_change_log")
         {
             prune_change_log(&transaction, change_log_max_entries)?;
         }
@@ -692,7 +692,7 @@ impl RedbWorker {
         })
     }
 
-    /// M8 (ADR-0030): registers a live query with the worker and materializes
+    /// registers a live query with the worker and materializes
     /// its initial result set from one consistent read transaction. Returns
     /// `(registration id, initial snapshot in result order)`.
     pub fn register_live_query(
@@ -704,20 +704,21 @@ impl RedbWorker {
     ) -> Result<(u64, Vec<ByteEntry>), WorkerError> {
         // Validate the kind before registering (the registry itself treats all
         // kinds uniformly; Dart decides no-op suppression from `unchanged`).
-        crate::registry::LiveQueryKind::from_u8(kind).ok_or_else(|| {
-            WorkerError::InvalidOperation(format!("unknown live-query kind {kind}"))
-        })?;
+        crate::registry::LiveQueryKind
+            ::from_u8(kind)
+            .ok_or_else(|| {
+                WorkerError::InvalidOperation(format!("unknown live-query kind {kind}"))
+            })?;
         let transaction = self.begin_read()?;
-        self.registry
-            .register(&transaction, table, predicate_bytes, sort_bytes)
+        self.registry.register(&transaction, table, predicate_bytes, sort_bytes)
     }
 
-    /// M8 (ADR-0030): removes a live-query registration (idempotent).
+    /// removes a live-query registration (idempotent).
     pub fn unregister_live_query(&mut self, id: u64) {
         self.registry.unregister(id);
     }
 
-    /// M10 (plan §M10): aggregates the pending local changes from the
+    /// Aggregates the pending local changes from the
     /// sync-state table: only DIRTY records whose origin is not `remoteSync`,
     /// ordered by `localMutationId`. Returns `(key, record bytes)` pairs; Dart
     /// decodes them into the public `PendingChange` model. Each sync-state key
@@ -727,14 +728,15 @@ impl RedbWorker {
         let transaction = self.begin_read()?;
         let state = match transaction.open_table(table_definition("__gecko_sync_state")) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         let mut rows: Vec<(Vec<u8>, Vec<u8>, u64)> = Vec::new();
-        for entry in state
-            .iter()
-            .map_err(|error| WorkerError::Storage(error.to_string()))?
-        {
+        for entry in state.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row = entry.1.value();
             if !change_record_dirty(row) {
@@ -751,7 +753,12 @@ impl RedbWorker {
             rows.push((entry.0.value().to_vec(), row.to_vec(), lsn));
         }
         rows.sort_by_key(|(_, _, lsn)| *lsn);
-        Ok(rows.into_iter().map(|(key, row, _)| (key, row)).collect())
+        Ok(
+            rows
+                .into_iter()
+                .map(|(key, row, _)| (key, row))
+                .collect()
+        )
     }
 
     /// Number of active live-query registrations (diagnostics).
@@ -779,7 +786,7 @@ impl RedbWorker {
         Ok(value)
     }
 
-    /// M3: batched point-read — fetches N keys in ONE read transaction,
+    /// batched point-read — fetches N keys in ONE read transaction,
     /// returning `(key, value)` pairs for keys that exist. Keys whose row is
     /// absent are omitted (the caller can compute the missing set if it
     /// needs). A missing table is an empty result, never an error. This kills
@@ -952,7 +959,7 @@ impl RedbWorker {
         self.snapshots.remove(&id);
     }
 
-    /// M7: verifies and repairs all durable-index entries for [table] in Rust.
+    /// verifies and repairs all durable-index entries for [table] in Rust.
     /// The caller supplies the declared indexed fields; primary rows are the
     /// source of truth and the repair is committed atomically with no Dart row
     /// materialization. Index values are the encoded primary record keys.
@@ -1034,7 +1041,7 @@ impl RedbWorker {
         Ok(())
     }
 
-    /// Phase 2 native query fast path: range-scans the durable `__gecko_index`
+    /// native query fast path: range-scans the durable `__gecko_index`
     /// table for keys in `[start..=end]`, then joins each index entry's value
     /// (which is the user-table row key) back to the matching row in [table],
     /// returning `(recordId, row)` pairs in ONE hop. This eliminates the
@@ -1131,7 +1138,7 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// M5: scans one or more durable-index ranges, intersects their candidate
+    /// scans one or more durable-index ranges, intersects their candidate
     /// row keys, and re-evaluates the complete predicate in Rust. Range and
     /// prefix filters use broad `(table, field)` bounds because the v1 row
     /// codec is not generally order-preserving (notably for negative numbers
@@ -1161,7 +1168,7 @@ impl RedbWorker {
         self.query_indexed_multi_with(transaction, table, index_table, ranges, predicate_bytes)
     }
 
-    /// M7.1: counts matching rows from durable-index candidates without
+    /// counts matching rows from durable-index candidates without
     /// transferring primary rows to Dart. The complete predicate is still
     /// rechecked against each candidate row in this snapshot.
     pub fn snapshot_query_indexed_count(
@@ -1176,7 +1183,7 @@ impl RedbWorker {
         self.query_indexed_count_with(transaction, table, index_table, ranges, predicate_bytes)
     }
 
-    /// M7.1: emits only the requested field bytes from durable-index
+    /// emits only the requested field bytes from durable-index
     /// candidates. Dart performs the final decode and insertion-order dedup.
     pub fn snapshot_query_indexed_distinct(
         &self,
@@ -1313,7 +1320,7 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// M7.1: reads one parent row and extracts the child foreign-key value in
+    /// reads one parent row and extracts the child foreign-key value in
     /// the same snapshot, returning no row materialization for a missing key.
     pub fn snapshot_relationship_parent(
         &self,
@@ -1362,7 +1369,7 @@ impl RedbWorker {
         Ok(Some((parent_key, parent_value.value().to_vec())))
     }
 
-    /// M7.1/M11: returns child rows whose foreign key matches any requested
+    /// /returns child rows whose foreign key matches any requested
     /// parent ID, **grouped by FK value in Rust**. Indexed callers supply
     /// durable index ranges; unindexed callers supply the complete predicate
     /// and Rust evaluates it here. Grouping removes the Dart-side re-decode
@@ -1469,13 +1476,15 @@ impl RedbWorker {
                 .or_default()
                 .push((row_key, row_bytes.to_vec()));
         }
-        Ok(groups
-            .into_iter()
-            .map(|(parent_id, entries)| GroupedChildEntries { parent_id, entries })
-            .collect())
+        Ok(
+            groups
+                .into_iter()
+                .map(|(parent_id, entries)| GroupedChildEntries { parent_id, entries })
+                .collect()
+        )
     }
 
-    /// M7.1: returns join IDs from a reserved many-to-many table while the
+    /// returns join IDs from a reserved many-to-many table while the
     /// entire scan remains inside one worker-owned snapshot.
     pub fn snapshot_relationship_join_ids(
         &self,
@@ -1585,12 +1594,12 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
+    /// step 2: full-scan with a pushed predicate. Scans every row in
     /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
     /// (decoding only the referenced fields via `find_field`), and returns
     /// only the matching `(recordId, row)` pairs in ONE hop. Non-matching
     /// rows are never decoded in Dart — the dominant saving for unindexed
-    /// queries (the Phase 1 profile showed `scanAll` transferring the whole
+    /// queries (the profile showed `scanAll` transferring the whole
     /// table dominated 70% of a 100k-row full scan).
     ///
     /// [predicate_bytes] is the Dart-serialized `Predicate` wire payload
@@ -1647,7 +1656,7 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+    /// aggregate pushdown — counts matching rows WITHOUT transferring
     /// them. Scans [table], evaluates [predicate_bytes] against each row's
     /// bytes IN RUST, and returns only the matching count in one hop. A
     /// `count()` query no longer pays the decode + transfer cost of every
@@ -1701,7 +1710,7 @@ impl RedbWorker {
         Ok(count)
     }
 
-    /// M3: aggregate pushdown — emits only the bytes of [field] for each
+    /// aggregate pushdown — emits only the bytes of [field] for each
     /// matching row, so a `distinct(field)` query transfers one value per row
     /// instead of the whole row. Returns the raw encoded `RowValue` bytes
     /// (the same bytes `find_field` would read the value into); the Dart side
@@ -1772,9 +1781,9 @@ impl RedbWorker {
         Ok(result)
     }
 
-    // ── M4: early LIMIT/OFFSET + indexed/top-K sorting ──────────────────────
+    // ── early LIMIT/OFFSET + indexed/top-K sorting ──────────────────────
 
-    /// M4: full-scan with a pushed predicate and an early LIMIT/OFFSET —
+    /// full-scan with a pushed predicate and an early LIMIT/OFFSET —
     /// skips the first [offset] matches and returns at most [limit] of the
     /// rest, stopping the scan as soon as the window is filled. Non-matching
     /// rows are never decoded in Dart, and (unlike [Self::query_filtered])
@@ -1848,7 +1857,7 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// M4: index-served eq query with an early LIMIT/OFFSET. Streams the
+    /// index-served eq query with an early LIMIT/OFFSET. Streams the
     /// durable-index range `[start..=end]` in index-key order, joins each
     /// entry back to its row, applies [predicate_bytes] (the full filter set,
     /// so early-stop is correct even with additional filters), and stops once
@@ -1971,7 +1980,7 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// M4: full-scan + top-K sort. Scans every row in [table], evaluates
+    /// full-scan + top-K sort. Scans every row in [table], evaluates
     /// [predicate_bytes], and keeps only the `offset + limit` smallest rows
     /// under the [sort_spec_bytes] ordering (a port of Dart `compareRows`),
     /// then returns the `[offset, offset+limit)` window in sorted order. The
@@ -2035,7 +2044,7 @@ impl RedbWorker {
         }
         let cap = limit.map(|l| offset.saturating_add(l) as usize).unwrap_or(usize::MAX);
         let mut heap = TopK::new(cap, |a: &SortCandidate, b: &SortCandidate| {
-            // M4: ties break by record key bytes (matching the durable-index
+            // ties break by record key bytes (matching the durable-index
             // order and the Dart `_compareDecoded` tiebreak) so every backend
             // returns the same deterministic order.
             compare_rows_from_keys(a, b, &specs.specs).then_with(|| a.key.cmp(&b.key))
@@ -2064,7 +2073,7 @@ impl RedbWorker {
         Ok(slice_offset_limit(sorted, limit, offset))
     }
 
-    /// M4: index-ordered early-stop sort. When a query's sort field is covered
+    /// index-ordered early-stop sort. When a query's sort field is covered
     /// by a single-field durable index, the composite index keys are already
     /// ordered by `(value, recordId)` — the same order Dart's stable sort of
     /// that field produces. This streams the index range `[start..=end]`,
@@ -2233,8 +2242,7 @@ impl RedbWorker {
         // are found with a table scan (stable recordId order, matching Dart's
         // stable sort of ties). In eq-bounded mode every matching row carries
         // the sort field, so no append is needed.
-        let needs_append = !eq_bounded
-            && want.is_none_or(|w| (matches.len() as u64) < w);
+        let needs_append = !eq_bounded && want.is_none_or(|w| (matches.len() as u64) < w);
         if needs_append {
             let mut present = std::collections::HashSet::new();
             for k in &matched_keys {
@@ -2322,7 +2330,7 @@ impl RedbWorker {
     }
 
     /// Reports physical (file) and logical (payload) size plus health counters
-    /// (Workstream 5). Logical size iterates every table once in a consistent
+    /// Logical size iterates every table once in a consistent
     /// read snapshot.
     pub fn storage_stats(&self) -> Result<StorageStats, WorkerError> {
         let physical_bytes = std::fs
@@ -2408,30 +2416,28 @@ fn change_record_mutation_id(row_bytes: &[u8]) -> u64 {
     }
 }
 
-/// M10 (plan §M10): prunes the pending-sync change log in the given write
+/// Prunes the pending-sync change log in the given write
 /// transaction when it exceeds [max_entries]. Only NON-DIRTY records (already
 /// synced) are pruned, oldest-first (the log is keyed by `[lsn, ordinal]`, so
 /// table iteration order is commit order). The sync watermark is advanced to
 /// the highest pruned LSN — matching the previous Dart-side behavior, now
 /// executed in the same transaction as the batch that grew the log.
-fn prune_change_log(
-    transaction: &WriteTransaction,
-    max_entries: u64,
-) -> Result<(), WorkerError> {
+fn prune_change_log(transaction: &WriteTransaction, max_entries: u64) -> Result<(), WorkerError> {
     if max_entries == 0 {
         return Ok(());
     }
     let mut log = match transaction.open_table(table_definition("__gecko_change_log")) {
         Ok(t) => t,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-        Err(error) => return Err(WorkerError::Storage(error.to_string())),
+        Err(redb::TableError::TableDoesNotExist(_)) => {
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(WorkerError::Storage(error.to_string()));
+        }
     };
     let mut count: u64 = 0;
     let mut non_dirty: Vec<(Vec<u8>, u64)> = Vec::new();
-    for entry in log
-        .iter()
-        .map_err(|error| WorkerError::Storage(error.to_string()))?
-    {
+    for entry in log.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
         let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
         let row = entry.1.value();
         count += 1;
@@ -2453,8 +2459,12 @@ fn prune_change_log(
     if highest_pruned_lsn > 0 {
         let mut meta = match transaction.open_table(table_definition("__gecko_sync_meta")) {
             Ok(t) => t,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
-            Err(error) => return Err(WorkerError::Storage(error.to_string())),
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
         };
         // Watermark key = DefaultWireCodec string "watermark".
         let mut key = vec![crate::value_codec::TAG_STRING];
@@ -2468,16 +2478,19 @@ fn prune_change_log(
         let old_wm = old
             .as_deref()
             .and_then(|bytes| crate::value_codec::decode_value(bytes).ok())
-            .and_then(|value| match value {
-                crate::value_codec::RowValue::Int64(n) => Some(n.max(0) as u64),
-                _ => None,
+            .and_then(|value| {
+                match value {
+                    crate::value_codec::RowValue::Int64(n) => Some(n.max(0) as u64),
+                    _ => None,
+                }
             })
             .unwrap_or(0);
         let new_wm = old_wm.max(highest_pruned_lsn);
         // Watermark value = DefaultWireCodec int64.
         let mut value = vec![crate::value_codec::TAG_INT64];
         value.extend_from_slice(&(new_wm as i64).to_be_bytes());
-        meta.insert(key.as_slice(), value.as_slice())
+        meta
+            .insert(key.as_slice(), value.as_slice())
             .map_err(|error| WorkerError::Storage(error.to_string()))?;
     }
     Ok(())
@@ -2965,7 +2978,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    // M3: shared row/encoder helpers used by the new aggregate + get_many
+    // shared row/encoder helpers used by the new aggregate + get_many
     // tests. Keeps the test rows byte-identical to the query_filtered suite.
     fn encode_test_row(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
         use crate::value_codec::{ TAG_MAP, TAG_STRING };
@@ -3283,7 +3296,7 @@ mod tests {
                 &crate::predicate::encode_predicate(&[])
             )
             .unwrap();
-        // M11: grouped return — one group per FK value, rows in row-key order.
+        // grouped return — one group per FK value, rows in row-key order.
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].parent_id, encode_test_string("a1"));
         assert_eq!(children[0].entries.len(), 2);
@@ -3379,13 +3392,13 @@ mod tests {
                 OpKind::Put,
                 "authors",
                 Some(encode_test_string("a1")),
-                Some(encode_test_row(&[("id", encode_test_string("a1"))])),
+                Some(encode_test_row(&[("id", encode_test_string("a1"))]))
             ),
             op_with_table(
                 OpKind::Put,
                 "authors",
                 Some(encode_test_string("a2")),
-                Some(encode_test_row(&[("id", encode_test_string("a2"))])),
+                Some(encode_test_row(&[("id", encode_test_string("a2"))]))
             ),
             op_with_table(
                 OpKind::Put,
@@ -3431,8 +3444,8 @@ mod tests {
                 OpKind::Put,
                 "posts",
                 Some(encode_test_string("p4")),
-                Some(encode_test_row(&[("id", encode_test_string("p4"))])),
-            ),
+                Some(encode_test_row(&[("id", encode_test_string("p4"))]))
+            )
         ];
         worker.apply_batch_with_indexes(&rows, &indexes).unwrap();
         let snapshot = worker.create_snapshot().unwrap();
@@ -3470,7 +3483,10 @@ mod tests {
                 "authorId",
                 &[encode_test_string("a1"), encode_test_string("a2")],
                 "__gecko_index",
-                &[(start_a1, end_a1), (start_a2, end_a2)],
+                &[
+                    (start_a1, end_a1),
+                    (start_a2, end_a2),
+                ],
                 &crate::predicate::encode_predicate(&[])
             )
             .unwrap();
@@ -3564,7 +3580,7 @@ mod tests {
         // set is exactly {g0, g1} and is unsorted (the caller dedups).
         let empty_pred = predicate::encode_predicate(&[]);
         let field_bytes = worker.query_filtered_distinct("items", &empty_pred, "g").unwrap();
-        // M3 contract: the pushdown emits the field's bytes for EACH
+        // contract: the pushdown emits the field's bytes for EACH
         // matching row (NOT deduped) — the Dart caller dedups. With 4 seeded
         // rows that all have `g`, we get 4 byte slices that decode to
         // g0/g0/g1/g1.
@@ -3633,7 +3649,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    // ── M4: early limit/offset + sorted + index-ordered ────────────────────
+    // ── early limit/offset + sorted + index-ordered ────────────────────
 
     /// The durable-index composite key `encode([table, field, value, recordId])`
     /// (a 4-element codec list) for the test table.
@@ -3704,7 +3720,7 @@ mod tests {
                 end: None,
             });
         }
-        // Also index nick so M5 tests can intersect two different fields.
+        // Also index nick so tests can intersect two different fields.
         for k in [b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()] {
             ops.push(Op {
                 kind: OpKind::Put,
@@ -3945,7 +3961,7 @@ mod tests {
             .unwrap();
         assert_eq!(off[0].0, b"k2");
         assert_eq!(off[1].0, b"k3");
-        // M9: unbounded (limit None) sorted queries must ALSO append the
+        // unbounded (limit None) sorted queries must ALSO append the
         // missing-field row (the index stream alone would drop it).
         let all = worker
             .query_indexed_ordered(
@@ -3960,11 +3976,11 @@ mod tests {
                 0
             )
             .unwrap();
-        let keys: Vec<&[u8]> = all.iter().map(|e| e.0.as_slice()).collect();
-        assert_eq!(
-            keys,
-            vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]
-        );
+        let keys: Vec<&[u8]> = all
+            .iter()
+            .map(|e| e.0.as_slice())
+            .collect();
+        assert_eq!(keys, vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]);
         let _ = std::fs::remove_file(path);
     }
 
@@ -4040,7 +4056,7 @@ mod tests {
                 },
             ]
         );
-        // Sanity: the plain M2 join over the same bounds must find k1.
+        // Sanity: the plain join over the same bounds must find k1.
         let joined = worker.query_indexed("items", "__gecko_index", &full, &end).unwrap();
         assert_eq!(joined.len(), 1, "index bounds must reach the age=20 entry");
         assert_eq!(joined[0].0, b"k1");
@@ -4059,7 +4075,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    // --- M8: Rust-owned reactive registry (ADR-0030) ---
+    // --- Rust-owned reactive registry --
 
     /// Seeds `items` with g0/g0/g1/g1 rows (ages 10/20/30/40).
     fn seed_registry_fixture(label: &str) -> (std::path::PathBuf, RedbWorker) {
@@ -4073,19 +4089,23 @@ mod tests {
         ];
         for (k, g, age) in rows {
             worker
-                .apply_batch(&[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(k.as_bytes().to_vec()),
-                    Some(
-                        encode_test_row(
-                            &[
-                                ("g", encode_test_string(g)),
-                                ("age", encode_test_int64(age)),
-                            ]
+                .apply_batch(
+                    &[
+                        op_with_table(
+                            OpKind::Put,
+                            "items",
+                            Some(k.as_bytes().to_vec()),
+                            Some(
+                                encode_test_row(
+                                    &[
+                                        ("g", encode_test_string(g)),
+                                        ("age", encode_test_int64(age)),
+                                    ]
+                                )
+                            )
                         ),
-                    ),
-                )])
+                    ]
+                )
                 .unwrap();
         }
         (path, worker)
@@ -4094,10 +4114,14 @@ mod tests {
     fn g0_predicate() -> Vec<u8> {
         use crate::predicate::{ encode_predicate, Filter };
         use crate::value_codec::RowValue;
-        encode_predicate(&[Filter::Equals {
-            field: "g".into(),
-            value: RowValue::String("g0".into()),
-        }])
+        encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "g".into(),
+                    value: RowValue::String("g0".into()),
+                },
+            ]
+        )
     }
 
     fn age_ascending_sort() -> Vec<u8> {
@@ -4113,7 +4137,7 @@ mod tests {
 
     #[test]
     fn live_registry_filtered_query_tracks_join_leave_update() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-query");
+        let (path, mut worker) = seed_registry_fixture("registry-query");
         let (id, initial) = worker
             .register_live_query("items", &g0_predicate(), &no_filters(), 2)
             .unwrap();
@@ -4174,15 +4198,42 @@ mod tests {
         assert_eq!(result.deltas.len(), 1);
         let delta = &result.deltas[0];
         assert_eq!(delta.id, id);
-        assert_eq!(delta.added, vec![(b"k2".to_vec(), encode_test_row(
-            &[("g", encode_test_string("g0")), ("age", encode_test_int64(31))]
-        ))]);
-        assert_eq!(delta.removed, vec![(b"k1".to_vec(), encode_test_row(
-            &[("g", encode_test_string("g0")), ("age", encode_test_int64(20))]
-        ))]);
-        assert_eq!(delta.updated, vec![(b"k0".to_vec(), encode_test_row(
-            &[("g", encode_test_string("g0")), ("age", encode_test_int64(11))]
-        ))]);
+        assert_eq!(
+            delta.added,
+            vec![(
+                b"k2".to_vec(),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g0")),
+                        ("age", encode_test_int64(31)),
+                    ]
+                ),
+            )]
+        );
+        assert_eq!(
+            delta.removed,
+            vec![(
+                b"k1".to_vec(),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g0")),
+                        ("age", encode_test_int64(20)),
+                    ]
+                ),
+            )]
+        );
+        assert_eq!(
+            delta.updated,
+            vec![(
+                b"k0".to_vec(),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g0")),
+                        ("age", encode_test_int64(11)),
+                    ]
+                ),
+            )]
+        );
         assert!(!delta.unchanged);
         // Snapshot = k0 (updated), k2 (joined) in byte-key order.
         assert_eq!(delta.snapshot.len(), 2);
@@ -4193,38 +4244,54 @@ mod tests {
 
     #[test]
     fn live_registry_watch_all_returns_full_snapshot_per_batch() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-watchall");
-        let (id, initial) = worker.register_live_query("items", &no_filters(), &no_filters(), 0).unwrap();
+        let (path, mut worker) = seed_registry_fixture("registry-watchall");
+        let (id, initial) = worker
+            .register_live_query("items", &no_filters(), &no_filters(), 0)
+            .unwrap();
         assert_eq!(initial.len(), 4);
         // Byte-key order: k0..k3.
         assert_eq!(
-            initial.iter().map(|e| e.0.clone()).collect::<Vec<_>>(),
+            initial
+                .iter()
+                .map(|e| e.0.clone())
+                .collect::<Vec<_>>(),
             vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]
         );
         let result = worker
             .apply_batch_reactive(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k9".to_vec()),
-                    Some(
-                        encode_test_row(
-                            &[
-                                ("g", encode_test_string("g0")),
-                                ("age", encode_test_int64(99)),
-                            ]
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k9".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(99)),
+                                ]
+                            )
                         )
                     ),
-                )],
+                ],
                 &[]
             )
             .unwrap();
         assert_eq!(result.deltas.len(), 1);
         let delta = &result.deltas[0];
         assert_eq!(delta.id, id);
-        assert_eq!(delta.added, vec![(b"k9".to_vec(), encode_test_row(
-            &[("g", encode_test_string("g0")), ("age", encode_test_int64(99))]
-        ))]);
+        assert_eq!(
+            delta.added,
+            vec![(
+                b"k9".to_vec(),
+                encode_test_row(
+                    &[
+                        ("g", encode_test_string("g0")),
+                        ("age", encode_test_int64(99)),
+                    ]
+                ),
+            )]
+        );
         assert_eq!(delta.snapshot.len(), 5);
         assert_eq!(delta.snapshot[4].0, b"k9");
         let _ = std::fs::remove_file(path);
@@ -4232,31 +4299,36 @@ mod tests {
 
     #[test]
     fn live_registry_sorted_query_inserts_at_comparator_position() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-sorted");
+        let (path, mut worker) = seed_registry_fixture("registry-sorted");
         let (id, initial) = worker
             .register_live_query("items", &no_filters(), &age_ascending_sort(), 2)
             .unwrap();
         // Ascending age: k0(10), k1(20), k2(30), k3(40).
         assert_eq!(
-            initial.iter().map(|e| e.0.clone()).collect::<Vec<_>>(),
+            initial
+                .iter()
+                .map(|e| e.0.clone())
+                .collect::<Vec<_>>(),
             vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]
         );
         // k0's age drops to 99 → moves to the end.
         let result = worker
             .apply_batch_reactive(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k0".to_vec()),
-                    Some(
-                        encode_test_row(
-                            &[
-                                ("g", encode_test_string("g0")),
-                                ("age", encode_test_int64(99)),
-                            ]
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k0".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(99)),
+                                ]
+                            )
                         )
                     ),
-                )],
+                ],
                 &[]
             )
             .unwrap();
@@ -4265,7 +4337,10 @@ mod tests {
         assert_eq!(delta.id, id);
         // Reordered snapshot: k1, k2, k3, k0.
         assert_eq!(
-            delta.snapshot.iter().map(|e| e.0.clone()).collect::<Vec<_>>(),
+            delta.snapshot
+                .iter()
+                .map(|e| e.0.clone())
+                .collect::<Vec<_>>(),
             vec![b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec(), b"k0".to_vec()]
         );
         let _ = std::fs::remove_file(path);
@@ -4273,8 +4348,10 @@ mod tests {
 
     #[test]
     fn live_registry_whole_table_clear_resets_to_empty() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-clear");
-        let (id, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 1).unwrap();
+        let (path, mut worker) = seed_registry_fixture("registry-clear");
+        let (id, _) = worker
+            .register_live_query("items", &g0_predicate(), &no_filters(), 1)
+            .unwrap();
         let result = worker
             .apply_batch_reactive(&[op_with_table(OpKind::Clear, "items", None, None)], &[])
             .unwrap();
@@ -4288,19 +4365,21 @@ mod tests {
         // A subsequent write sees an empty registry result set.
         let result = worker
             .apply_batch_reactive(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k5".to_vec()),
-                    Some(
-                        encode_test_row(
-                            &[
-                                ("g", encode_test_string("g0")),
-                                ("age", encode_test_int64(5)),
-                            ]
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k5".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(5)),
+                                ]
+                            )
                         )
                     ),
-                )],
+                ],
                 &[]
             )
             .unwrap();
@@ -4310,24 +4389,28 @@ mod tests {
 
     #[test]
     fn live_registry_idempotent_write_is_unchanged() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-idempotent");
-        let (_, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 1).unwrap();
+        let (path, mut worker) = seed_registry_fixture("registry-idempotent");
+        let (_, _) = worker
+            .register_live_query("items", &g0_predicate(), &no_filters(), 1)
+            .unwrap();
         // Same value for k0 → nothing observable changes.
         let result = worker
             .apply_batch_reactive(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k0".to_vec()),
-                    Some(
-                        encode_test_row(
-                            &[
-                                ("g", encode_test_string("g0")),
-                                ("age", encode_test_int64(10)),
-                            ]
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k0".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(10)),
+                                ]
+                            )
                         )
                     ),
-                )],
+                ],
                 &[]
             )
             .unwrap();
@@ -4343,8 +4426,10 @@ mod tests {
 
     #[test]
     fn live_registry_coalesces_a_batch_into_one_delta() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-coalesce");
-        let (id, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 2).unwrap();
+        let (path, mut worker) = seed_registry_fixture("registry-coalesce");
+        let (id, _) = worker
+            .register_live_query("items", &g0_predicate(), &no_filters(), 2)
+            .unwrap();
         // One batch touching 3 g0 rows → exactly one delta.
         let result = worker
             .apply_batch_reactive(
@@ -4353,13 +4438,27 @@ mod tests {
                         OpKind::Put,
                         "items",
                         Some(b"k0".to_vec()),
-                        Some(encode_test_row(&[("g", encode_test_string("g0")), ("age", encode_test_int64(1))]))
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(1)),
+                                ]
+                            )
+                        )
                     ),
                     op_with_table(
                         OpKind::Put,
                         "items",
                         Some(b"k1".to_vec()),
-                        Some(encode_test_row(&[("g", encode_test_string("g0")), ("age", encode_test_int64(2))]))
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(2)),
+                                ]
+                            )
+                        )
                     ),
                 ],
                 &[]
@@ -4371,12 +4470,14 @@ mod tests {
         // Registrations on an unrelated table are untouched.
         worker
             .apply_batch_reactive(
-                &[op_with_table(
-                    OpKind::Put,
-                    "other",
-                    Some(b"x".to_vec()),
-                    Some(encode_test_row(&[("g", encode_test_string("g0"))])),
-                )],
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "other",
+                        Some(b"x".to_vec()),
+                        Some(encode_test_row(&[("g", encode_test_string("g0"))]))
+                    ),
+                ],
                 &[]
             )
             .unwrap();
@@ -4392,25 +4493,29 @@ mod tests {
 
     #[test]
     fn live_registry_unregister_stops_deltas() {
-        let (path, mut worker) = seed_registry_fixture("m8-registry-unregister");
-        let (id, _) = worker.register_live_query("items", &g0_predicate(), &no_filters(), 2).unwrap();
+        let (path, mut worker) = seed_registry_fixture("registry-unregister");
+        let (id, _) = worker
+            .register_live_query("items", &g0_predicate(), &no_filters(), 2)
+            .unwrap();
         worker.unregister_live_query(id);
         assert_eq!(worker.live_query_count(), 0);
         let result = worker
             .apply_batch_reactive(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k0".to_vec()),
-                    Some(
-                        encode_test_row(
-                            &[
-                                ("g", encode_test_string("g0")),
-                                ("age", encode_test_int64(1)),
-                            ]
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k0".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("g", encode_test_string("g0")),
+                                    ("age", encode_test_int64(1)),
+                                ]
+                            )
                         )
                     ),
-                )],
+                ],
                 &[]
             )
             .unwrap();
@@ -4420,7 +4525,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    // --- M10: change-log pruning in the Rust commit path ---
+    // --- change-log pruning in the Rust commit path ---
 
     fn encode_log_key(lsn: u64) -> Vec<u8> {
         let mut out = vec![crate::value_codec::TAG_INT64];
@@ -4433,7 +4538,12 @@ mod tests {
         dirty_bytes.push(if dirty { 1 } else { 0 });
         let mut id_bytes = vec![crate::value_codec::TAG_INT64];
         id_bytes.extend_from_slice(&(lsn as i64).to_be_bytes());
-        encode_test_row(&[("dirty", dirty_bytes), ("localMutationId", id_bytes)])
+        encode_test_row(
+            &[
+                ("dirty", dirty_bytes),
+                ("localMutationId", id_bytes),
+            ]
+        )
     }
 
     fn watermark_key() -> Vec<u8> {
@@ -4452,33 +4562,39 @@ mod tests {
 
     #[test]
     fn change_log_pruning_keeps_dirty_records_and_advances_watermark() {
-        let path = temp_path("m10-prune");
+        let path = temp_path("prune");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         // 5 non-dirty records (lsn 1..5) + 2 dirty records (lsn 6,7) + a
         // watermark already at 3.
         let mut seed = Vec::new();
         for lsn in 1..=5u64 {
-            seed.push(op_with_table(
-                OpKind::Put,
-                "__gecko_change_log",
-                Some(encode_log_key(lsn)),
-                Some(encode_change_record(false, lsn)),
-            ));
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(false, lsn))
+                )
+            );
         }
         for lsn in 6..=7u64 {
-            seed.push(op_with_table(
-                OpKind::Put,
-                "__gecko_change_log",
-                Some(encode_log_key(lsn)),
-                Some(encode_change_record(true, lsn)),
-            ));
+            seed.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(encode_log_key(lsn)),
+                    Some(encode_change_record(true, lsn))
+                )
+            );
         }
-        seed.push(op_with_table(
-            OpKind::Put,
-            "__gecko_sync_meta",
-            Some(watermark_key()),
-            Some(watermark_value(3)),
-        ));
+        seed.push(
+            op_with_table(
+                OpKind::Put,
+                "__gecko_sync_meta",
+                Some(watermark_key()),
+                Some(watermark_value(3))
+            )
+        );
         worker.apply_batch_with_indexes(&seed, &[]).unwrap();
 
         // Retention 3: a change-log-touching batch makes count 8 → excess 5,
@@ -4486,14 +4602,16 @@ mod tests {
         // watermark advances to max(3, 5) = 5.
         let result = worker
             .apply_batch_reactive_with_retention(
-                &[op_with_table(
-                    OpKind::Put,
-                    "__gecko_change_log",
-                    Some(encode_log_key(8)),
-                    Some(encode_change_record(true, 8)),
-                )],
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "__gecko_change_log",
+                        Some(encode_log_key(8)),
+                        Some(encode_change_record(true, 8))
+                    ),
+                ],
                 &[],
-                3,
+                3
             )
             .unwrap();
         assert!(result.deltas.is_empty());
@@ -4518,14 +4636,9 @@ mod tests {
         // A batch that does NOT touch the change log must not prune.
         worker
             .apply_batch_reactive_with_retention(
-                &[op_with_table(
-                    OpKind::Put,
-                    "items",
-                    Some(b"k1".to_vec()),
-                    Some(vec![1]),
-                )],
+                &[op_with_table(OpKind::Put, "items", Some(b"k1".to_vec()), Some(vec![1]))],
                 &[],
-                1,
+                1
             )
             .unwrap();
         assert!(worker.get("__gecko_change_log", &encode_log_key(6)).unwrap().is_some());
@@ -4544,34 +4657,39 @@ mod tests {
                 ("dirty", dirty_bytes),
                 ("localMutationId", id_bytes),
                 ("origin", encode_test_string(origin)),
-            ],
+            ]
         )
     }
 
     #[test]
     fn pending_changes_aggregates_dirty_local_records_sorted() {
-        let path = temp_path("m10-pending");
+        let path = temp_path("pending-sync");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         let rows: Vec<(&[u8], bool, &str, u64)> = vec![
             (b"a", true, "user", 10),
             (b"b", true, "remoteSync", 20),
             (b"c", false, "user", 30),
-            (b"d", true, "user", 5),
+            (b"d", true, "user", 5)
         ];
         let mut ops = Vec::new();
         for (key, dirty, origin, lsn) in rows {
-            ops.push(op_with_table(
-                OpKind::Put,
-                "__gecko_sync_state",
-                Some(key.to_vec()),
-                Some(encode_change_record_with_origin(dirty, lsn, origin)),
-            ));
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "__gecko_sync_state",
+                    Some(key.to_vec()),
+                    Some(encode_change_record_with_origin(dirty, lsn, origin))
+                )
+            );
         }
         worker.apply_batch(&ops).unwrap();
         let got = worker.pending_changes().unwrap();
         // Only dirty + non-remote records qualify: a (lsn 10) and d (lsn 5);
         // sorted by localMutationId → d, a.
-        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        let keys: Vec<&[u8]> = got
+            .iter()
+            .map(|e| e.0.as_slice())
+            .collect();
         assert_eq!(keys, vec![&b"d"[..], &b"a"[..]]);
         // A missing sync-state table yields an empty result, never an error.
         assert!(worker.pending_changes().is_ok());

@@ -1,4 +1,4 @@
-/// Change feed contract (Phase 4).
+/// Change feed contract ().
 library;
 
 /// The kind of change applied to a key.
@@ -17,7 +17,7 @@ class Change {
   final Object? key;
   final ChangeKind kind;
 
-  /// Monotonically increasing sequence number (LSN) aligned with Phase 7's
+  /// Monotonically increasing sequence number (LSN) aligned with 's
   /// ordering clock when available.
   final int? sequence;
 
@@ -25,8 +25,8 @@ class Change {
   String toString() => 'Change($table, $key, ${kind.name}, seq=$sequence)';
 }
 
-/// A set of changes emitted after a committed batch. Per the phase contract,
-/// one coalesced emission per committed batch (per key), not one per op.
+/// A set of changes emitted after a committed batch. One coalesced emission
+/// per committed batch (per key), not one per op.
 class ChangeSet {
   const ChangeSet(this.changes, {this.sequence});
 

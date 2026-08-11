@@ -23,9 +23,9 @@ disclosure.
 
 **Claimed and tested:**
 - Data at rest is protected by authenticated encryption (Rust physical
-  AES-256-GCM page encryption, ADR-0009) when a raw 32-byte native key is
+  AES-256-GCM page encryption) when a raw 32-byte native key is
   configured; raw-file scans find no plaintext. Encryption is off by default
-  and is native-only in the M6.5 target contract.
+  and is native-only in the target contract.
 - Wrong keys, missing keys, and corrupted/tampered pages fail with typed
   errors before any data is returned.
 - Keys are never written to disk by the engine, never logged, and never
@@ -39,7 +39,7 @@ disclosure.
 
 **Explicitly NOT claimed:**
 - **Physical secure deletion** — logical deletion is supported; physical media
-  overwrite/TRIM is not implemented and must not be assumed (see ADR-0009).
+  overwrite/TRIM is not implemented and must not be assumed.
 - Protection against a hostile OS or process with full access to memory/disk
   (keys in memory can be read by such an attacker).
 - Side-channel resistance against sophisticated local hardware attackers.

@@ -1,6 +1,6 @@
 #!/usr/bin/env dart
 
-// Phase 13 — offline / determinism lint gate.
+// offline / determinism lint gate.
 //
 // Scans every test source in the repo and forbids two classes of flake:
 //   1. NETWORK: any reach for the real network (HttpClient, package:http,

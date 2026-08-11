@@ -1,4 +1,4 @@
-/// Row-level operations for Phase 3: applying partial updates (`patch`) while
+/// Row-level operations for applying partial updates (`patch`) while
 /// preserving the missing/null distinction, and resolving defaults.
 library;
 

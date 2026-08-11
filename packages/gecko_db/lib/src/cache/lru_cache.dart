@@ -1,7 +1,7 @@
 /// A minimal LRU cache in front of point reads for hot keys, closing the gap
-/// against pure-Dart in-memory alternatives on repeated point reads (Phase 2).
+/// against pure-Dart in-memory alternatives on repeated point reads ().
 ///
-/// Durability guarantee (per Phase 12's specification applied early): an
+/// Durability guarantee (per 's specification applied early): an
 /// eviction is never observable as data loss — only as a cache miss, because
 /// the cache is always backed by the durable backend.
 library;

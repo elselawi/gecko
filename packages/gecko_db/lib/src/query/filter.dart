@@ -1,4 +1,4 @@
-/// Phase 5 filter building blocks.
+/// filter building blocks.
 ///
 /// A filter is a pure function from a row map to whether it matches. Filters
 /// compose (AND) and support equality, range, and prefix matching. They are

@@ -1,4 +1,4 @@
-/// Phase 9 attachment metadata contracts.
+/// attachment metadata contracts.
 ///
 /// Attachment metadata tracks binary files that live outside the database.
 /// Every metadata state change is transactional with its own persistence; the
@@ -17,7 +17,7 @@ enum AttachmentDeleteState { none, pending, completed, failed }
 /// Whether an attachment is a primary file or a generated preview.
 enum AttachmentKind { original, preview }
 
-/// The full Phase 9 attachment-metadata record.
+/// The full attachment-metadata record.
 class AttachmentMetadata {
   const AttachmentMetadata({
     required this.id,
@@ -102,7 +102,7 @@ class AttachmentQuery {
   final Object? parentId;
 }
 
-/// Database-backed Phase 9 attachment-metadata surface.
+/// Database-backed attachment-metadata surface.
 abstract class AttachmentApi {
   /// Registers a new attachment, persisting its metadata. If a blob with
   /// [contentHash] already exists, no second copy is persisted and the new

@@ -1,4 +1,4 @@
-// M12 comparative-benchmark schema: drift database.
+// comparative-benchmark schema: drift database.
 //
 // DEV TOOLING ONLY (not part of the gecko_db product). This is a minimal
 // drift database so `benchmark/comparative.dart` can race gecko_db against

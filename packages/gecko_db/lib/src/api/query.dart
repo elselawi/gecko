@@ -13,7 +13,7 @@ enum SortOrder { ascending, descending }
 ///   bounds and join candidates in Rust.
 /// - [nativeFilteredScan]: the predicate was pushed to Rust and evaluated
 ///   against each row's bytes there; only matches crossed back to Dart
-///   (Phase 2 step 2, native backend only).
+/// (step 2, native backend only).
 enum IndexPlan { fullScan, secondaryIndex, nativeFilteredScan }
 
 /// A single sort specification (field + direction).
@@ -84,12 +84,12 @@ abstract class Query<T> {
   ///
   /// The cursor captures one MVCC snapshot at creation and paginates that
   /// frozen view, so concurrent inserts/updates/deletes never duplicate or
-  /// drop records across pages (WS3 cursor contract). Call [QueryCursor.dispose]
+  /// drop records across pages (cursor contract). Call [QueryCursor.dispose]
   /// to release the snapshot.
   QueryCursor<T> cursor({int? pageSize});
 }
 
-/// A snapshot-bound pagination cursor over a query result (WS3).
+/// A snapshot-bound pagination cursor over a query result 
 ///
 /// Pages follow the query's documented order, are disjoint, and together
 /// exhaust the result exactly once. The underlying snapshot is released by

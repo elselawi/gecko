@@ -1,4 +1,4 @@
-// M12 comparative-benchmark schema: isar_community collection.
+// comparative-benchmark schema: isar_community collection.
 //
 // This file is DEV TOOLING ONLY (not part of the gecko_db product). It exists
 // so `benchmark/comparative.dart` can race gecko_db against Isar under the

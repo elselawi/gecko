@@ -1,4 +1,4 @@
-/// Transaction contract (Phase 7).
+/// Transaction contract ().
 library;
 
 import 'collection.dart';

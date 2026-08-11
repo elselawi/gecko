@@ -1,9 +1,9 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-/// Phase 0 contract: the public API is defined as abstract interfaces with no
-/// concrete logic leaking into the contracts, so later phases build on a stable
-/// (ADR-gated) foundation.
+/// contract: the public API is defined as abstract interfaces with no
+/// concrete logic leaking into the contracts, so the engine stays replaceable
+/// behind a stable foundation.
 void main() {
   group('Public API contract — abstractness', () {
     test('Database.open remains an abstract contract entry point', () {

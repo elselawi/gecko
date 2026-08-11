@@ -172,9 +172,9 @@ class WebWorkerClient {
     return int.parse(value.toString());
   }
 
-  /// M8 (ADR-0030): applies a batch and returns the reactive-registry deltas
+  /// applies a batch and returns the reactive-registry deltas
   /// the worker produced for it. [changeLogMaxEntries] (0 = disabled) prunes
-  /// the pending-sync change log in the same write transaction (M10).
+  /// the pending-sync change log in the same write transaction 
   Future<List<RegistryDelta>> applyBatch(
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
@@ -198,7 +198,7 @@ class WebWorkerClient {
     ];
   }
 
-  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registers a live query with the worker's reactive
   /// registry, returning the registration id and initial result set.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
@@ -217,7 +217,7 @@ class WebWorkerClient {
     );
   }
 
-  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  /// removes a live-query registration (idempotent).
   Future<void> unregisterLiveQuery(int id) async {
     await _request('unregisterLiveQuery', <Object?>[id.toString()]);
   }
@@ -228,7 +228,7 @@ class WebWorkerClient {
     return int.parse(result as String);
   }
 
-  /// M10: aggregates pending local changes (dirty, non-remote, sorted by
+  /// aggregates pending local changes (dirty, non-remote, sorted by
   /// localMutationId) in Rust; returns (key, record) pairs for Dart to decode.
   Future<List<RawEntry>> pendingChanges() async {
     final result = await _request('pendingChanges', const <Object?>[]);

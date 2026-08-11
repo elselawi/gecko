@@ -4,32 +4,28 @@
 //! (`dart run tool/gen_golden_ops.dart`). This test decodes it with the *Rust*
 //! decoder and asserts the byte-for-byte reproduction of the logical ops.
 //!
-//! This is a Phase 0 contract artifact: a real cross-language check, not two
+//! This is a contract artifact: a real cross-language check, not two
 //! encoders that merely happen to agree on their own round-trips.
 
-use gecko_db_rust::wire::{Op, OpKind, WIRE_VERSION};
+use gecko_db_rust::wire::{ Op, OpKind, WIRE_VERSION };
 use std::path::PathBuf;
 
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("golden_ops.bin")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("golden_ops.bin")
 }
 
 #[test]
 fn dart_golden_decodes_byte_for_byte() {
-    let bytes = std::fs::read(fixture())
+    let bytes = std::fs
+        ::read(fixture())
         .expect("golden fixture must exist; run `dart run tool/gen_golden_ops.dart`");
-    assert_eq!(
-        bytes[0], WIRE_VERSION,
-        "fixture must carry current wire version"
-    );
+    assert_eq!(bytes[0], WIRE_VERSION, "fixture must carry current wire version");
 
     let ops = Op::decode_batch(&bytes).expect("Dart-generated fixture must decode in Rust");
 
     // The logical op set the fixture generator declares. If this drifts from
-    // the generator, regenerate with an ADR.
+    // the generator, regenerate the fixture with
+    // `dart run tool/gen_golden_ops.dart` and commit the new .bin.
     let expected = [
         (OpKind::Put, "users"),
         (OpKind::Put, "users"),
@@ -40,11 +36,7 @@ fn dart_golden_decodes_byte_for_byte() {
         (OpKind::Clear, "sessions"),
     ];
 
-    assert_eq!(
-        ops.len(),
-        expected.len(),
-        "op count must match the fixture contract"
-    );
+    assert_eq!(ops.len(), expected.len(), "op count must match the fixture contract");
     for (i, (kind, table)) in expected.iter().enumerate() {
         assert_eq!(ops[i].kind, *kind, "op {i} kind");
         assert_eq!(ops[i].table, *table, "op {i} table");
@@ -53,8 +45,5 @@ fn dart_golden_decodes_byte_for_byte() {
     // Re-encoding with Rust must reproduce the exact Dart bytes (identical
     // encoders, not merely self-consistent ones).
     let reencoded = Op::encode_batch(&ops);
-    assert_eq!(
-        reencoded, bytes,
-        "Rust re-encode must equal the Dart golden bytes"
-    );
+    assert_eq!(reencoded, bytes, "Rust re-encode must equal the Dart golden bytes");
 }

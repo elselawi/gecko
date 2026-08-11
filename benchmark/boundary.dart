@@ -1,4 +1,4 @@
-// Phase 1 boundary micro-benchmark.
+// boundary micro-benchmark.
 //
 // Measures the per-layer latency of the gecko_db read path on the native
 // (redb) backend, in strict order from cheapest to most expensive:
@@ -38,7 +38,7 @@
 //   cd rust && cargo build --release
 //
 // Numbers are indicative and depend on hardware/JIT state — this is a
-// breakdown for the Phase 1 roadmap, not a publishable marketing claim.
+// breakdown for the roadmap, not a publishable marketing claim.
 // `tool/perf_gate.dart` does NOT consume this harness (it is a breakdown, not
 // a regression gate); `benchmark/bench.dart` remains the regression gate.
 library;
@@ -120,7 +120,7 @@ Future<List<_Boundary>> _run(
   bool quiet,
 ) async {
   if (!quiet) {
-    stdout.writeln('=== gecko_db boundary micro-benchmark (Phase 1) ===');
+    stdout.writeln('=== gecko_db boundary micro-benchmark () ===');
     stdout.writeln(
       'platform: ${Platform.operatingSystem} | '
       'dart ${Platform.version.split(' ').first}',
@@ -307,7 +307,7 @@ void _printTable(List<_Boundary> rows) {
 /// Machine-readable JSON (advisory; not consumed by tool/perf_gate.dart).
 void _printJson(List<_Boundary> rows) {
   final doc = {
-    'benchmark': 'gecko_db_boundary_phase1',
+    'benchmark': 'gecko_db_boundary',
     'platform': Platform.operatingSystem,
     'dart': Platform.version.split(' ').first,
     'generatedAt': DateTime.now().toUtc().toIso8601String(),

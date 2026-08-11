@@ -93,7 +93,7 @@ void main() {
           foreignKeyField: 'authorId',
         );
         r.declare(rel);
-        // Index the FK field so the indexed relationship path runs; M11 the
+        // Index the FK field so the indexed relationship path runs; the
         // FK predicate executes in Rust on the index-narrowed candidates.
         final posts = db.collection<Map<String, Object?>>(
           'posts',
@@ -680,7 +680,7 @@ void main() {
           id: (m) => m['id'],
         );
         await posts.put({'id': 'p1', 'authorId': 'a1'});
-        // A child with no FK must never land in any bucket (M11: Rust skips
+        // A child with no FK must never land in any bucket ( Rust skips
         // rows without the FK field when grouping).
         await posts.put({'id': 'p2'});
         final result = await r.loadAllChildren(

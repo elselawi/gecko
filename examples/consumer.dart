@@ -1,10 +1,10 @@
-// Minimal consumer fixture (Workstream 6).
+// Minimal consumer fixture 
 //
 // This file deliberately imports ONLY the public `package:gecko_db/gecko_db.dart`
 // surface — exactly what an external consumer would write, with no
 // repository-internal (`package:gecko_db/src/...`) imports. It exercises the
 // full flow: import → open → write → read → watch → query → migrate → encrypt
-// → maintain → close, and prints `CONSUMER-OK` on success. M6.5 uses one raw
+// → maintain → close, and prints `CONSUMER-OK` on success. uses one raw
 // key and removes custom providers.
 //
 // Usage:

@@ -1,9 +1,9 @@
 import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
-/// Phase 2 boundary: the `__gecko_*` reserved-namespace policy (per §0.5
-/// contract 5). User table names must never collide with engine metadata
-/// tables, and rejection must be a typed error, never a `StateError`.
+/// boundary: the `__gecko_*` reserved-namespace policy. User table names must
+/// never collide with engine metadata tables, and rejection must be a typed
+/// error, never a `StateError`.
 void main() {
   group('isReservedName', () {
     test('returns true for any name with the reserved prefix', () {

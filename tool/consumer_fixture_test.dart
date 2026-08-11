@@ -1,4 +1,4 @@
-// Workstream 6: consumer-fixture gate.
+// consumer-fixture gate.
 //
 // The consumer fixture (`examples/consumer.dart`) is exactly what an external
 // consumer would write — it must import ONLY the public

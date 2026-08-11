@@ -1,14 +1,14 @@
-// Workstream 6: documentation and example drift guards.
+// documentation and example drift guards.
 //
-// 1. Every `dart run <path>` referenced in the README or docs/*.md must point
-//    at a real file.
+// 1. Every `dart run <path>` referenced in the docs (README, AGENTS,
+//    Copilot instructions, examples/README) must point at a real file.
 // 2. Every example under examples/ must be referenced by the docs or covered
-//    by phase13_examples_test.dart (so an example can never silently rot).
-// 3. The runnable examples actually run (`dart run`) — quickstart and
-//    advanced are in-memory and need no native artifact.
-// 4. The README must link the release docs (policies, compatibility,
-//    migration guide, API reference, SECURITY, CHANGELOG) so consumers can
-//    find them (prevents doc drift).
+//    by examples_test.dart (so an example can never silently rot).
+// 3. The runnable examples actually run (`dart run`).
+// 4. The README must link the key consumer/developer references (SECURITY,
+//    CHANGELOG, AGENTS, examples) so they can be found (prevents doc drift).
+// 5. The required release docs exist (README, AGENTS, Copilot instructions,
+//    SECURITY, CHANGELOG, examples/README, traceability checker).
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -22,33 +22,47 @@ String _repoRoot() {
   return Directory.current.path;
 }
 
+/// The docs that must reference every runnable target and every example.
+List<String> _docFiles(String root) => [
+      'README.md',
+      'AGENTS.md',
+      '.github/copilot-instructions.md',
+      'examples/README.md',
+    ]
+        .where(
+          (name) => File('$root${Platform.pathSeparator}$name').existsSync(),
+        )
+        .toList();
+
 List<String> _dartRunTargets(String text) {
   final regex = RegExp(r'dart run ([A-Za-z0-9_./\\-]+\.dart)');
   return [for (final m in regex.allMatches(text)) m.group(1)!];
+}
+
+/// Resolves a `dart run <target>` from the docs. Benchmark targets run from
+/// the benchmark package (`cd benchmark && dart run ...`), so a bare name
+/// that is not at the repo root may live under benchmark/.
+bool _targetExists(String root, String target) {
+  final direct =
+      '$root${Platform.pathSeparator}${target.replaceAll('/', Platform.pathSeparator)}';
+  if (File(direct).existsSync()) return true;
+  final benchmarkFallback =
+      '$root${Platform.pathSeparator}benchmark'
+      '${Platform.pathSeparator}${target.replaceAll('/', Platform.pathSeparator)}';
+  return File(benchmarkFallback).existsSync();
 }
 
 void main() {
   final root = _repoRoot();
 
   test('every `dart run <file>` referenced in docs points at a real file', () {
-    final docs = <String>[
-      'README.md',
-      'docs/policies.md',
-      'docs/compatibility.md',
-      'docs/migration-from-hive.md',
-      'docs/api.md',
-      'examples/README.md',
-    ];
     final missing = <String>[];
-    for (final doc in docs) {
+    for (final doc in _docFiles(root)) {
       final path =
           '$root${Platform.pathSeparator}${doc.replaceAll('/', Platform.pathSeparator)}';
-      if (!File(path).existsSync()) continue; // a missing doc is caught below
       final text = File(path).readAsStringSync();
       for (final target in _dartRunTargets(text)) {
-        final targetPath =
-            '$root${Platform.pathSeparator}${target.replaceAll('/', Platform.pathSeparator)}';
-        if (!File(targetPath).existsSync()) missing.add('$doc -> $target');
+        if (!_targetExists(root, target)) missing.add('$doc -> $target');
       }
     }
     expect(
@@ -68,20 +82,12 @@ void main() {
         .toList();
 
     final docText = [
-      for (final name in [
-        'README.md',
-        'docs/policies.md',
-        'docs/compatibility.md',
-        'docs/migration-from-hive.md',
-        'docs/api.md',
-        'examples/README.md',
-      ])
-        if (File('$root${Platform.pathSeparator}$name').existsSync())
-          File('$root${Platform.pathSeparator}$name').readAsStringSync(),
+      for (final name in _docFiles(root))
+        File('$root${Platform.pathSeparator}$name').readAsStringSync(),
     ].join('\n');
     final testText = File(
       '$root${Platform.pathSeparator}packages${Platform.pathSeparator}gecko_db'
-      '${Platform.pathSeparator}test${Platform.pathSeparator}phase13_examples_test.dart',
+      '${Platform.pathSeparator}test${Platform.pathSeparator}examples_test.dart',
     ).readAsStringSync();
 
     final orphaned = exampleFiles.where((file) {
@@ -98,8 +104,8 @@ void main() {
     'runnable examples execute end-to-end',
     () async {
       for (final example in [
-        'phase13_quickstart.dart',
-        'phase13_advanced.dart',
+        'quickstart.dart',
+        'advanced.dart',
       ]) {
         final result = await Process.run(Platform.resolvedExecutable, [
           'run',
@@ -115,17 +121,15 @@ void main() {
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
-  test('README links the release documentation', () {
+  test('README links the key consumer/developer references', () {
     final readme = File(
       '$root${Platform.pathSeparator}README.md',
     ).readAsStringSync();
     for (final link in [
-      'docs/policies.md',
-      'docs/compatibility.md',
-      'docs/migration-from-hive.md',
-      'docs/api.md',
       'SECURITY.md',
       'CHANGELOG.md',
+      'AGENTS.md',
+      'examples/README.md',
     ]) {
       expect(
         readme,
@@ -137,12 +141,12 @@ void main() {
 
   test('required release docs exist', () {
     for (final file in [
-      'docs/policies.md',
-      'docs/compatibility.md',
-      'docs/migration-from-hive.md',
-      'docs/api.md',
+      'README.md',
+      'AGENTS.md',
+      '.github/copilot-instructions.md',
       'SECURITY.md',
       'CHANGELOG.md',
+      'examples/README.md',
       'tool/traceability_check.dart',
     ]) {
       expect(

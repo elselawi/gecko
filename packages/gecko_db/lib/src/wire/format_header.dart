@@ -1,4 +1,4 @@
-/// Versioned on-disk/wire compatibility header (Phase 0 contract).
+/// Versioned on-disk/wire compatibility header (contract).
 ///
 /// This header is deliberately independent of the native worker so the Dart
 /// side can validate artifacts before handing bytes to FFI. The native worker

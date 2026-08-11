@@ -4,7 +4,7 @@ import 'package:gecko_db/gecko_db.dart';
 import 'package:test/test.dart';
 
 /// Opens an isolated native database for a test and registers deterministic
-/// temporary-directory cleanup. This is the M7.5 replacement for `mem://`
+/// temporary-directory cleanup. This is the replacement for `mem://`
 /// fixtures; tests exercise the same Rust/redb path used by the product.
 Future<DatabaseImpl> openNativeTestDatabase(
   String name, {

@@ -1,4 +1,4 @@
-// Sort-spec wire serialization for the Rust query fast path (M4).
+// Sort-spec wire serialization for the Rust query fast path 
 //
 // Serializes a query's sort specs into a self-delimiting byte payload that
 // the Rust `sort_spec::decode_sort_specs` consumer decodes. The format

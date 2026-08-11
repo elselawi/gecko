@@ -1,4 +1,4 @@
-//! Sort-spec wire format + comparator (M4).
+//! Sort-spec wire format + comparator 
 //!
 //! The Dart query engine serializes its sort specs (`Query.sort(List<SortSpec>)`)
 //! into a version-prefixed payload that Rust decodes here, so an `ORDER BY`
@@ -106,7 +106,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// M4: compares two decoded rows by [specs] — a port of Dart `compareRows`
+/// compares two decoded rows by [specs] — a port of Dart `compareRows`
 /// (`sorting.dart`). Rows missing a sort field sort LAST for ascending, FIRST
 /// for descending (matches the documented order + the durable-index ordering).
 /// Ties return Equal so callers preserve stable input order.

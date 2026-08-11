@@ -1,4 +1,4 @@
-/// Phase 5 query engine over the byte-level engine.
+/// query engine over the byte-level engine.
 ///
 /// Queries decode each stored row into a plain map, evaluate [`FilterGroup`]s,
 /// apply the documented sort ordering, and support pagination, count, distinct,
@@ -46,7 +46,7 @@ class CollectionIndex {
   final List<String> prefixFields;
   final Completer<void> _ready = Completer<void>();
 
-  /// Completes once the durable index has been repaired (M7.5: Rust is the
+  /// Completes once the durable index has been repaired ( Rust is the
   /// sole authority; there is no Dart index to build).
   Future<void> get ready => _ready.future;
 
@@ -150,7 +150,7 @@ class QueryImpl<T> implements Query<T> {
   Stream<_Decoded> _scan({int? nativeLimit, int nativeOffset = 0}) async* {
     final secondary = _secondary;
     if (secondary != null) await secondary.ready;
-    // M7.5: the engine is always native, so the snapshot is a
+    // the engine is always native, so the snapshot is a
     // NativeRawSnapshot (the RawEngine exposes the RawSnapshot interface).
     final snap = await _engine.backend.snapshot() as NativeRawSnapshot;
     try {
@@ -177,7 +177,7 @@ class QueryImpl<T> implements Query<T> {
     };
     if (eqs.length != 1 || !eqs.keys.every(idx.fields.contains)) return null;
     // Range/prefix filters mixed with the eq would also need primitive
-    // intersection in Rust; the M5 multi-index route handles those queries.
+    // intersection in Rust; the multi-index route handles those queries.
     final hasRangeOrPrefix = _filters.any(
       (f) => f.isRangeFilter || f.isPrefixFilter,
     );
@@ -227,19 +227,19 @@ class QueryImpl<T> implements Query<T> {
     }
     if (nativeRanges != null) {
       lastPlan = IndexPlan.secondaryIndex;
-      // Phase 2 native fast path: when the snapshot is a NativeRawSnapshot
+      // native fast path: when the snapshot is a NativeRawSnapshot
       // (redb file backend) and the query is a single equality filter
       // covered by the index, traverse the durable `__gecko_index` table in
       // one FRB hop and join back to the rows — eliminating the Dart-side
-      // N+1 point reads (88% of indexed eq per the Phase 1 profile).
-      // M5 handles multi-eq/range/prefix below through Rust candidate
+      // N+1 point reads (88% of indexed eq per the profile).
+      // handles multi-eq/range/prefix below through Rust candidate
       // intersection and complete predicate recheck.
       final nativeEq = _nativeEqProbe(idx);
       if (nativeEq != null) {
         final (field, value) = nativeEq;
         final (start, end) = eqBounds(_table, field, value, codec: _codec);
         if (t != null) t.start(_QueryStage.backendRead);
-        // M9: the index scan always applies the complete predicate in Rust
+        // the index scan always applies the complete predicate in Rust
         // (and stops early when a window is requested), so Dart never
         // re-tests rows or orders them.
         final entries = await snap.queryIndexedLimited(
@@ -275,7 +275,7 @@ class QueryImpl<T> implements Query<T> {
         return;
       }
 
-      // M5: range, prefix, and multi-equality filters use durable-index
+      // range, prefix, and multi-equality filters use durable-index
       // candidate intersection in Rust. The broad field ranges are followed
       // by a complete Rust predicate recheck, preserving semantic range and
       // prefix behavior despite the v1 codec's non-sortable value bytes.
@@ -312,15 +312,15 @@ class QueryImpl<T> implements Query<T> {
       return;
     }
     lastPlan = IndexPlan.nativeFilteredScan;
-    // Phase 2 step 2: push the predicate to Rust. The scan evaluates the
+    // step 2: push the predicate to Rust. The scan evaluates the
     // predicate against each row's bytes IN RUST (decoding only the referenced
     // fields) and returns only matches in one boundary crossing — non-matching
-    // rows are never decoded in Dart (the Phase 1 profile showed `scanAll`
+    // rows are never decoded in Dart (the profile showed `scanAll`
     // transferring the whole table dominated 70% of a 100k-row full scan).
     // An empty predicate matches everything (matches Dart's FilterGroup).
     final predicateBytes = encodePredicate(_filters, codec: _codec);
     if (t != null) t.start(_QueryStage.backendRead);
-    // M4: when the caller wants a window, the scan stops in Rust as soon as
+    // when the caller wants a window, the scan stops in Rust as soon as
     // the window fills (matching rows beyond it are never transferred).
     final windowed = nativeLimit != null || nativeOffset > 0;
     final entries = windowed
@@ -367,7 +367,7 @@ class QueryImpl<T> implements Query<T> {
 
   /// Applies limit/offset after an already-ordered stream.
   Future<List<_Decoded>> _collectOrdered({_QueryTimings? t}) async {
-    // M9: EVERY sorted query routes through Rust — the worker applies the
+    // EVERY sorted query routes through Rust — the worker applies the
     // predicate + sort + window (top-K or index-ordered). Dart never orders
     // rows; it only materializes the returned entries.
     if (_sort.isNotEmpty) {
@@ -394,7 +394,7 @@ class QueryImpl<T> implements Query<T> {
     return matching.sublist(sliceStart, end);
   }
 
-  /// M4/M9: routes a sorted query through the Rust top-K or index-ordered
+  /// /routes a sorted query through the Rust top-K or index-ordered
   /// path, returning the fully-ordered result (predicate + sort + window all
   /// applied in Rust). [snapshot] may be supplied by a caller that already
   /// holds one (e.g. the snapshot-bound cursor); otherwise one is opened and
@@ -473,7 +473,7 @@ class QueryImpl<T> implements Query<T> {
     }
   }
 
-  /// M4: returns `(sortField, (start, end), eqBounded)` when the query's
+  /// returns `(sortField, (start, end), eqBounded)` when the query's
   /// single sort spec is covered by a single-field durable index, so index-key
   /// order matches the sort and Rust can stream the index with an early stop.
   /// Returns null for multi-spec, non-indexed, or descending-without-eq sorts
@@ -564,7 +564,7 @@ class QueryImpl<T> implements Query<T> {
 
   /// Lazily streams matching rows without materializing the full result
   /// set. Unsorted queries stream directly from the backend; sorted queries
-  /// must materialize order (M9: the sort executes in Rust) and are therefore
+  /// must materialize order ( the sort executes in Rust) and are therefore
   /// equivalent to [findAll], which is documented.
   @override
   Stream<T> iterate() {
@@ -576,7 +576,7 @@ class QueryImpl<T> implements Query<T> {
         }
       }();
     }
-    // M3: route through `_scan()` (which delegates to `_scanWith`) so the
+    // route through `_scan()` (which delegates to `_scanWith`) so the
     // native fast path (indexed eq + predicate push) applies.
     return _scan().map((d) => fromRow(d.row));
   }
@@ -590,7 +590,7 @@ class QueryImpl<T> implements Query<T> {
 
   @override
   Future<int> count() async {
-    // M3: aggregate pushdown — an unindexed query counts matching rows IN
+    // aggregate pushdown — an unindexed query counts matching rows IN
     // RUST without transferring them (no decode + map-copy + Dart increment
     // loop). Indexed-eq queries keep the existing `queryIndexed` path (the
     // result set is already small and joined in one hop).
@@ -623,7 +623,7 @@ class QueryImpl<T> implements Query<T> {
 
   @override
   Future<List<Object?>> distinct(String field) async {
-    // M3: aggregate pushdown — an unindexed query emits only the requested
+    // aggregate pushdown — an unindexed query emits only the requested
     // field's bytes per matching row (one value per row, not the whole row).
     // Dart decodes + dedups. Indexed-eq queries keep the `queryIndexed` path
     // (small result set, already joined).
@@ -677,7 +677,7 @@ class QueryImpl<T> implements Query<T> {
     final rawCursor = afterKey == null ? null : ByteKey(afterKey as List<int>);
     final page = <_Decoded>[];
     var sawAfter = afterKey == null;
-    // Sorted queries materialize their ordered set in Rust (M9) and page over
+    // Sorted queries materialize their ordered set in Rust and page over
     // it; unsorted queries stream directly from the backend.
     if (_sort.isNotEmpty) {
       final ordered = await _nativeOrderedCollect(null);
@@ -706,7 +706,7 @@ class QueryImpl<T> implements Query<T> {
     return ([for (final item in page) fromRow(item.row)], nextCursor);
   }
 
-  /// Opens a snapshot-bound cursor (WS3). The cursor materializes the ordered
+  /// Opens a snapshot-bound cursor The cursor materializes the ordered
   /// matching set once from a frozen MVCC snapshot and pages through it, so
   /// concurrent writes cannot duplicate or drop records across pages.
   @override
@@ -722,7 +722,7 @@ class QueryImpl<T> implements Query<T> {
   /// Reactive filtered query: re-emits the matching list whenever a change in
   /// this collection might affect membership.
   ///
-  /// M8 (ADR-0030): unbounded queries register with the worker's reactive
+  /// unbounded queries register with the worker's reactive
   /// registry — Rust maintains the matching result set (predicate + sort), and
   /// Dart forwards worker deltas. Windowed queries (limit/offset) keep full
   /// re-evaluation because a window can reorder under a write.
@@ -795,7 +795,7 @@ class QueryImpl<T> implements Query<T> {
   }
 
   /// Materializes the ordered matching set against [snap] (used by the
-  /// snapshot-bound cursor). Sorted materialization executes in Rust (M9).
+  /// snapshot-bound cursor). Sorted materialization executes in Rust 
   Future<List<_Decoded>> _materialize(NativeRawSnapshot snap) async {
     if (_sort.isNotEmpty) {
       return _nativeOrderedCollect(null, snapshot: snap);
@@ -808,7 +808,7 @@ class QueryImpl<T> implements Query<T> {
   }
 }
 
-/// Snapshot-bound cursor implementation (WS3).
+/// Snapshot-bound cursor implementation 
 ///
 /// The ordered matching set is materialized once from the captured snapshot on
 /// the first page, then paged by offset. This is O(result) memory but
@@ -870,7 +870,7 @@ class _QueryCursorImpl<T> implements QueryCursor<T> {
   }
 }
 
-/// Per-stage query timers (Phase 1 instrumentation).
+/// Per-stage query timers (instrumentation).
 /// A single accumulator is only allocated when slow-query logging is armed
 /// ([RawEngine.slowQueryThresholdMicros] > 0); queries that run with timing
 /// disabled pass `null` and pay no overhead.

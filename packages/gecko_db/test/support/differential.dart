@@ -1,4 +1,4 @@
-// Workstream 2 support: backend differential harness.
+// support: backend differential harness.
 //
 // Replays the same deterministic operation script against two `RawEngine`s
 // (typically an in-memory backend and the native file-backed backend) and
@@ -10,7 +10,7 @@
 //   * the change-feed batches (order, keys, kinds, sequence numbers).
 //
 // This is the shared guard against in-memory/native/web semantic drift the
-// plan's Workstream 2 calls for. The harness itself contains no behavior
+// plan's calls for. The harness itself contains no behavior
 // behind a backend-specific branch: any divergence is reported as a mismatch.
 library;
 

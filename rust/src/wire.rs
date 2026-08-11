@@ -1,7 +1,7 @@
 //! Wire format for gecko_db batched operations.
 //!
 //! This module mirrors the Dart-side contract in `gecko_db`'s `src/wire/op.dart`
-//! byte-for-byte so a cross-language golden-bytes test (Phase 0/3) can verify
+//! byte-for-byte so a cross-language golden-bytes test (/3) can verify
 //! the two encoders agree exactly. The format is versioned; an unknown version
 //! is a typed error, never a silent misparse.
 //!
@@ -10,7 +10,7 @@
 //!   count   : uvarint
 //!   per op  : kind(u8) table(string) key(b) value(b) start(b) end(b)
 //!   string  : uvarint byte_len, then UTF-8 bytes — matches the Dart encoding of
-//!             `table` (per §0.5: String is UTF-8, not a JS UTF-16 re-encoding).
+//!             `table` (String is UTF-8, not a JS UTF-16 re-encoding).
 //!   b       : presence(u8 = 0 → none | 1 → present), uvarint len, bytes
 
 pub const WIRE_VERSION: u8 = 1;
@@ -35,7 +35,9 @@ impl OpKind {
             3 => OpKind::Get,
             4 => OpKind::DeleteRange,
             5 => OpKind::Clear,
-            _ => return None,
+            _ => {
+                return None;
+            }
         })
     }
 }
@@ -114,15 +116,16 @@ impl Op {
         let mut r = Reader::new(bytes);
         let version = r.read_u8()?;
         if version != WIRE_VERSION {
-            return Err(WireError(format!(
-                "Unsupported wire version {version} (expected {WIRE_VERSION})"
-            )));
+            return Err(
+                WireError(format!("Unsupported wire version {version} (expected {WIRE_VERSION})"))
+            );
         }
         let count = r.read_varint()?;
         let mut ops = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            let kind =
-                OpKind::from_u8(r.read_u8()?).ok_or_else(|| WireError("Unknown op kind".into()))?;
+            let kind = OpKind::from_u8(r.read_u8()?).ok_or_else(||
+                WireError("Unknown op kind".into())
+            )?;
             let table = r.read_string()?;
             let key = r.read_opt_bytes()?;
             let value = r.read_opt_bytes()?;
@@ -159,8 +162,7 @@ impl<'a> Reader<'a> {
     }
 
     fn read_u8(&mut self) -> Result<u8> {
-        let b = *self
-            .bytes
+        let b = *self.bytes
             .get(self.pos)
             .ok_or_else(|| WireError("Unexpected end of input".into()))?;
         self.pos += 1;
@@ -173,7 +175,7 @@ impl<'a> Reader<'a> {
         loop {
             let b = self.read_u8()?;
             value |= ((b & 0x7f) as u64) << shift;
-            if b & 0x80 == 0 {
+            if (b & 0x80) == 0 {
                 break;
             }
             shift += 7;
@@ -189,7 +191,8 @@ impl<'a> Reader<'a> {
         if len > self.remaining() {
             return Err(WireError("String length out of range".into()));
         }
-        let s = std::str::from_utf8(&self.bytes[self.pos..self.pos + len])
+        let s = std::str
+            ::from_utf8(&self.bytes[self.pos..self.pos + len])
             .map_err(|_| WireError("Invalid UTF-8".into()))?;
         self.pos += len;
         Ok(s.to_string())
@@ -238,7 +241,7 @@ mod tests {
                 value: None,
                 start: None,
                 end: None,
-            },
+            }
         ]
     }
 
@@ -271,11 +274,13 @@ mod tests {
     #[test]
     fn reject_unknown_version() {
         let mut bytes = Op::encode_batch(&sample());
-        bytes[0] = 0xFF;
-        assert!(matches!(
+        bytes[0] = 0xff;
+        assert!(
+            matches!(
             Op::decode_batch(&bytes),
             Err(WireError(ref m)) if m.contains("version")
-        ));
+        )
+        );
     }
 
     #[test]
@@ -295,7 +300,7 @@ mod tests {
     #[test]
     fn reject_trailing() {
         let mut good = Op::encode_batch(&sample());
-        good.extend_from_slice(&[0xAA, 0xBB]);
+        good.extend_from_slice(&[0xaa, 0xbb]);
         assert!(matches!(Op::decode_batch(&good), Err(WireError(_))));
     }
 }

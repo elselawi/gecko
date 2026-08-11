@@ -28,7 +28,7 @@ scripts:
       dart analyze &&
       dart test packages/gecko_db/test --reporter=compact &&
       dart run tool/api_snapshot.dart tool/api_snapshot.txt &&
-      dart run tool/workstream0_contract_test.dart
+      dart run tool/contract_gate_test.dart
     exec:
       concurrency: 1
       failFast: true

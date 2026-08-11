@@ -1,4 +1,4 @@
-// Unit tests for the predicate wire serializer (Phase 2 step 2).
+// Unit tests for the predicate wire serializer (step 2).
 //
 // Verifies encodePredicate produces a self-delimiting payload that the Rust
 // `predicate::decode_predicate` evaluator consumes (the wire format is locked

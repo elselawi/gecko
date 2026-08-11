@@ -42,7 +42,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
 
   Future<Uint8List?> get_({required String table, required List<int> key});
 
-  /// M3: batched point-read — fetches N keys in ONE read transaction,
+  /// batched point-read — fetches N keys in ONE read transaction,
   /// returning `(key, row)` pairs for keys that exist. Absent keys are
   /// omitted; a missing table is an empty result, never an error. Kills the
   /// relationship N+1 (one boundary crossing instead of one per id).
@@ -55,7 +55,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
   Future<BigInt> liveQueryCount();
 
   /// Opens a database. Async so the web (wasm) build dispatches through the
-  /// async runtime instead of FRB's sync WorkerPool (see ADR-0013).
+  /// async runtime instead of FRB's sync WorkerPool.
   static Future<NativeWorker> open({
     required String path,
     required bool readOnly,
@@ -78,12 +78,12 @@ abstract class NativeWorker implements RustOpaqueInterface {
     keyGen: keyGen,
   );
 
-  /// M10 (plan §M10): aggregates the pending local changes from the
+  /// Aggregates the pending local changes from the
   /// sync-state table (dirty, non-remote, ordered by localMutationId) in
   /// Rust. Dart decodes the returned records into `PendingChange`.
   Future<List<(Uint8List, Uint8List)>> pendingChanges();
 
-  /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
+  /// step 2: full-scan with a pushed predicate. Scans every row in
   /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
   /// (decoding only the referenced fields), and returns only the matching
   /// `(recordId, row)` pairs in one hop. Non-matching rows are never decoded
@@ -93,7 +93,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> predicateBytes,
   });
 
-  /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+  /// aggregate pushdown — counts matching rows WITHOUT transferring
   /// them. Scans [table], evaluates [predicate_bytes] against each row's
   /// bytes IN RUST, and returns only the count. A `count()` query no longer
   /// pays the decode + transfer cost of every matching row.
@@ -102,7 +102,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> predicateBytes,
   });
 
-  /// M3: aggregate pushdown — emits only the bytes of [field] for each
+  /// aggregate pushdown — emits only the bytes of [field] for each
   /// matching row, so a `distinct(field)` query transfers one value per row
   /// instead of the whole row. Returns a list of raw encoded `RowValue`
   /// bytes (the slice starting at the value's tag byte, self-delimiting
@@ -114,7 +114,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String field,
   });
 
-  /// M4: full-scan + predicate with an early LIMIT/OFFSET — skips the first
+  /// full-scan + predicate with an early LIMIT/OFFSET — skips the first
   /// [offset] matches and returns at most [limit] of the rest, stopping the
   /// scan as soon as the window fills (matching rows beyond it are never
   /// transferred).
@@ -132,7 +132,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> end,
   });
 
-  /// M4: index-served query with an early LIMIT/OFFSET. Streams the durable
+  /// index-served query with an early LIMIT/OFFSET. Streams the durable
   /// index range `[start..=end]`, joins to rows, applies [predicate_bytes]
   /// (so early-stop is correct with additional filters), and stops once the
   /// window fills.
@@ -146,7 +146,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
-  /// M4: index-ordered early-stop sort. Streams the durable-index range
+  /// index-ordered early-stop sort. Streams the durable-index range
   /// `[start..=end]` in index-key order (the same order Dart's stable sort of
   /// the field produces), joins to rows, applies [predicate_bytes], and
   /// stops once `offset + limit` matches are collected. [eq_bounded]
@@ -166,7 +166,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
-  /// M4: full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
+  /// full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
   /// `[offset, offset+limit)` window ordered by [sort_spec_bytes] (a port of
   /// Dart `compareRows`), keeping only the window in memory — the full
   /// candidate set is never materialized or transferred.
@@ -184,7 +184,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     Uint8List? end,
   });
 
-  /// M8 (ADR-0030): registers a live query with the worker's reactive
+  /// registers a live query with the worker's reactive
   /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
   /// the registration id and the initial result set in result order.
   Future<RegisterLiveQueryResult> registerLiveQuery({
@@ -210,13 +210,13 @@ abstract class NativeWorker implements RustOpaqueInterface {
     oldGen: oldGen,
   );
 
-  /// Phase 2 native query fast path: range-scans the durable index table
+  /// native query fast path: range-scans the durable index table
   /// [index_table] for keys in `[start..=end]`, joins each entry's value
   /// (the user-table row key) back to its row in [table], and returns the
   /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
   /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
   /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
-  /// M7: verifies and atomically repairs durable index entries for [table].
+  /// verifies and atomically repairs durable index entries for [table].
   Future<void> repairIndex({
     required String table,
     required List<String> fields,
@@ -279,7 +279,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> end,
   });
 
-  /// M7.1: snapshot-bound count over durable-index candidates. The complete
+  /// snapshot-bound count over durable-index candidates. The complete
   /// predicate is rechecked in Rust and only the scalar count crosses FRB.
   Future<BigInt> snapshotQueryIndexedCount({
     required BigInt snapshot,
@@ -289,7 +289,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> predicateBytes,
   });
 
-  /// M7.1: snapshot-bound distinct extraction over durable-index
+  /// snapshot-bound distinct extraction over durable-index
   /// candidates. Only encoded values for [field] cross FRB.
   Future<List<Uint8List>> snapshotQueryIndexedDistinct({
     required BigInt snapshot,
@@ -312,7 +312,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required BigInt offset,
   });
 
-  /// M5: intersects multiple durable-index candidate ranges in one
+  /// intersects multiple durable-index candidate ranges in one
   /// snapshot-bound operation and rechecks the complete predicate in Rust.
   Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedMulti({
     required BigInt snapshot,
@@ -353,7 +353,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     Uint8List? end,
   });
 
-  /// M7.1/M11: snapshot-bound child retrieval using durable index ranges or
+  /// /snapshot-bound child retrieval using durable index ranges or
   /// a pushed FK predicate. Rust classifies matching child rows by FK and
   /// returns them **grouped by parent id**, so Dart never re-decodes every
   /// candidate row to bucket it.
@@ -367,7 +367,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> predicateBytes,
   });
 
-  /// M7.1: snapshot-bound many-to-many join ID retrieval.
+  /// snapshot-bound many-to-many join ID retrieval.
   Future<List<Uint8List>> snapshotRelationshipJoinIds({
     required BigInt snapshot,
     required String joinTable,
@@ -375,7 +375,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> wantedId,
   });
 
-  /// M7.1: snapshot-bound parent lookup. Rust extracts the child FK and
+  /// snapshot-bound parent lookup. Rust extracts the child FK and
   /// performs the parent point read before returning the parent row.
   Future<(Uint8List, Uint8List)?> snapshotRelationshipParent({
     required BigInt snapshot,
@@ -385,16 +385,16 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String foreignKeyField,
   });
 
-  /// Reports physical/logical size and health counters (Workstream 5).
+  /// Reports physical/logical size and health counters
   Future<StorageStats> storageStats();
 
   Future<List<String>> tables();
 
-  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  /// removes a live-query registration (idempotent).
   Future<void> unregisterLiveQuery({required BigInt id});
 }
 
-/// M8 (ADR-0030): outcome of one committed batch — worker sequence plus one
+/// outcome of one committed batch — worker sequence plus one
 /// delta per touched live registration.
 class ApplyBatchResult {
   final BigInt sequence;
@@ -414,7 +414,7 @@ class ApplyBatchResult {
           deltas == other.deltas;
 }
 
-/// M8: one per-registration delta produced by a committed batch.
+/// one per-registration delta produced by a committed batch.
 class QueryDelta {
   final BigInt id;
   final List<(Uint8List, Uint8List)> added;
@@ -454,7 +454,7 @@ class QueryDelta {
           unchanged == other.unchanged;
 }
 
-/// M8: the result of registering a live query.
+/// the result of registering a live query.
 class RegisterLiveQueryResult {
   final BigInt id;
   final List<(Uint8List, Uint8List)> initial;

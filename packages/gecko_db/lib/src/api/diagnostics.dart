@@ -1,4 +1,4 @@
-/// Phase 12 opt-in diagnostics contracts.
+/// opt-in diagnostics contracts.
 library;
 
 /// A point-in-time diagnostics snapshot. Counters are zero-cost when
@@ -42,7 +42,7 @@ class DiagnosticsSnapshot {
   final int inFlightLimit;
   final bool compacting;
 
-  /// Slow queries recorded since open (Workstream 5).
+  /// Slow queries recorded since open 
   final int slowQueryCount;
 
   /// Write-batch waits on the in-flight gate (lock contention).

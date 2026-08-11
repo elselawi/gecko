@@ -1,7 +1,7 @@
-// Helper entrypoint for Workstream 1 process-level tests.
+// Helper entrypoint for process-level tests.
 //
 // This script runs as a *separate OS process* and is spawned by
-// `phase2_process_crash_test.dart` / `phase2_cross_process_lock_test.dart`
+// `process_crash_test.dart`
 // through `Process.start(Platform.resolvedExecutable, ['run', ...])`. It is
 // deliberately trivial so a test can kill it with `ProcessSignal.sigkill`
 // (TerminateProcess on Windows) to exercise real crash-recovery paths in the

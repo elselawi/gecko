@@ -1,5 +1,5 @@
 #!/usr/bin/env dart
-// Performance regression gate for gecko_db (Workstream 8).
+// Performance regression gate for gecko_db 
 //
 // Runs the local benchmark harness in --json mode and compares every
 // (backend, workload) against the pinned baseline in benchmark/baseline.json.

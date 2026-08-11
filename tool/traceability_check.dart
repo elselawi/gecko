@@ -1,9 +1,9 @@
-// Workstream 6: 12-criterion acceptance traceability checker.
+// 12-criterion acceptance traceability checker.
 //
-// The local-first acceptance criteria (plan.md appendix) each map to one or
-// more NAMED tests. This tool verifies every listed test file exists and
-// contains the named test; with `--run` it also executes the listed test files
-// so the table is not just prose that can silently rot.
+// The local-first acceptance criteria each map to one or more NAMED tests.
+// This tool verifies every listed test file exists and contains the named
+// test; with `--run` it also executes the listed test files so the table is
+// not just prose that can silently rot.
 //
 // Usage:
 //   dart run tool/traceability_check.dart            # existence check
@@ -24,11 +24,11 @@ class TraceEntry {
 const List<TraceEntry> kTraceability = [
   TraceEntry(1, 'Widgets consume live typed queries directly', [
     ('packages/gecko_db/test/query_test.dart', 'reactive filtered query'),
-    ('packages/gecko_db/test/phase5_index_ws3_test.dart', 'range'),
+    ('packages/gecko_db/test/index_query_test.dart', 'range'),
   ]),
   TraceEntry(2, 'Local reads/writes work fully offline', [
     (
-      'packages/gecko_db/test/phase2_differential_test.dart',
+      'packages/gecko_db/test/differential_test.dart',
       'put/update/insert-only/update-only/delete/clear',
     ),
     (
@@ -46,52 +46,52 @@ const List<TraceEntry> kTraceability = [
   TraceEntry(4, 'No manually maintained observable lists required', [
     ('packages/gecko_db/test/watch_test.dart', 'zero emissions'),
     (
-      'packages/gecko_db/test/phase13_examples_test.dart',
+      'packages/gecko_db/test/examples_test.dart',
       'advanced example compiles and runs',
     ),
   ]),
   TraceEntry(5, 'Sync can read pending local changes via a small interface', [
     (
-      'packages/gecko_db/test/phase7_transactions_sync_test.dart',
+      'packages/gecko_db/test/transactions_sync_test.dart',
       'local put patch delete produce one pending record',
     ),
   ]),
   TraceEntry(6, 'Remote changes applied transactionally', [
     (
-      'packages/gecko_db/test/phase7_transactions_sync_test.dart',
+      'packages/gecko_db/test/transactions_sync_test.dart',
       'rolls back single and multi-collection writes',
     ),
     (
-      'packages/gecko_db/test/phase7_transactions_sync_test.dart',
+      'packages/gecko_db/test/transactions_sync_test.dart',
       'reads own staged writes',
     ),
   ]),
   TraceEntry(7, 'Local/remote changes merge deterministically', [
     (
-      'packages/gecko_db/test/phase8_conflict_test.dart',
+      'packages/gecko_db/test/conflict_test.dart',
       'last-write-wins, field merge, and manual review differ',
     ),
     (
-      'packages/gecko_db/test/phase8_conflict_test.dart',
+      'packages/gecko_db/test/conflict_test.dart',
       'manual conflicts preserve both versions',
     ),
   ]),
   TraceEntry(8, 'Attachment metadata stays consistent with record changes', [
     (
-      'packages/gecko_db/test/phase9_attachments_test.dart',
+      'packages/gecko_db/test/attachments_test.dart',
       'create, read, and duplicate-hash dedupe share a blob',
     ),
     (
-      'packages/gecko_db/test/phase9_attachments_test.dart',
+      'packages/gecko_db/test/attachments_test.dart',
       'deleting the last reference frees the blob',
     ),
   ]),
   TraceEntry(9, 'Large datasets stay responsive', [
     (
-      'packages/gecko_db/test/phase12_performance_test.dart',
+      'packages/gecko_db/test/performance_test.dart',
       'bulkWrite commits atomically',
     ),
-    ('packages/gecko_db/test/phase5_index_ws3_test.dart', 'scan'),
+    ('packages/gecko_db/test/index_query_test.dart', 'scan'),
   ]),
   TraceEntry(10, 'Tests use isolated native file databases', [
     (
@@ -99,23 +99,23 @@ const List<TraceEntry> kTraceability = [
       'range ordering and bounds are shared backend semantics',
     ),
     (
-      'packages/gecko_db/test/phase2_differential_test.dart',
+      'packages/gecko_db/test/differential_test.dart',
       'multi-operation and multi-table atomic batches',
     ),
   ]),
   TraceEntry(11, 'Initialization, recovery, migrations are reliable', [
     (
-      'packages/gecko_db/test/phase2_process_crash_test.dart',
+      'packages/gecko_db/test/process_crash_test.dart',
       'committed batches survive a hard kill',
     ),
     (
-      'packages/gecko_db/test/phase10_migrations_test.dart',
+      'packages/gecko_db/test/migrations_test.dart',
       'stamp is idempotent',
     ),
   ]),
   TraceEntry(12, 'App-specific store layer shrinks substantially', [
     (
-      'packages/gecko_db/test/phase13_examples_test.dart',
+      'packages/gecko_db/test/examples_test.dart',
       'quickstart example compiles and runs',
     ),
     ('tool/consumer_fixture_test.dart', 'runs end-to-end'),

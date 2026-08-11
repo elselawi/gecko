@@ -1,4 +1,4 @@
-// Durable index key bound helpers (Phase 2).
+// Durable index key bound helpers ().
 //
 // The durable `__gecko_index` table stores one entry per (table, field, value,
 // recordId) with the composite key `encode([table, field, value, recordId])`
@@ -9,7 +9,7 @@
 // variable `recordId` appended. Those keys therefore form a contiguous
 // lexicographic range, so an equality lookup on an indexed field can be served
 // by one redb range scan over the index table — no Dart decode, no per-id
-// point reads (the N+1 the Phase 1 profile identified as 88% of an indexed
+// point reads (the N+1 the profile identified as 88% of an indexed
 // query).
 //
 // [eqBounds] returns the inclusive `[start, end]` byte bounds for that range
@@ -45,7 +45,7 @@ import '../wire/wire_codec.dart';
 
 /// The byte bounds covering EVERY durable-index key for the given (table,
 /// field) pair, regardless of value or recordId — i.e. the range
-/// `[table, field, *, *]`. Used by the M4 index-ordered sort to stream all
+/// `[table, field, *, *]`. Used by the index-ordered sort to stream all
 /// values of a sort field in index-key order (values sort by their codec
 /// bytes, then recordId, matching the durable index layout).
 ///

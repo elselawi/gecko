@@ -1,4 +1,4 @@
-// M12: the local release checklist is the single source of the required
+// the local release checklist is the single source of the required
 // quality gates (release-only CI does NOT run gates — it only builds, verifies,
 // and uploads platform artifacts on manual trigger).
 import 'dart:io';
@@ -40,14 +40,14 @@ void main() {
   });
 
   test('optional blocks are added only when their flag is set', () {
-    expect(buildSteps().where((s) => s.label.contains('WS8')), isEmpty);
+    expect(buildSteps().where((s) => s.label.contains('long suite')), isEmpty);
     expect(
-      buildSteps(long: true).where((s) => s.label.contains('WS8')),
+      buildSteps(long: true).where((s) => s.label.contains('long suite')),
       hasLength(1),
     );
-    expect(buildSteps().where((s) => s.label.contains('Perf')), isEmpty);
+    expect(buildSteps().where((s) => s.label.contains('Perf gate')), isEmpty);
     expect(
-      buildSteps(perf: true).where((s) => s.label.contains('Perf')),
+      buildSteps(perf: true).where((s) => s.label.contains('Perf gate')),
       hasLength(1),
     );
     expect(buildSteps(coverage: false).where((s) => s.label.contains('Coverage')),

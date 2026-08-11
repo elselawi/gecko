@@ -31,7 +31,7 @@ fn encode_worker_error(error: WorkerError) -> String {
     envelope.encode()
 }
 
-/// M8 (ADR-0030): outcome of one committed batch — worker sequence plus one
+/// outcome of one committed batch — worker sequence plus one
 /// delta per touched live registration.
 #[derive(Debug, Clone)]
 pub struct ApplyBatchResult {
@@ -39,7 +39,7 @@ pub struct ApplyBatchResult {
     pub deltas: Vec<QueryDelta>,
 }
 
-/// M8: one per-registration delta produced by a committed batch.
+/// one per-registration delta produced by a committed batch.
 #[derive(Debug, Clone)]
 pub struct QueryDelta {
     pub id: u64,
@@ -63,7 +63,7 @@ impl From<crate::registry::RegistryDelta> for QueryDelta {
     }
 }
 
-/// M8: the result of registering a live query.
+/// the result of registering a live query.
 #[derive(Debug, Clone)]
 pub struct RegisterLiveQueryResult {
     pub id: u64,
@@ -76,7 +76,7 @@ pub struct NativeWorker {
 
 impl NativeWorker {
     /// Opens a database. Async so the web (wasm) build dispatches through the
-    /// async runtime instead of FRB's sync WorkerPool (see ADR-0013).
+    /// async runtime instead of FRB's sync WorkerPool.
     pub async fn open(path: String, read_only: bool) -> Result<Self, String> {
         RedbWorker::open(path, read_only)
             .map(|worker| Self { worker })
@@ -140,7 +140,7 @@ impl NativeWorker {
         &mut self,
         encoded_ops: Vec<u8>,
         index_definitions: Vec<(String, Vec<String>)>,
-        change_log_max_entries: u64,
+        change_log_max_entries: u64
     ) -> Result<ApplyBatchResult, String> {
         let operations = crate::wire::Op
             ::decode_batch(&encoded_ops)
@@ -149,12 +149,11 @@ impl NativeWorker {
                     ::new(crate::error::GeckoErrorType::InvalidOperation, error.to_string())
                     .encode()
             })?;
-        let result = self
-            .worker
+        let result = self.worker
             .apply_batch_reactive_with_retention(
                 &operations,
                 &index_definitions,
-                change_log_max_entries,
+                change_log_max_entries
             )
             .map_err(encode_worker_error)?;
         Ok(ApplyBatchResult {
@@ -163,7 +162,7 @@ impl NativeWorker {
         })
     }
 
-    /// M8 (ADR-0030): registers a live query with the worker's reactive
+    /// registers a live query with the worker's reactive
     /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
     /// the registration id and the initial result set in result order.
     pub async fn register_live_query(
@@ -179,13 +178,13 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M8 (ADR-0030): removes a live-query registration (idempotent).
+    /// removes a live-query registration (idempotent).
     pub async fn unregister_live_query(&mut self, id: u64) -> Result<(), String> {
         self.worker.unregister_live_query(id);
         Ok(())
     }
 
-    /// M10 (plan §M10): aggregates the pending local changes from the
+    /// Aggregates the pending local changes from the
     /// sync-state table (dirty, non-remote, ordered by localMutationId) in
     /// Rust. Dart decodes the returned records into `PendingChange`.
     pub async fn pending_changes(&self) -> Result<Vec<ByteEntry>, String> {
@@ -212,7 +211,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M3: batched point-read — fetches N keys in ONE read transaction,
+    /// batched point-read — fetches N keys in ONE read transaction,
     /// returning `(key, row)` pairs for keys that exist. Absent keys are
     /// omitted; a missing table is an empty result, never an error. Kills the
     /// relationship N+1 (one boundary crossing instead of one per id).
@@ -271,13 +270,13 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// Phase 2 native query fast path: range-scans the durable index table
+    /// native query fast path: range-scans the durable index table
     /// [index_table] for keys in `[start..=end]`, joins each entry's value
     /// (the user-table row key) back to its row in [table], and returns the
     /// `(recordId, row)` pairs in one hop. [start]/[end] are the already
     /// codec-encoded `[table, field, value, ...]` key bounds. Eliminates the
     /// Dart-side N+1 (one boundary crossing instead of one per candidate id).
-    /// M7: verifies and atomically repairs durable index entries for [table].
+    /// verifies and atomically repairs durable index entries for [table].
     pub async fn repair_index(&mut self, table: String, fields: Vec<String>) -> Result<(), String> {
         self.worker.repair_index(&table, &fields).map_err(encode_worker_error)
     }
@@ -308,7 +307,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M5: intersects multiple durable-index candidate ranges in one
+    /// intersects multiple durable-index candidate ranges in one
     /// snapshot-bound operation and rechecks the complete predicate in Rust.
     #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_query_indexed_multi(
@@ -324,7 +323,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M7.1: snapshot-bound count over durable-index candidates. The complete
+    /// snapshot-bound count over durable-index candidates. The complete
     /// predicate is rechecked in Rust and only the scalar count crosses FRB.
     #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_query_indexed_count(
@@ -340,7 +339,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M7.1: snapshot-bound distinct extraction over durable-index
+    /// snapshot-bound distinct extraction over durable-index
     /// candidates. Only encoded values for [field] cross FRB.
     pub async fn snapshot_query_indexed_distinct(
         &self,
@@ -363,7 +362,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// Phase 2 step 2: full-scan with a pushed predicate. Scans every row in
+    /// step 2: full-scan with a pushed predicate. Scans every row in
     /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
     /// (decoding only the referenced fields), and returns only the matching
     /// `(recordId, row)` pairs in one hop. Non-matching rows are never decoded
@@ -376,7 +375,7 @@ impl NativeWorker {
         self.worker.query_filtered(&table, &predicate_bytes).map_err(encode_worker_error)
     }
 
-    /// M4: full-scan + predicate with an early LIMIT/OFFSET — skips the first
+    /// full-scan + predicate with an early LIMIT/OFFSET — skips the first
     /// [offset] matches and returns at most [limit] of the rest, stopping the
     /// scan as soon as the window fills (matching rows beyond it are never
     /// transferred).
@@ -406,7 +405,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M4: index-served query with an early LIMIT/OFFSET. Streams the durable
+    /// index-served query with an early LIMIT/OFFSET. Streams the durable
     /// index range `[start..=end]`, joins to rows, applies [predicate_bytes]
     /// (so early-stop is correct with additional filters), and stops once the
     /// window fills.
@@ -461,7 +460,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M4: full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
+    /// full-scan + top-K sort. Evaluates [predicate_bytes] and returns the
     /// `[offset, offset+limit)` window ordered by [sort_spec_bytes] (a port of
     /// Dart `compareRows`), keeping only the window in memory — the full
     /// candidate set is never materialized or transferred.
@@ -500,7 +499,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M4: index-ordered early-stop sort. Streams the durable-index range
+    /// index-ordered early-stop sort. Streams the durable-index range
     /// `[start..=end]` in index-key order (the same order Dart's stable sort of
     /// the field produces), joins to rows, applies [predicate_bytes], and
     /// stops once `offset + limit` matches are collected. [eq_bounded]
@@ -580,7 +579,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M7.1: snapshot-bound parent lookup. Rust extracts the child FK and
+    /// snapshot-bound parent lookup. Rust extracts the child FK and
     /// performs the parent point read before returning the parent row.
     pub async fn snapshot_relationship_parent(
         &self,
@@ -601,7 +600,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M7.1/M11: snapshot-bound child retrieval using durable index ranges or
+    /// /snapshot-bound child retrieval using durable index ranges or
     /// a pushed FK predicate. Rust classifies matching child rows by FK and
     /// returns them **grouped by parent id**, so Dart never re-decodes every
     /// candidate row to bucket it.
@@ -629,7 +628,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M7.1: snapshot-bound many-to-many join ID retrieval.
+    /// snapshot-bound many-to-many join ID retrieval.
     pub async fn snapshot_relationship_join_ids(
         &self,
         snapshot: u64,
@@ -642,7 +641,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M3: aggregate pushdown — counts matching rows WITHOUT transferring
+    /// aggregate pushdown — counts matching rows WITHOUT transferring
     /// them. Scans [table], evaluates [predicate_bytes] against each row's
     /// bytes IN RUST, and returns only the count. A `count()` query no longer
     /// pays the decode + transfer cost of every matching row.
@@ -666,7 +665,7 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// M3: aggregate pushdown — emits only the bytes of [field] for each
+    /// aggregate pushdown — emits only the bytes of [field] for each
     /// matching row, so a `distinct(field)` query transfers one value per row
     /// instead of the whole row. Returns a list of raw encoded `RowValue`
     /// bytes (the slice starting at the value's tag byte, self-delimiting
@@ -712,7 +711,7 @@ impl NativeWorker {
         self.worker.compact().map_err(encode_worker_error)
     }
 
-    /// Reports physical/logical size and health counters (Workstream 5).
+    /// Reports physical/logical size and health counters
     pub async fn storage_stats(&self) -> Result<StorageStats, String> {
         self.worker.storage_stats().map_err(encode_worker_error)
     }

@@ -1,438 +1,320 @@
 # gecko_db
 
-A local-first, reactive embedded database for **Dart and Flutter**, built for the
-"install and use, no monkey business" experience. It aims to be the Hive /
-SharedPreferences replacement you never have to hand-roll an observable layer for:
-widgets consume live, typed queries directly — no separate state-management
-package required.
+A **local-first, reactive, embedded database** for Dart and Flutter. gecko_db
+is a thin, platform-agnostic Dart client over a **Rust `redb` engine** that
+runs in a worker isolate: storage, MVCC, indexing, query execution, reactive
+change tracking, sync bookkeeping, compaction, and encryption all happen in
+Rust. The Dart side authors queries, maps models, and coordinates policy —
+it never executes database semantics.
 
-**Status: in active development (M7.5 file-backed Rust engine consolidation).** See
-[`plan.md`](plan.md) and [`docs/m7-5-migration-plan.md`](docs/m7-5-migration-plan.md) for the
-roadmap and staged migration plan.
-
----
-
-## What it is
-
-- **Local-first** — everything reads/writes fully offline in a single database
-  file (native) or OPFS (web), with a sync *story* (change tracking, conflict
-  resolution) that ships later.
-- **Reactive** — `Stream`s per database, collection, and item, consumable
-  directly by `StreamBuilder`. No manual observer lists to maintain.
-- **Codegen-free** — models are plain Dart classes plus a small hand-written
-  `toRow`/`fromRow` mapping pair. No annotations, no `build_runner`, no codegen
-  step for consumers.
-- **Progressive disclosure** — Tier 1 (box-style `get`/`put`/`delete`/`watch`)
-  needs zero knowledge of indexes, queries, relationships, transactions, or sync.
-- **Cross-platform** — Windows, macOS, Linux, Android, iOS, and Web, backed by
-  `redb` (Rust) via `flutter_rust_bridge`, with zero Rust/FFI/build steps for
-  consumers.
-
----
-
-## Current status
-
-| Phase | What | State |
-|-------|------|-------|
-| 0 | Foundations & contracts (API, error taxonomy, wire format, ADRs, coverage gate) | ✅ |
-| 1 | Zero-setup cross-platform distribution (federated plugins, native resolver, OPFS web worker) | ⚠️ Windows x64 + 4 Android ABIs + **web wasm glue** built/checksummed/bundled; resolver bundled-path fallback; Linux/macOS release-matrix jobs (manual trigger); **web engine live-validated** (OPFS persistence in a Worker, ADR-0013); iOS explicitly release-pending |
-| 2 | Core engine: byte-level backend, raw API, LRU cache, backpressure, lifecycle | ✅ Rust/redb native file backend (M7.5: no Dart storage engine) |
-| 3 | Codegen-free typed modeling & Tier 1 API (schema, patch, auto-ids) | ✅ |
-| 4 | Reactivity: watch(id)/watchAll()/database.watchAll() streams | ✅ |
-| 5 | Query engine & indexing (Tier 2): filters, sort, pagination, count/distinct, reactive queries | ✅ core + durable Rust secondary/prefix index, lazy iterate, scan diagnostics; per-stage query timers (`QueryStageTimings`, ADR-0015); native index-served eq fast path — one FRB hop, no N+1 (ADR-0016); native predicate push for unindexed scans — full-scan 100k 482 ms → 39 ms, 12.4× (ADR-0017); M3 read-path completion — `iterate`/`count`/`distinct` on the native fast path, aggregate pushdown, and public `Collection.getMany(ids)` (ADR-0018); M4 indexed sorting + early LIMIT — index-covered sorts stream in order (no sort, no materialization; `ORDER BY indexedField LIMIT 20` on 100k = ~0.2 ms), non-indexed sorts use a Rust top-K heap, deterministic record-key tie-break across all paths (ADR-0019); M5 indexed range/prefix/multi-eq candidate intersection in Rust — broad durable field bounds plus full predicate recheck, with covered aggregate routing (ADR-0020); M6 retains the worker isolate; M6.5 simplifies encryption to one optional native Rust physical-encryption path with raw keys and public rotation (ADR-0021/0022); M7 moves native durable-index repair and indexed relationship reads to Rust while retaining the transitional in-memory reference backend until M7.5 (ADR-0023) |
-| 6 | Relationships & referential integrity (Tier 3): FK helpers, delete behaviors, eager load, cycle detection | ✅ many-to-many joins, delete hooks, restrict-naming; typed-collection wiring open |
-| 7 | Transactions, durable change tracking, sync hooks, LSN ordering, origin tagging, idempotency, and GC watermark | ✅ |
-| 8 | Pluggable conflict resolution, three-way merge, preserved manual conflicts, and atomic resolution | ✅ |
-| 9 | Attachment metadata, content-hash dedupe, shared blobs, orphan detection, and state queries | ✅ |
-| 10 | Schema versioning & migrations: version stamping, ordered transactional steps, additive fast paths, open-time compatibility gate | ✅ |
-| 11 | Optional native physical encryption, opaque backend storage, and typed decryption failures | ✅ Rust AES-256-GCM page encryption, raw-key rotation, atomic crash recovery (ADR-0009); M6.5 removes the pre-release logical/custom/provider layers (ADR-0022) |
-| 12 | Bulk writes, bounded cache/lazy iteration, per-row diff watches, and opt-in diagnostics | ✅ + in-place compaction, maintenance state machine, size reporting, slow-query logging, counters (ADR-0010) |
-| 13 | Runnable quickstart/advanced examples and release-hardening documentation | ✅ examples/tests, consumer fixture, policies/compatibility/migration docs, traceability checker, **WS8 reliability/security/perf qualification** (randomized, differential, crash-injection, parallel-isolation, 100k+ large-data, soak, perf gate, security + offline lints) and **Phase 13 comparative benchmark** (Hive CE + Sembast; Isar/Drift/SQLite future work); six-platform matrix remains open |
-
-### Coverage
-
-The Dart package is held to a **≥95% line + branch** gate and currently sits at
-**95% line / 100% branch** (excluding generated FRB glue — native-only
-adapter/resolver edge branches remain). The Rust crate is gated separately as CI wiring
-lands (Phase 0/1 item).
-
-```text
-Dart unit tests: 539 passing (package) + 32 (tool)
-Coverage gate:   95% line / 100% branch  → PASS
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Your app (Dart / Flutter)                                    │
+│  Database · Collection · Query · Transaction · watch()        │
+├──────────────────────────────────────────────────────────────┤
+│  gecko_db (pure Dart, thin client)                           │
+│  query authoring · model mapping · policy · transport         │
+├──────────────────────────────────────────────────────────────┤
+│  Rust engine (redb) — worker isolate                          │
+│  storage · MVCC · indexes · predicate/sort/aggregates ·       │
+│  reactive registry · change log · sync aggregation ·          │
+│  compaction · physical encryption                             │
+└──────────────────────────────────────────────────────────────┘
 ```
 
+- **Zero-setup**: prebuilt native artifacts are bundled with the package. No
+  `cargo`, FFI, or build steps for consumers.
+- **Reactive**: `watch()` / `watchAll()` streams are maintained by a Rust
+  reactive registry that re-evaluates only the changed keys of each write.
+- **File-backed everywhere**: native files on desktop/mobile, OPFS files in a
+  Web Worker on the web.
+- **Transactional**: every mutation is one atomic `redb` write transaction.
+
 ---
 
-## Tier 1 quickstart (the five-minute path)
+## Part 1 — For consumers: getting started
+
+### Install
+
+Add the package to `pubspec.yaml`:
+
+```yaml
+dependencies:
+  gecko_db:
+    path: ../gecko
+```
+
+```sh
+dart pub get
+```
+
+### Open a database
 
 ```dart
 import 'package:gecko_db/gecko_db.dart';
 
+final db = await Database.open('my.db');
+```
+
+### Define a collection
+
+gecko_db uses plain Dart classes with a small hand-written mapping pair
+(`toRow` / `fromRow`) — no code generation, no annotations.
+
+```dart
 class User {
-  User(this.id, this.name);
+  User(this.id, this.name, this.age);
   final String id;
   final String name;
+  final int age;
 }
 
-// Hand-written mapping pair — plain Dart, no codegen.
-Object? userToRow(User u) => {'name': u.name};
-User userFromRow(Object? row) => User('', (row as Map)['name'] as String);
-Object? userId(User u) => u.id;
-
-Future<void> example(Database db) async {
-  final users = db.collection<User>('users',
-      toRow: userToRow, fromRow: userFromRow, id: userId);
-
-  await users.put(User('u1', 'Alice'));
-  final alice = await users.get('u1');          // User
-  await users.patch('u1', {'name': 'Alicia'});  // partial update
-  await users.delete('u1');
-  final all = await users.getAll();             // List<User>
-}
+final users = db.collection<User>(
+  'users',
+  toRow: (u) => {'id': u.id, 'name': u.name, 'age': u.age},
+  fromRow: (row) => User(row['id'] as String, row['name'] as String, row['age'] as int),
+  id: (u) => u.id,
+  indexFields: const ['age'], // optional durable secondary index
+);
 ```
 
-### Reactivity (no observable layer to maintain)
+### CRUD
 
 ```dart
-// Watch a single record — a `Stream<User?>` that emits on changes to that id.
-users.watch('u1').listen((user) => setState(() => this.user = user));
+await users.put(User('u1', 'Ada', 36));
+final ada = await users.get('u1');
+await users.delete('u1');
 
-// Watch a whole collection — coarse `Stream<List<User>>`, re-emitted on any change.
-users.watchAll().listen((list) => setState(() => this.users = list));
-
-// Global cross-collection feed, with monotonic per-batch sequence numbers
-// (what a future sync engine consumes).
-db.watchAll().listen((ChangeSet set) => print('${set.sequence}: $set'));
+// Batches are atomic.
+await db.bulkWrite([
+  BulkMutation.put(table: 'users', key: 'u1', value: {'id': 'u1', 'name': 'Ada', 'age': 36}),
+  BulkMutation.delete(table: 'users', key: 'u2'),
+]);
 ```
 
-## Tier 2 — queries, sorting, pagination
+### Query
 
 ```dart
-// Equality + range filters, composed with chained `.filter()`/`.range()`.
 final adults = await users
-  .where()
-  .range('age', min: 18)
-  .filter('active', true)
-  .findAll();
-
-// Sort, limit, offset.
-final top5 = await users
-  .where()
-  .sort([const SortSpec('age')])
-  .limit(5)
-  .findAll();
-
-// count / distinct / first
-final n = await users.where({'age': 30}).count();
-final ages = await users.where().distinct('age');
-
-// Cursor pagination (opaque key bytes as the cursor).
-var cursor;
-do {
-  final (page, next) = await users.where().sort([const SortSpec('age')])
-    .findPage(afterKey: cursor, pageSize: 20);
-  // render page...
-  cursor = next;
-} while (cursor != null);
-
-// Reactive filtered query: re-emits when membership changes.
-users.where().range('age', min: 18).watch().listen((list) => setState(() {}));
+    .where((u) => u.age >= 18)
+    .sortBy((u) => u.age, descending: true)
+    .findAll();
 ```
 
-## Tier 3 — relationships & referential integrity
+Indexed equality, range, prefix, and multi-equality queries route through the
+Rust durable index; filtering, sorting, and windowing always execute in Rust.
 
-Declare relationships between collections and control delete behavior:
+### Reactivity
 
 ```dart
-final r = db.relationships;
-r.registerAccessors('posts', RowAccessors(
-    childIdOf: (row) => row['id'],
-    parentIdOf: (row) => row['authorId']));
-
-r.declare(Relationship(
-  name: 'author_posts',
-  parentCollection: 'authors',
-  childCollection: 'posts',
-  foreignKeyField: 'authorId',
-  deleteBehavior: DeleteBehavior.cascade, // cascade | restrict | setNull | none
-));
-
-final children = await r.children(authorPostsRel, 'a1');   // 1-many
-final parent   = await r.parent(authorPostsRel, 'p1');     // reverse lookup
-final grouped  = await r.loadAllChildren(authorPostsRel, ['a1','a2']); // no N+1
-
-await r.deleteWithBehavior(authorPostsRel, 'a1'); // enforces delete behavior atomically
+final sub = users.watchAll().listen((rows) => print('users changed: ${rows.length}'));
+// Or watch one record:
+final sub2 = users.watch('u1').listen((user) => print(user));
 ```
 
-Cascade cycles (`A→B cascade` + `B→A cascade`, or self-referential) are rejected
-at declaration time with a typed `GeckoError`.
+Writes from any session are observed; the Rust registry diffs each committed
+batch and Dart forwards the deltas to the `Stream`.
 
-### Opening a database
+### Transactions, migrations, relationships, sync
 
-```dart
-// File-backed (native/redb on desktop/mobile; OPFS on Web):
-final db = await DatabaseImpl.open('path/to/db.redb');
+- **Transactions**: `db.transaction(() async { ... })` with rollback support.
+- **Migrations**: additive schema versions via `SchemaApi.stamp` /
+  `migrateStep`; open-time compatibility gate refuses newer databases.
+- **Relationships**: one-to-many / many-to-many helpers (`children`, `parent`,
+  `loadAllChildren`, join tables) with delete behaviors.
+- **Sync**: `pendingChanges` and the change log are aggregated in Rust.
 
-await db.close();
-```
+### Supported platforms & artifacts
 
-> There is no in-memory mode (`mem://`, `:memory:`, `DatabaseConfig.inMemory`,
-> `useInMemory` were removed in M7.5). For ephemeral test fixtures use a
-> temporary native file (see `packages/gecko_db/test/support/native_database.dart`).
+| Platform | Native artifact | Status |
+|---|---|---|
+| Windows x64 | `gecko_db_rust.dll` | ✅ built + bundled |
+| Android (4 ABIs) | `gecko_db_rust.so` | ✅ built + bundled |
+| Web (wasm32 + OPFS) | `gecko_db_rust_bg.wasm` | ✅ built + bundled |
+| Linux / macOS | `.so` / `.dylib` | ⬜ release workflow (manual trigger) |
+| iOS | FRB iOS plugin artifact | ⬜ pending FRB iOS plugin scaffold |
 
-> **Reserved namespace:** table names starting with `__gecko_` are reserved for
-> engine-internal metadata and are rejected with a typed `GeckoError`
-> (`invalidOperation`). Deleting a missing record is a no-op, and `getAll()` on
-> an empty collection returns an empty list.
+See [examples/README.md](examples/README.md) for runnable examples
+(`quickstart.dart`, `advanced.dart`, and the consumer-surface-only
+`consumer.dart`).
+
+### Documentation for consumers
+
+- [examples/README.md](examples/README.md) — runnable examples
+- [CHANGELOG.md](CHANGELOG.md) — version history
+- [SECURITY.md](SECURITY.md) — security policy & disclosure
 
 ---
 
-## Tier 3 sample — schema + missing/null/default
+## Part 2 — For developers
 
-`patch` and schema validation preserve the three distinct field states
-(**missing** / **null** / **value**):
+### Architecture
 
-```dart
-final schema = RowSchema.of({
-  'name':   const FieldSpec(name: 'name', required: true),
-  'status': const FieldSpec(name: 'status',
-      defaultValue: 'active', hasDefault: true),
-});
+gecko_db is a **thin Dart client over a Rust engine**. The dividing line is a
+hard rule: **anything that computes belongs in Rust; Dart authors, maps,
+coordinates, and transports.**
 
-final users = db.collection<User>('users',
-    toRow: userToRow, fromRow: userFromRow, id: userId, schema: schema);
+| Rust owns (computation) | Dart owns (authoring/policy) |
+|---|---|
+| Storage, MVCC, file/OPFS I/O | Public API surface (`Database`, `Collection`, `Query`, ...) |
+| Durable secondary indexes + repair | Query authoring DSL (`where`/`sortBy`/`filter`) |
+| Predicate / sort / aggregate execution | `toRow`/`fromRow` model mapping |
+| Reactive registry + per-batch diffs | Change-feed / reactive `Stream` lifecycle |
+| Change-log pruning, sync-state aggregation | Delete behaviors, migration callbacks, conflict policies |
+| Relationship candidate retrieval/classification | Transport (worker isolate client, dispatch) |
+| Compaction, physical encryption | Typed errors, compatibility handshake |
 
-// Schema-validated put; defaults filled for missing fields.
-await users.put(User('u1', 'Alice'));
-
-// Partial update: only 'name' changes; 'status' falls back to 'active'.
-await users.patch('u1', {'name': 'Alicia'});
-```
-
----
-
-## Architecture
-
-The design is documented in [`plan.md`](plan.md) and in the
-[architecture decision records](docs/adr/). Key points:
-
-- **Single writer, many readers, always batched.** Every mutation funnels through
-  one write gate into an atomic batch; a reader never observes a partial batch
-  (MVCC snapshots). `RawEngine` in `lib/src/raw/raw_engine.dart` provides
-  `rawGet` / `rawPut` / `rawDelete` / `rawRangeScan` with a bounded in-flight
-  buffer (backpressure) and an LRU cache for hot point reads.
-- **Two "workers", one writer.** A Rust `redb`-owning worker thread owns the file.
-  A dedicated Dart **worker isolate** hosts the database client's work (reads,
-  batch marshaling, change-feed fan-out) off the caller's UI isolate — embraced
-  *modestly* (one isolate per open database, never a second writer). See
-  [ADR-0003](docs/adr/0003-worker-isolate.md). M6 retains this choice; M6.5
-  changes encryption only.
-- **Everything is a file-format contract.** All state — including change
-  tracking, sync, indexes, attachments, migrations, and encryption-related
-  metadata — lives in reserved `__gecko_*` tables in the same store,
-  transactionally with the data.
-  Phase 7 adds staged multi-collection `writeTxn` blocks, durable LSN-ordered
-  change records, origin-tagged sync hooks, idempotency dedupe, and watermark-
-  based change-log compaction.
-- **Performance and diagnostics.** Phase 12 adds atomic `bulkWrite`, weighted
-  LRU bounds, lazy `Query.iterate`, optional `watchAllDiff` row deltas, and
-  opt-in diagnostics counters.
-- **Runnable examples.** Phase 13 keeps plain-Dart quickstart and advanced
-  examples under `examples/`, with equivalent package tests in
-  `test/phase13_examples_test.dart`.
-- **Zero-setup native artifacts (Workstream 7).** `tool/build_artifacts.dart`
-  builds and checksum-verifies the native artifact for every release target
-  from a pinned Rust toolchain; `bundle` lays them into
-  `packages/gecko_db/lib/native/<target>/<arch>/`, and the resolver's
-  `bundledArtifactPath()` fallback means `Database.open` works with **no
-  nativeLibraryPath, no Rust, no FFI, no build steps** on Windows and Android
-  today (see [ADR-0012](docs/adr/0012-cross-platform-artifact-matrix.md) and
-  [docs/compatibility.md](docs/compatibility.md)).
-- **Runs in the browser (Workstream 7 web half).** The FRB web glue
-  (`gecko_db_rust.js` + `_bg.wasm`, bundled under
-  `packages/gecko_db/lib/native/web/wasm32/`) lets the same redb engine run on
-  wasm: databases persist durably through OPFS, opened from inside a Web
-  Worker (there is no in-memory or `:memory:` mode). The **reusable in-package
-  worker entry** (`packages/gecko_db/web/gecko_db_worker.dart`) and a
-  first-class **`WebWorkerClient`** make the worker path a one-liner
-  (`WebWorkerClient.open(workerUrl: 'gecko_db_worker.js', path: 'app.db')`)
-  with a documented JSON protocol (see
-  [ADR-0013](docs/adr/0013-web-runtime-frb-glue-and-opfs.md) and
-  [ADR-0014](docs/adr/0014-in-package-web-worker-and-client.md); live-validated
-  by the CDP-driven browser harness with the `GECKO-WORKER-OK` marker).
-- **Attachment metadata.** Phase 9 tracks binaries that live outside the
-  database: parent references, content-hash dedupe with shared blobs, and
-  transactionally-advanced upload/delete/retry states with pending/failed/
-  completed/orphan queries.
-- **Encryption seam.** The pre-release target is one optional native-only
-  encryption mechanism: Rust AES-256-GCM page encryption below redb
-  (`EncryptingStorageBackend`). No key means plaintext pages; a raw 32-byte
-  key enables encryption. The application owns key storage; gecko_db provides
-  no custom crypto registry, provider abstraction, logical value wrapper, or
-  text key encoding. Public raw-key rotation remains atomic and crash
-  recoverable. Web encryption is explicitly unsupported (ADR-0022; physical
-  format and rotation are recorded in ADR-0009).
-- **Compaction & maintenance.** Workstream 5 adds in-place compaction via
-  `Database.maintenance` (`compact()`/`recover()`/`storageStats()`) with a
-  five-state machine (idle/compacting/committed/failed/recovering), a durable
-  interrupted-compaction marker, crash-safe two-phase compaction that works
-  under physical encryption, logical + physical size reporting, slow-query
-  logging with indexed/full-scan attribution, and diagnostics counters
-  (lock contention, active subscribers, compaction stats) — all off by
-  default (see [ADR-0010](docs/adr/0010-compaction-maintenance-and-diagnostics.md)).
-- **Pluggable conflict resolution.** Phase 8 exposes pure, registry-backed
-  strategies for last-write-wins, field-level merge, manual review, and
-  three-way merge. Deferred conflicts are preserved in `__gecko_conflicts` and
-  concrete resolutions write data and sync metadata atomically.
-- **Codegen-free modeling.** Manual `toRow`/`fromRow` pairs, schema validation,
-  and partial `patch` (see [ADR-0001](docs/adr/0001-manual-mappers-over-codegen.md)).
+The engine runs in a **worker isolate** (single writer, always batched); every
+mutation crosses the boundary once as an encoded batch and applies in one
+`redb` write transaction. On the web the same dispatch runs in the OPFS worker.
 
 ### Repository layout
 
 ```
-packages/gecko_db/        Public API (Dart facade over the Rust engine)
-rust/gecko_db_rust/       Rust engine crate (redb wrapper)
-docs/adr/                 Architecture decision records
-tool/                     Coverage gate, golden-fixture generator
-plan.md                   The full, versioned roadmap
+packages/gecko_db/   the Dart package (lib/, test/)
+rust/                the Rust engine crate (redb wrapper), src/, tests/
+tool/                gates & tooling (coverage, traceability, contract,
+                     artifact build, release checklist)
+benchmark/           standalone benchmark package (native + comparative)
+examples/            runnable, dependency-free examples
 ```
 
----
+### Standards
 
-## Documentation
+- **No consumer-facing Rust/FFI/build steps.** All FRB codegen and native
+  compilation happens once, producing prebuilt artifacts that ship inside the
+  package. Consumers never run `cargo`.
+- **No reflection or annotation+codegen modeling.** Models are plain Dart
+  classes with `toRow`/`fromRow` — normal Dart code.
+- **One writer, many readers, always batched.** Every Rust-side mutation goes
+  through a single long-lived worker owning the `redb` handle, applied in one
+  transaction.
+- **Progressive disclosure.** Tier 1 (get/put/delete/watch) works with zero
+  knowledge of indexes, queries, relationships, transactions, or sync.
+- **Coverage gate.** The release checklist enforces ≥95% line / 100% branch
+  coverage on the Dart package (measured from a **fresh** collection — stale
+  lcov is never merged).
+- **Contract gate.** The public API snapshot (`tool/api_snapshot.txt`) is
+  regenerated and compared on every change; public-API changes must be
+  intentional and ship with a version bump and release notes.
+- **Thin-client rule.** Code that computes belongs in Rust; the acceptance
+  test for any new feature is "does Dart only author, map, coordinate, and
+  transport?"
 
-- **[API reference](docs/api.md)** — the public surface by tier
-  (collections, queries, relationships, transactions, sync, conflicts,
-  attachments, migrations, encryption, bulk writes, diagnostics, maintenance).
-- **[Migration guide](docs/migration-from-hive.md)** — moving from Hive /
-  SharedPreferences, with explicit limitations and a data-import example.
-- **[Policies](docs/policies.md)** — semantic versioning, deprecation,
-  migration, and format-compatibility policies.
-- **[Compatibility matrix](docs/compatibility.md)** — package/wire/format
-  versions, native artifact, Dart/Flutter, and platform support.
-- **[Security](SECURITY.md)** — disclosure process and explicit security
-  posture (what is and is not claimed).
-- **[Changelog](CHANGELOG.md)** — release notes.
-- **[Architecture decision records](docs/adr/)** — the locked history of
-  non-trivial choices.
+### Building
 
-## Compatibility (summary)
-
-| Component | Version |
-|---|---|
-| Package / wire / file format | `0.0.1` / `1` / `1` (redb 4.1.0) |
-| Native build id | `0.0.1+rust` |
-| Dart SDK | `^3.10.8` |
-| Platforms | Windows ✅ · Android ✅ (4 ABIs) · Web ✅ (wasm engine + OPFS, live-validated) · Linux/macOS ⬜ release-matrix jobs (manual trigger) · iOS ⬜ explicitly release-pending |
-
-See [docs/compatibility.md](docs/compatibility.md) for the full table and
-rules. Forward reads are supported; a newer incompatible file fails with a
-typed `upgradeRequired` error, never a silent misread.
-
-## Acceptance-criteria traceability
-
-The local-first acceptance criteria are each demonstrated by named tests,
-verified by `dart run tool/traceability_check.dart`:
-
-| # | Criterion | Demonstrated by |
-|---|---|---|
-| 1 | Widgets consume live typed queries directly | `query_test.dart` reactive filtered watch; `phase5_index_ws3_test.dart` |
-| 2 | Local reads/writes work fully offline | `phase2_differential_test.dart`; `raw_backend_contract_test.dart` |
-| 3 | A local mutation auto-updates all affected live queries | `query_test.dart` starts/stops-matching; `watch_test.dart` |
-| 4 | No manually maintained observable lists required | `watch_test.dart`; `phase13_examples_test.dart` |
-| 5 | Sync can read pending local changes via a small interface | `phase7_transactions_sync_test.dart` pending-record test |
-| 6 | Remote changes applied transactionally | `phase7_transactions_sync_test.dart` rollback/own-write tests |
-| 7 | Local/remote changes merge deterministically | `phase8_conflict_test.dart` strategy + manual-conflict tests |
-| 8 | Attachment metadata stays consistent with record changes | `phase9_attachments_test.dart` dedupe/free tests |
-| 9 | Large datasets stay responsive | `phase14_large_data_ws8_test.dart` (100k+ rows + indexes); `phase12_performance_test.dart`; `benchmark/bench.dart` + `tool/perf_gate.dart` regression gate |
-| 10 | Tests use isolated native file databases | `raw_backend_contract_test.dart`; `phase2_differential_test.dart` |
-| 11 | Initialization, recovery, migrations are reliable | `phase2_process_crash_test.dart`; `phase10_migrations_test.dart` |
-| 12 | App-specific store layer shrinks substantially | `phase13_examples_test.dart`; `tool/consumer_fixture_test.dart` |
-
----
-
-## Performance, reliability & security qualification
-
-Workstream 8 + Phase 13 add a self-contained qualification suite (all run from
-the repo root; long modes via `GECKO_LONG_TEST=1`, via
-`dart run tool/release_checklist.dart --long`):
-
-| Area | Command / file | What it proves |
-|---|---|---|
-| Randomized correctness | `test/phase14_randomized_ws8_test.dart` | Fixed-seed randomized put/delete/clear/queries against an expected model after every step |
-| Backend differential | `test/phase14_differential_ws8_test.dart` | Identical seeded op sequences on two independent native files produce identical results |
-| Crash safety | `test/phase14_crash_injection_ws8_test.dart` | Hard kill at **every** native commit boundary leaves a fully-present contiguous durable prefix — no partial batch, no lost commit |
-| Isolation | `test/phase14_parallel_ws8_test.dart` | N native databases on distinct files run concurrently with per-instance sentinels, no file-lock contention |
-| Large data | `test/phase14_large_data_ws8_test.dart` | 100k+ rows + indexes, 100KB+ values bit-exact, many indexes, 10k pending-sync log, 300 attachments, 13-step migration chain |
-| Soak | `test/phase14_soak_ws8_test.dart` | Sustained writes/watches/queries/migrations/compaction/reopen cycles under physical AES-256-GCM encryption; raw file leaks no plaintext |
-| Regression gate | `benchmark/bench.dart` + `tool/perf_gate.dart` | Pins `benchmark/baseline.json`; fails if any workload regresses beyond tolerance (`dart run tool/perf_gate.dart`; `--update` to refresh) |
-| Comparative (Phase 13) | `benchmark/comparative.dart` | Same workloads on gecko_db (redb), Hive CE (box), and Sembast (file) on one machine, `--json` output. Hive CE / Sembast are dev-only dependencies |
-| Boundary (Phase 1) | `benchmark/boundary.dart` | Per-layer read-path latency (dartCall → isolate → FRB → Rust → redb → rawGet); advisory breakdown, not a regression gate (ADR-0015) |
-| Query profile (Phase 1) | `benchmark/query_profile.dart` | Per-stage `QueryStageTimings` split for a full scan and an indexed eq query at 1k/100k rows; advisory (ADR-0015) |
-| Sort/limit profile (M4) | `benchmark/m4_sort_limit.dart` | Indexed `ORDER BY … LIMIT 20`, top-K non-indexed sort, and early-limit scans at 100k rows; advisory (ADR-0019) |
-| Indexed filter profile (M5) | `benchmark/m5_indexed_filters.dart` | Covered range/prefix/multi-eq queries versus native predicate scans; advisory (ADR-0020) |
-| Architecture profile (M6) | `benchmark/m6_architecture.dart` + `benchmark/boundary.dart` | Worker-isolate/FRB boundary and opt-in logical-encryption overhead; advisory (ADR-0021) |
-| Offline lint | `tool/offline_lint.dart` | Forbids network + `DateTime.now()` in all test sources (determinism) |
-| Security review | `tool/security_review.dart` | Scans Dart + Rust for secret literals, key logging, raw values in errors, base64 credential blobs |
-
-These suites found and fixed three real consistency/performance bugs: `bulkWrite`
-did not maintain secondary indexes, `bulkWrite` did not write change-tracking
-(sync) records, and `markSynced`/`_rewriteLogRecord` were O(ids × change-log)
-quadratic. Each is covered by a regression test.
-
-```bash
-# quick qualification run (short modes)
-dart test packages/gecko_db/test/phase14_randomized_ws8_test.dart \
-  packages/gecko_db/test/phase14_differential_ws8_test.dart \
-  packages/gecko_db/test/phase14_crash_injection_ws8_test.dart \
-  packages/gecko_db/test/phase14_parallel_ws8_test.dart \
-  packages/gecko_db/test/phase14_large_data_ws8_test.dart \
-  packages/gecko_db/test/phase14_soak_ws8_test.dart --reporter=compact
-dart run tool/perf_gate.dart            # strict regression check (local machine)
-dart run benchmark/comparative.dart     # Hive CE + Sembast head-to-head
-```
-
----
-
-## Development
-
-```bash
-# Bootstrap (Dart workspace)
+```sh
+# Dart deps
 dart pub get
 
-# Analyze the whole workspace
-dart analyze
+# Rust engine (debug for tests)
+cd rust && cargo build
 
-# Run all Dart tests
-cd packages/gecko_db && dart test
-
-# Coverage gate (from repo root, after generating an lcov.info)
-dart run tool/coverage_gate.dart packages/gecko_db/coverage/lcov.info
-
-# Rust tests (cross-language golden fixture included)
-cd rust && cargo test
-
-# Regenerate the cross-language Op golden fixture (only with an ADR)
-dart run tool/gen_golden_ops.dart
+# Release native artifact (needed by benchmarks + release)
+cd rust && cargo build --release
 ```
 
-The coverage gate enforces **≥95% line + branch** on the Dart package and
-accepts both `*.lcov` and the standard `lcov.info` output from
-`package:coverage`. CI wiring (also covering the Rust gate with
-`cargo llvm-cov`/`grcov`) is still a Phase 0/1 item because the Rust coverage
-binary and native artifact matrix are not yet present.
+### Regenerating FRB bindings
+
+After changing `rust/src/api.rs`:
+
+```sh
+flutter_rust_bridge_codegen generate --config-file frb.yaml
+dart run tool/build_artifacts.dart build windows-x64 --out=build/native
+dart run tool/build_artifacts.dart bundle --from=build/native
+dart run tool/build_artifacts.dart check-bindings   # requires a clean tree
+```
+
+### Testing
+
+```sh
+# Full package suite
+dart test packages/gecko_db/test
+
+# Tool suites (enumerate explicitly — `dart test tool` alone does not work)
+dart test tool/*_test.dart
+```
+
+The test suite covers the backend contract, differential parity, crash
+recovery, indexes, relationships, transactions, sync, conflicts, attachments,
+migrations, encryption, compaction, reactivity, and long-running
+randomized/soak suites (heavy suites run with `GECKO_LONG_TEST=1`).
+
+### Coverage
+
+```sh
+dart test packages/gecko_db/test --coverage=packages/gecko_db/coverage
+dart run coverage:format_coverage --lcov --check-ignore \
+  --in=packages/gecko_db/coverage -o packages/gecko_db/coverage/lcov.info \
+  --report-on=packages/gecko_db/lib --ignore-files="**/native/generated/**"
+dart run tool/coverage_gate.dart packages/gecko_db/coverage/lcov.info
+```
+
+`tool/coverage_gate.dart` measures existing lcov (it does **not** collect), so
+always delete the coverage directory before measuring (the release checklist
+does this for you).
+
+### Performance
+
+```sh
+# Native workload benchmark + strict gate
+dart run benchmark/bench.dart --native --json
+dart run tool/perf_gate.dart
+
+# Comparative benchmark: gecko_db vs Hive CE, Sembast, SQLite, Isar, Drift
+cd benchmark && dart run comparative.dart            # all six backends
+cd benchmark && dart run comparative.dart --json
+```
+
+The comparative benchmark is its **own package** (`benchmark/pubspec.yaml`):
+SQLite/Drift resolve the native library via Dart native assets, and Isar uses
+the maintained `isar_community` fork (which downloads its core binary on first
+run). Run it from inside `benchmark/` — its native-assets build hooks must not
+pollute the repo root's `dart run` stdout (the process tests rely on exact
+output markers).
+
+### Release
+
+CI is **release-only**: `.github/workflows/release-matrix.yml` is triggered
+manually and exists to build + verify + upload per-platform artifacts on
+hardware the maintainer does not own (macOS runners). Quality gates are local:
+
+```sh
+# The one command that runs every gate:
+dart run tool/release_checklist.dart            # all required gates
+dart run tool/release_checklist.dart --long     # + heavy/soak suites
+dart run tool/release_checklist.dart --perf     # + strict perf gate
+dart run tool/release_checklist.dart --rust-coverage
+```
+
+Then trigger the release workflow (GitHub → Actions → release-matrix → Run
+workflow), bundle the uploaded artifacts into `packages/gecko_db/lib/native/`,
+and publish.
+
+### Policies
+
+- **API deprecation**: public API is never removed in a PATCH; deprecated in a
+  MINOR with a `@Deprecated` note; removed only in the next MAJOR.
+- **Migration**: schema/storage migrations are additive by default; rows are
+  interpreted lazily with missing/null/default semantics.
+- **Format compatibility**: on-disk format and wire format are versioned; a
+  newer database fails with a typed `upgradeRequired` error, never a silent
+  misread. The native artifact reports a build id in the compatibility
+  handshake and is rejected on mismatch.
+- **Encryption**: optional raw 32-byte key for native AES-256-GCM physical
+  encryption; web/in-memory encryption unsupported; wrong keys fail
+  authentication before any data is returned.
+
+### Agent/automation instructions
+
+Automated agents working in this repository should read
+[AGENTS.md](AGENTS.md) (repository map + standards) and
+[.github/copilot-instructions.md](.github/copilot-instructions.md)
+(GitHub Copilot custom instructions).
 
 ---
 
-## Roadmap
+## License & security
 
-See [`plan.md`](plan.md) for the full 13-phase plan. Soonest next steps:
-**Phase 2 completion** (native file-backed worker, crash recovery, full lifecycle),
-then **Phase 1** (cross-platform distribution — the hardest and most foundational
-phase), then **Phase 4** (reactivity: `watch` streams).
-The pure-Dart portions of the remaining Phase 0–3 gaps are covered by format-header,
-lifecycle, raw-backend contract, cache-isolation, schema-open, unknown-field, resolver,
-and large-value tests. The Rust `redb` worker core, generated FRB bridge, and live Windows file-backed
-Dart-to-Rust integration test are also implemented and tested. OPFS, federated
-platform packaging, cross-process lock diagnostics, crash-kill stress, platform
-CI, and Rust coverage tooling remain deferred until their required artifacts exist.
+See [SECURITY.md](SECURITY.md) for the security policy and disclosure
+process. See [CHANGELOG.md](CHANGELOG.md) for the full version history.

@@ -1,4 +1,4 @@
-/// The raw byte-level API surface for Phase 2.
+/// The raw byte-level API surface for 
 ///
 /// Provides [`rawGet`], [`rawPut`], [`rawDelete`], [`rawRangeScan`] over any
 /// [`RawBackend`], fronted by an optional LRU cache for hot point reads, and
@@ -59,7 +59,7 @@ class RawEngine {
   bool _disposed = false;
   final _WriteGate _writeGate;
   final ChangeBus _changeBus;
-  /// M8 (ADR-0030): per-registration deltas produced by the worker for each
+  /// per-registration deltas produced by the worker for each
   /// committed batch, in commit order (same delivery order as [_changeBus]).
   final StreamController<RegistryDelta> _liveDeltas =
       StreamController<RegistryDelta>.broadcast(sync: true);
@@ -78,14 +78,14 @@ class RawEngine {
   /// Slow-query threshold in microseconds; 0 disables slow-query logging.
   int slowQueryThresholdMicros;
 
-  /// The change hub for this engine (Phase 4).
+  /// The change hub for this engine ().
   ChangeBus get changes => _changeBus;
 
-  /// M8 (ADR-0030): stream of per-registration deltas for committed batches,
+  /// stream of per-registration deltas for committed batches,
   /// in commit order. Each delta carries the registration id it belongs to.
   Stream<RegistryDelta> get liveDeltas => _liveDeltas.stream;
 
-  /// M8 (ADR-0030): registers a live query with the worker's reactive registry.
+  /// registers a live query with the worker's reactive registry.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
@@ -101,7 +101,7 @@ class RawEngine {
     );
   }
 
-  /// M8 (ADR-0030): removes a live-query registration (idempotent).
+  /// removes a live-query registration (idempotent).
   Future<void> unregisterLiveQuery(int id) {
     _assertUsable();
     return _backend.unregisterLiveQuery(id);
@@ -113,14 +113,14 @@ class RawEngine {
     return _backend.liveQueryCount();
   }
 
-  /// M10: aggregates pending local changes in Rust (scan/filter/sort executed
+  /// aggregates pending local changes in Rust (scan/filter/sort executed
   /// there); Dart only decodes the returned records.
   Future<List<RawEntry>> pendingChanges() {
     _assertUsable();
     return _backend.pendingChanges();
   }
 
-  /// Applies [ops] atomically and forwards any M8 reactive-registry deltas the
+  /// Applies [ops] atomically and forwards any reactive-registry deltas the
   /// worker produced to [liveDeltas] (one delta per touched registration).
   Future<void> _applyBatchWithDeltas(List<RawOp> ops) async {
     final result = await _backend.applyBatch(ops);

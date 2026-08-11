@@ -1,4 +1,4 @@
-/// Phase 12 bulk-write contracts.
+/// bulk-write contracts.
 library;
 
 import 'change.dart';

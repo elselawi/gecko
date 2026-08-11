@@ -1,4 +1,4 @@
-// Workstream 6: the 12-criterion traceability table is checked by a script.
+// the 12-criterion traceability table is checked by a script.
 //
 // The checker (`tool/traceability_check.dart`) maps every local-first
 // acceptance criterion to named tests; this test verifies the table is

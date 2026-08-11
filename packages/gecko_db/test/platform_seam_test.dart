@@ -1,5 +1,5 @@
 // Platform-seam tests for the web/native conditional code introduced with the
-// web runtime (Workstream 7 / ADR-0013). These exercise the *native* variants
+// web runtime (/ ). These exercise the *native* variants
 // on the VM test runner; the web variants are validated live by the browser
 // smoke suites (tool/web_smoke).
 library;

@@ -1,4 +1,4 @@
-// Phase 13 / M12 — comparative benchmark: gecko_db vs Hive CE vs Sembast vs
+// / comparative benchmark: gecko_db vs Hive CE vs Sembast vs
 // SQLite vs Isar (isar_community) vs Drift.
 //
 // A pragmatic, honest head-to-head on the SAME VM/hardware for the common
@@ -306,7 +306,7 @@ class _SembastBackend implements _Backend {
   }
 }
 
-/// SQLite backend (M12): raw SQL via `package:sqlite3`, WAL journal, an index
+/// SQLite backend raw SQL via `package:sqlite3`, WAL journal, an index
 /// on `group`, prepared statements, and batched writes in one transaction.
 class _SqliteBackend implements _Backend {
   @override
@@ -421,7 +421,7 @@ class _SqliteBackend implements _Backend {
   }
 }
 
-/// Isar backend (M12): `isar_community`, indexed on `group`.
+/// Isar backend `isar_community`, indexed on `group`.
 ///
 /// Isar ids must be non-zero, so the benchmark's external id (which starts at
 /// 0) is offset by +1 when stored and mapped back when read.
@@ -503,7 +503,7 @@ class _IsarBackend implements _Backend {
   Future<void> close() => _isar.close();
 }
 
-/// Drift backend (M12): a typed layer over SQLite using the same native
+/// Drift backend a typed layer over SQLite using the same native
 /// `sqlite3` library as the plain-SQLite backend.
 class _DriftBackend implements _Backend {
   @override
@@ -634,7 +634,7 @@ Future<void> main(List<String> args) async {
   if (emitJson) {
     stdout.writeln(
       const JsonEncoder.withIndent('  ').convert({
-        'benchmark': 'gecko_db_phase13_comparative',
+        'benchmark': 'gecko_db_comparative',
         'platform': Platform.operatingSystem,
         'dart': Platform.version.split(' ').first,
         'generatedAt': DateTime.now().toUtc().toIso8601String(),
@@ -656,7 +656,7 @@ Future<void> main(List<String> args) async {
 
   final header =
       '${'backend'.padRight(18)} ${'workload'.padRight(14)} ${'ms/op'.padLeft(10)}';
-  stdout.writeln('Phase 13 comparative (same VM/hardware):');
+  stdout.writeln('comparative (same VM/hardware):');
   stdout.writeln(header);
   stdout.writeln('-' * header.length);
   for (final r in rows) {

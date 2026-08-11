@@ -1,4 +1,4 @@
-/// Workstream 5: compaction, maintenance, and complete diagnostics contracts.
+/// compaction, maintenance, and complete diagnostics contracts.
 library;
 
 /// Lifecycle states of the database maintenance (compaction) state machine.
@@ -21,7 +21,7 @@ enum MaintenanceState {
   recovering,
 }
 
-/// Storage-level size/health report (Workstream 5).
+/// Storage-level size/health report 
 class StorageStats {
   const StorageStats({
     required this.physicalBytes,
@@ -53,7 +53,7 @@ class StorageStats {
       'tables=$tableCount, snapshots=$openSnapshots, lsn=$commitSequence)';
 }
 
-/// Per-stage breakdown of a single query execution (Phase 1 instrumentation).
+/// Per-stage breakdown of a single query execution (instrumentation).
 ///
 /// Every stage is measured in microseconds and is 0 when the stage did not
 /// run (e.g. `sort` is 0 for an unsorted query, `indexLookup` is 0 for a full
@@ -146,7 +146,7 @@ class QueryStageTimings {
   }
 }
 
-/// A recorded slow-query entry (Workstream 5 slow-query logging).
+/// A recorded slow-query entry (slow-query logging).
 class SlowQueryRecord {
   const SlowQueryRecord({
     required this.durationMicros,

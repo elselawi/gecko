@@ -1,4 +1,4 @@
-// M12: single-command local release checklist.
+// single-command local release checklist.
 //
 // The repo uses RELEASE-ONLY CI (`.github/workflows/release-matrix.yml`): a
 // manually-triggered workflow that builds + verifies platform artifacts on
@@ -9,7 +9,7 @@
 //     dart run tool/release_checklist.dart
 //
 // Flags:
-//   --long            also run the WS8 heavy suites (randomized, differential,
+// --long also run the heavy suites (randomized, differential,
 //                     parallel, crash-injection, 200k-row, soak) with
 //                     GECKO_LONG_TEST=1 (slow; crash-injection spawns OS
 //                     processes — do not run it alongside other heavy tests)
@@ -225,16 +225,16 @@ List<GateStep> buildSteps({
   if (long) {
     steps.add(
       GateStep(
-        'WS8 long suite (randomized/differential/parallel/crash/200k/soak)',
+        'long suite (randomized/differential/parallel/crash/200k/soak)',
         [
           'dart',
           'test',
-          'packages/gecko_db/test/phase14_randomized_ws8_test.dart',
-          'packages/gecko_db/test/phase14_differential_ws8_test.dart',
-          'packages/gecko_db/test/phase14_parallel_ws8_test.dart',
-          'packages/gecko_db/test/phase14_crash_injection_ws8_test.dart',
-          'packages/gecko_db/test/phase14_large_data_ws8_test.dart',
-          'packages/gecko_db/test/phase14_soak_ws8_test.dart',
+          'packages/gecko_db/test/randomized_test.dart',
+          'packages/gecko_db/test/differential_long_test.dart',
+          'packages/gecko_db/test/parallel_test.dart',
+          'packages/gecko_db/test/crash_injection_test.dart',
+          'packages/gecko_db/test/large_data_test.dart',
+          'packages/gecko_db/test/soak_test.dart',
           '--reporter=compact',
         ],
         workingDirectory: root,

@@ -1,10 +1,10 @@
-/// Phase 5 sorting comparators.
+/// sorting comparators.
 ///
 /// Rows are sorted by a list of [`SortSpec`]. Missing field values place those
 /// rows at a documented position: last for ascending, first for descending
 /// (consistent with the index ordering). [`compareRows`] returns 0 for ties;
 /// the query engine then breaks ties deterministically by record key bytes
-/// (M4), which matches the durable index's `(value, recordId)` order so the
+///, which matches the durable index's `(value, recordId)` order so the
 /// native fast paths and the Dart sort agree exactly.
 library;
 

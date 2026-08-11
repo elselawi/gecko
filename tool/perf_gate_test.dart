@@ -1,4 +1,4 @@
-// Phase 13 / WS8 — perf gate instrumentation test.
+// / perf gate instrumentation test.
 //
 // Verifies the gate's parsing and comparison logic WITHOUT running the
 // benchmark (which needs the release native artifact and is slow): a JSON

@@ -3,8 +3,9 @@
 //
 // The snapshot is intentionally source-based and excludes implementation
 // details. The checked-in public export list and declarations are included so
-// a public surface change is visible in review and can be paired with an ADR.
-// It does not replace analyzer-based API compatibility tooling.
+// a public surface change is visible in review and can be paired with a
+// version bump and a changelog entry. It does not replace analyzer-based API
+// compatibility tooling.
 
 import 'dart:io';
 

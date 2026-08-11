@@ -1,4 +1,4 @@
-// Phase 1 query-path profiler.
+// query-path profiler.
 //
 // Seeds a native (redb) database at 1k and 100k rows and runs, for each size:
 //   - an UNINDEXED full-scan equality query (every row decoded & predicated)
@@ -6,7 +6,7 @@
 //
 // Both run with slow-query timing armed (slowQueryThresholdMicros: 1) so the
 // per-stage QueryStageTimings breakdown is captured. Output is the stage
-// split (µs, % of total) so the Phase 1 roadmap can see exactly where the
+// split (µs, % of total) so the roadmap can see exactly where the
 // ~110 µs/row full-scan cost and the per-query cost come from.
 //
 // Run from the repo root:
@@ -67,7 +67,7 @@ Future<void> main(List<String> args) async {
     return;
   }
 
-  stdout.writeln('=== gecko_db query-path profiler (Phase 1) ===');
+  stdout.writeln('=== gecko_db query-path profiler () ===');
   stdout.writeln(
     'platform: ${Platform.operatingSystem} | '
     'dart ${Platform.version.split(' ').first}',

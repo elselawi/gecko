@@ -1,4 +1,4 @@
-// gecko_db local benchmark harness (stopgap; not the Phase 13 comparative
+// gecko_db local benchmark harness (stopgap; not the comparative
 // suite). Measures real, per-operation numbers for the native file backend:
 // single-insert throughput, bulk insert, hot/cold point reads, range scans,
 // filtered queries, watch latency, and transaction commit.
@@ -121,7 +121,7 @@ Future<void> main(List<String> args) async {
   stdout.writeln();
   stdout.writeln(
     'NOTE: rough local numbers only. Real comparative benchmarks vs Hive/'
-    'Isar/Drift/SQLite/Sembast are the Phase 13 suite.',
+    'Isar/Drift/SQLite/Sembast are the suite.',
   );
 }
 

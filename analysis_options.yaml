@@ -2,7 +2,7 @@ include: package:lints/recommended.yaml
 
 analyzer:
   exclude:
-    # M12: the comparative benchmark is its own standalone package
+    # the comparative benchmark is its own standalone package
     # (benchmark/pubspec.yaml) with its own analysis options.
     - benchmark/**
     - packages/gecko_db/lib/src/native/generated/**

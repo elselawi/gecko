@@ -1,13 +1,13 @@
 # Web smoke tests (FRB wasm glue + OPFS)
 
-Live browser validation of the web target (ADR-0013). Two suites:
+Live browser validation of the web target Two suites:
 
 | Suite | Entry | Marker | What it proves |
 |---|---|---|---|
 | OPFS worker | `opfs_worker.dart` | `OPFS-SMOKE-OK` | In a real **Web Worker**: glue loaded via `importScripts`, FRB initialized, OPFS `FileSystemSyncAccessHandle` acquired + registered, `NativeWorker.open` over OPFS, applyBatch/get round-trip, deterministic close, reopen. |
 | Reusable worker client | `web_worker_smoke.dart` + `gecko_db_worker_test.html` | `GECKO-WORKER-OK` | Main-thread `WebWorkerClient` spawns the **in-package** worker (`packages/gecko_db/web/gecko_db_worker.dart`) and drives the full protocol over OPFS: open → applyBatch → get → tables → close → reopen. |
 
-> M7.5: there is no in-memory or `:memory:` mode. Every supported web store is
+> there is no in-memory or `:memory:` mode. Every supported web store is
 > an OPFS file opened from inside a Web Worker (OPFS sync access handles are
 > worker-only). The public `Database` API is exercised on the VM/native suites;
 > these smokes validate the wasm engine + OPFS persistence path end-to-end.
@@ -78,7 +78,7 @@ node tool/web_smoke/cdp_drive.mjs http://localhost:8080/gecko_db_worker_test.htm
 > closes the engine deterministically in `finally`, but a crashed prior run can
 > leave a handle open — restart with a fresh `--user-data-dir` to reset.
 
-## Notes / gotchas (all documented in ADR-0013)
+## Notes / gotchas (all documented in )
 
 - FRB dispatches **sync** API functions through a Web-Worker pool on the web
   (which fails to transfer the non-shared wasm memory); gecko's FRB API is

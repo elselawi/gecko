@@ -1,4 +1,4 @@
-//! Length-preserving physical-page encryption below redb (Workstream 4).
+//! Length-preserving physical-page encryption below redb 
 //!
 //! redb's `StorageBackend` seam lets us substitute our own file layer. Each
 //! *logical* page of `LOGICAL_PAGE_SIZE` bytes is stored as one *physical*

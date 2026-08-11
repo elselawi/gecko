@@ -1,4 +1,4 @@
-/// Standard wire encodings (contract, per §0.5 contract 6).
+/// Standard wire encodings (contract).
 ///
 /// Both the in-memory backend and the Rust worker serialize with the exact
 /// same encoder, and a golden-serialization fixture locks the bytes. The

@@ -1,4 +1,4 @@
-//! Predicate wire format + evaluator (Phase 2 step 2).
+//! Predicate wire format + evaluator (step 2).
 //!
 //! A predicate is an AND-composed list of field filters that Rust evaluates
 //! against a row's encoded bytes WITHOUT round-tripping the row back to Dart.
