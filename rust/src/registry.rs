@@ -15,7 +15,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use redb::{ReadTransaction, TableError, WriteTransaction, ReadableTable};
+use redb::{ ReadTransaction, TableError, ReadableTable };
 
 use crate::predicate::{ decode_predicate, Predicate };
 use crate::sort_spec::{ decode_sort_specs, SortSpec, SortSpecs };
@@ -66,6 +66,9 @@ pub struct RegistryDelta {
 
 struct LiveQuery {
     table: String,
+    /// The registration kind (drives snapshot materialization: watchAllDiff
+    /// consumers receive the diff and skip the redundant full-snapshot clone).
+    kind: LiveQueryKind,
     predicate: Predicate,
     predicate_scratch: crate::predicate::PredicateScratch,
     specs: SortSpecs,
@@ -73,6 +76,9 @@ struct LiveQuery {
     rows: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
     /// Comparator-ordered list for sorted registrations (None when unsorted).
     sorted: Option<Vec<ByteEntry>>,
+    /// Key → position in [sorted] (None when unsorted). Locates a key in the
+    /// sorted list in O(1) instead of the previous linear scan.
+    sorted_index: std::collections::HashMap<Vec<u8>, usize>,
 }
 
 impl LiveQuery {
@@ -138,47 +144,54 @@ fn lower_bound(list: &[ByteEntry], item: &ByteEntry, specs: &[SortSpec]) -> usiz
     lo
 }
 
-fn insert_sorted(list: &mut Vec<ByteEntry>, key: Vec<u8>, row: Vec<u8>, specs: &[SortSpec]) {
+fn insert_sorted(
+    list: &mut Vec<ByteEntry>,
+    index: &mut std::collections::HashMap<Vec<u8>, usize>,
+    key: Vec<u8>,
+    row: Vec<u8>,
+    specs: &[SortSpec],
+) {
     let entry = (key, row);
     let at = lower_bound(list, &entry, specs);
+    // Bump every existing index at or after the insertion point.
+    for pos in index.values_mut() {
+        if *pos >= at {
+            *pos += 1;
+        }
+    }
     list.insert(at, entry);
+    index.insert(list[at].0.clone(), at);
 }
 
 /// Replaces [key] in the sorted list (when present) and re-inserts it at the
-/// comparator position.
+/// comparator position. [index] locates the key in O(1).
 fn upsert_sorted(
     list: &mut Vec<ByteEntry>,
+    index: &mut std::collections::HashMap<Vec<u8>, usize>,
     key: &[u8],
     row: &[u8],
     was_present: bool,
     specs: &[SortSpec],
 ) {
     if was_present {
-        if let Some(i) = list.iter().position(|entry| entry.0 == key) {
-            list.remove(i);
+        remove_sorted(list, index, key);
+    }
+    insert_sorted(list, index, key.to_vec(), row.to_vec(), specs);
+}
+
+fn remove_sorted(
+    list: &mut Vec<ByteEntry>,
+    index: &mut std::collections::HashMap<Vec<u8>, usize>,
+    key: &[u8],
+) {
+    if let Some(i) = index.remove(key) {
+        list.remove(i);
+        for pos in index.values_mut() {
+            if *pos > i {
+                *pos -= 1;
+            }
         }
     }
-    insert_sorted(list, key.to_vec(), row.to_vec(), specs);
-}
-
-fn remove_sorted(list: &mut Vec<ByteEntry>, key: &[u8]) {
-    if let Some(i) = list.iter().position(|entry| entry.0 == key) {
-        list.remove(i);
-    }
-}
-
-fn read_key(
-    txn: &WriteTransaction,
-    table: &str,
-    key: &[u8]
-) -> Result<Option<Vec<u8>>, WorkerError> {
-    let t = match txn.open_table(table_definition(table)) {
-        Ok(t) => t,
-        Err(TableError::TableDoesNotExist(_)) => return Ok(None),
-        Err(error) => return Err(WorkerError::Storage(error.to_string())),
-    };
-    let found = t.get(key).map_err(|error| WorkerError::Storage(error.to_string()))?;
-    Ok(found.map(|value| value.value().to_vec()))
 }
 
 /// The live-query registry owned by one worker.
@@ -214,6 +227,7 @@ impl LiveRegistry {
         table: &str,
         predicate_bytes: &[u8],
         sort_bytes: &[u8],
+        kind: LiveQueryKind,
     ) -> Result<(u64, Vec<ByteEntry>), WorkerError> {
         let predicate = decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
@@ -222,6 +236,8 @@ impl LiveRegistry {
         self.next_id += 1;
         let mut rows = std::collections::BTreeMap::new();
         let mut sorted: Option<Vec<ByteEntry>> = if specs.is_empty() { None } else { Some(Vec::new()) };
+        let mut sorted_index: std::collections::HashMap<Vec<u8>, usize> =
+            std::collections::HashMap::new();
         match txn.open_table(table_definition(table)) {
             Ok(t) => {
                 for entry in t
@@ -238,7 +254,7 @@ impl LiveRegistry {
                     let key_bytes = key.value().to_vec();
                     rows.insert(key_bytes.clone(), row.clone());
                     if let Some(list) = sorted.as_mut() {
-                        insert_sorted(list, key_bytes, row, &specs.specs);
+                        insert_sorted(list, &mut sorted_index, key_bytes, row, &specs.specs);
                     }
                 }
             }
@@ -256,11 +272,13 @@ impl LiveRegistry {
             id,
             LiveQuery {
                 table: table.to_string(),
+                kind,
                 predicate_scratch: predicate.scratch(),
                 predicate,
                 specs,
                 rows,
                 sorted,
+                sorted_index,
             },
         );
         self.by_table.entry(table.to_string()).or_default().push(id);
@@ -280,14 +298,18 @@ impl LiveRegistry {
     }
 
     /// Applies one committed batch to every touched registration, returning one
-    /// delta per registration. [affected] is the `(table, key)` pairs changed by
-    /// put/delete/delete-range ops; [cleared] lists tables removed wholesale.
+    /// delta per registration. [affected] is the deduplicated `(table, key)`
+    /// pairs changed by put/delete/delete-range ops (batch order); [changed]
+    /// carries each affected key's post-commit value (`Some(row)` for a put,
+    /// `None` for a delete/delete-range), so the registry never re-reads the
+    /// tree — one shared map serves every registration. [cleared] lists tables
+    /// removed wholesale.
     pub fn apply(
         &mut self,
-        txn: &WriteTransaction,
         affected: &[(String, Vec<u8>)],
+        changed: &HashMap<String, HashMap<Vec<u8>, Option<Vec<u8>>>>,
         cleared: &[String],
-        counters: &AtomicCounters
+        counters: &AtomicCounters,
     ) -> Result<Vec<RegistryDelta>, WorkerError> {
         if self.queries.is_empty() {
             return Ok(Vec::new());
@@ -315,18 +337,18 @@ impl LiveRegistry {
         touched.sort_unstable();
         let mut deltas = Vec::with_capacity(touched.len());
         for id in touched {
-            deltas.push(self.apply_one(txn, id, affected, cleared, counters)?);
+            deltas.push(self.apply_one(id, affected, changed, cleared, counters)?);
         }
         Ok(deltas)
     }
 
     fn apply_one(
         &mut self,
-        txn: &WriteTransaction,
         id: u64,
         affected: &[(String, Vec<u8>)],
+        changed: &HashMap<String, HashMap<Vec<u8>, Option<Vec<u8>>>>,
         cleared: &[String],
-        counters: &AtomicCounters
+        counters: &AtomicCounters,
     ) -> Result<RegistryDelta, WorkerError> {
         let table = self.queries.get(&id).expect("touched id exists").table.clone();
         let query = self.queries.get_mut(&id).expect("touched id exists");
@@ -338,6 +360,7 @@ impl LiveRegistry {
             if let Some(list) = query.sorted.as_mut() {
                 list.clear();
             }
+            query.sorted_index.clear();
             counters.bump(&counters.registry_rows_removed, removed.len() as u64);
             counters.bump(&counters.registry_rows_cloned, removed.len() as u64);
             counters.bump(
@@ -345,7 +368,7 @@ impl LiveRegistry {
                 removed
                     .iter()
                     .map(|(key, row)| (key.len() + row.len()) as u64)
-                    .sum::<u64>()
+                    .sum::<u64>(),
             );
             let unchanged = removed.is_empty();
             return Ok(RegistryDelta {
@@ -361,14 +384,18 @@ impl LiveRegistry {
         let mut added = Vec::new();
         let mut updated = Vec::new();
         let mut removed = Vec::new();
+        let table_changed = changed.get(&table);
         for (change_table, key) in affected {
             if change_table != &table {
                 continue;
             }
-            let current = read_key(txn, &table, key)?;
+            // Post-commit value supplied by the writer (never re-read): Some
+            // for a put, None for a delete/delete-range.
+            let current: Option<&Vec<u8>> = table_changed
+                .and_then(|m| m.get(key))
+                .and_then(|value| value.as_ref());
             let was_present = query.rows.contains_key(key);
             let matches = current
-                .as_deref()
                 .map(|row| {
                     query.predicate.test_bytes_with_scratch(
                         row,
@@ -378,7 +405,7 @@ impl LiveRegistry {
                 .unwrap_or(false);
             let key_bytes = key.clone();
             if matches {
-                let row = current.expect("matches implies present");
+                let row = current.expect("matches implies present").clone();
                 if was_present {
                     let old = query.rows.get(&key_bytes).expect("was_present row exists");
                     if *old != row {
@@ -391,26 +418,42 @@ impl LiveRegistry {
                 }
                 query.rows.insert(key_bytes.clone(), row.clone());
                 if let Some(list) = query.sorted.as_mut() {
-                    upsert_sorted(list, &key_bytes, &row, was_present, &query.specs.specs);
+                    upsert_sorted(
+                        list,
+                        &mut query.sorted_index,
+                        &key_bytes,
+                        &row,
+                        was_present,
+                        &query.specs.specs,
+                    );
                 }
             } else if was_present {
                 let old = query.rows.remove(&key_bytes).expect("was_present row exists");
                 removed.push((key_bytes.clone(), old));
                 counters.bump(&counters.registry_rows_removed, 1);
                 if let Some(list) = query.sorted.as_mut() {
-                    remove_sorted(list, &key_bytes);
+                    remove_sorted(list, &mut query.sorted_index, &key_bytes);
                 }
             }
         }
-        let snapshot = query.snapshot();
-        counters.bump(&counters.registry_rows_cloned, snapshot.len() as u64);
-        counters.bump(
-            &counters.registry_snapshot_bytes,
-            snapshot
-                .iter()
-                .map(|(key, row)| (key.len() + row.len()) as u64)
-                .sum::<u64>()
-        );
+        // WatchAllDiff consumers receive the diff (added/updated/removed);
+        // the full snapshot is redundant for them, so its clone/transfer/decode
+        // is skipped (Dart maintains its own incremental snapshot).
+        let snapshot = if query.kind == LiveQueryKind::WatchAllDiff {
+            Vec::new()
+        } else {
+            query.snapshot()
+        };
+        if !snapshot.is_empty() {
+            counters.bump(&counters.registry_rows_cloned, snapshot.len() as u64);
+            counters.bump(
+                &counters.registry_snapshot_bytes,
+                snapshot
+                    .iter()
+                    .map(|(key, row)| (key.len() + row.len()) as u64)
+                    .sum::<u64>(),
+            );
+        }
         let unchanged = added.is_empty() && updated.is_empty() && removed.is_empty();
         Ok(RegistryDelta {
             id,
@@ -540,8 +583,8 @@ mod tests {
         let (path, db) = seed_db("reg-seq");
         let txn = db.begin_read().unwrap();
         let mut registry = LiveRegistry::new();
-        let (id0, initial0) = registry.register(&txn, "items", &g0_predicate(), &no_filters()).unwrap();
-        let (id1, initial1) = registry.register(&txn, "items", &g0_predicate(), &no_filters()).unwrap();
+        let (id0, initial0) = registry.register(&txn, "items", &g0_predicate(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
+        let (id1, initial1) = registry.register(&txn, "items", &g0_predicate(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         assert_eq!(id0, 0);
         assert_eq!(id1, 1);
         // Only g0 rows (k0, k1) match; byte-key order.
@@ -559,7 +602,7 @@ mod tests {
         let (path, db) = seed_db("reg-missing");
         let txn = db.begin_read().unwrap();
         let mut registry = LiveRegistry::new();
-        let (id, initial) = registry.register(&txn, "absent", &no_filters(), &no_filters()).unwrap();
+        let (id, initial) = registry.register(&txn, "absent", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         assert_eq!(id, 0);
         assert!(initial.is_empty());
         // Registered anyway (a future clear/put on that table still applies).
@@ -575,7 +618,7 @@ mod tests {
         let mut registry = LiveRegistry::new();
         // version 9 — unsupported.
         let bad = vec![9, 0];
-        let err = registry.register(&txn, "items", &bad, &no_filters()).unwrap_err();
+        let err = registry.register(&txn, "items", &bad, &no_filters(), LiveQueryKind::WatchAll).unwrap_err();
         assert!(matches!(err, WorkerError::Wire(_)), "expected Wire error, got {err:?}");
         // Nothing was registered.
         assert_eq!(registry.len(), 0);
@@ -589,7 +632,7 @@ mod tests {
         let txn = db.begin_read().unwrap();
         let mut registry = LiveRegistry::new();
         let bad = vec![9, 0];
-        let err = registry.register(&txn, "items", &no_filters(), &bad).unwrap_err();
+        let err = registry.register(&txn, "items", &no_filters(), &bad, LiveQueryKind::WatchAll).unwrap_err();
         assert!(matches!(err, WorkerError::Wire(_)), "expected Wire error, got {err:?}");
         assert_eq!(registry.len(), 0);
         drop(txn);
@@ -602,11 +645,11 @@ mod tests {
         let txn = db.begin_read().unwrap();
         let mut registry = LiveRegistry::new();
         // Unsorted watch-all: byte-key order k0..k3.
-        let (_, all) = registry.register(&txn, "items", &no_filters(), &no_filters()).unwrap();
+        let (_, all) = registry.register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         let keys: Vec<Vec<u8>> = all.iter().map(|e| e.0.clone()).collect();
         assert_eq!(keys, vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]);
         // Sorted by age ascending: k0(10), k1(20), k2(30), k3(40).
-        let (_, sorted) = registry.register(&txn, "items", &no_filters(), &age_ascending_sort()).unwrap();
+        let (_, sorted) = registry.register(&txn, "items", &no_filters(), &age_ascending_sort(), LiveQueryKind::WatchAll).unwrap();
         let skeys: Vec<Vec<u8>> = sorted.iter().map(|e| e.0.clone()).collect();
         assert_eq!(skeys, vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()]);
         drop(txn);
@@ -615,9 +658,34 @@ mod tests {
 
     // ── apply / apply_one ──────────────────────────────────────────────────
 
-    /// Applies a batch directly through the registry (unit level): writes the
-    /// rows via a redb write transaction, then calls `registry.apply` in the
-    /// same transaction.
+    /// Builds the post-commit value map the registry now consumes: for every
+    /// affected (table, key), the current row bytes (None when absent), read
+    /// once from [txn] — replacing the registry's own per-key re-reads.
+    fn changed_map(
+        txn: &redb::WriteTransaction,
+        affected: &[(String, Vec<u8>)],
+    ) -> HashMap<String, HashMap<Vec<u8>, Option<Vec<u8>>>> {
+        let mut changed: HashMap<String, HashMap<Vec<u8>, Option<Vec<u8>>>> = HashMap::new();
+        for (table, key) in affected {
+            // Scope the table + guard so the cloned row bytes own their data.
+            let value = match txn.open_table(table_definition(table)) {
+                Ok(t) => match t.get(key.as_slice()) {
+                    Ok(Some(guard)) => Some(guard.value().to_vec()),
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+            changed
+                .entry(table.clone())
+                .or_default()
+                .insert(key.clone(), value);
+        }
+        changed
+    }
+
+    /// Applies a batch directly through the registry (unit level): builds the
+    /// post-commit value map from a write transaction, then calls
+    /// `registry.apply` in the same transaction.
     fn apply_batch(
         db: &Database,
         registry: &mut LiveRegistry,
@@ -625,7 +693,8 @@ mod tests {
         cleared: &[String],
     ) -> Vec<RegistryDelta> {
         let txn = db.begin_write().unwrap();
-        let deltas = registry.apply(&txn, affected, cleared, &AtomicCounters::default()).unwrap();
+        let changed = changed_map(&txn, affected);
+        let deltas = registry.apply(affected, &changed, cleared, &AtomicCounters::default()).unwrap();
         txn.commit().unwrap();
         deltas
     }
@@ -658,7 +727,7 @@ mod tests {
         let (path, db) = seed_db("apply-dup");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         // k0 appears twice: g0 → g1 (removed), then g1 → g0 (re-added).
         // The registry only sees the final state once; last state wins.
@@ -670,8 +739,14 @@ mod tests {
             t.insert(b"k0".as_slice(), g1.as_slice()).unwrap();
             t.insert(b"k0".as_slice(), g0.as_slice()).unwrap();
         }
+        let changed = changed_map(&wtxn, &[("items".into(), b"k0".to_vec())]);
         let deltas = registry
-            .apply(&wtxn, &[("items".into(), b"k0".to_vec())], &[], &AtomicCounters::default())
+            .apply(
+                &[("items".into(), b"k0".to_vec())],
+                &changed,
+                &[],
+                &AtomicCounters::default(),
+            )
             .unwrap();
         wtxn.commit().unwrap();
         assert_eq!(deltas.len(), 1);
@@ -692,7 +767,7 @@ mod tests {
         let (path, db) = seed_db("apply-join");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &g0_predicate(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &g0_predicate(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         // k4 joins as g0.
         put(&db, "items", b"k4", &encode_row(&[("g", encode_string("g0")), ("age", encode_int64(50))]));
@@ -712,7 +787,7 @@ mod tests {
         let (path, db) = seed_db("apply-unchanged");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &g0_predicate(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &g0_predicate(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         // Rewrite k0 with the identical row → no observable delta.
         put(&db, "items", b"k0", &encode_row(&[("g", encode_string("g0")), ("age", encode_int64(10))]));
@@ -734,7 +809,7 @@ mod tests {
         let (path, db) = seed_db("apply-flip");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &g0_predicate(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &g0_predicate(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         // k0: g0 → g1 (matching→non-matching → removed with previous row).
         let k0_g1 = encode_row(&[("g", encode_string("g1")), ("age", encode_int64(10))]);
@@ -746,12 +821,13 @@ mod tests {
             t.insert(b"k0".as_slice(), k0_g1.as_slice()).unwrap();
             t.insert(b"k2".as_slice(), k2_g0.as_slice()).unwrap();
         }
-        let deltas = registry.apply(
-            &wtxn,
-            &[("items".into(), b"k0".to_vec()), ("items".into(), b"k2".to_vec())],
-            &[],
-            &AtomicCounters::default(),
-        )
+        let affected = vec![
+            ("items".into(), b"k0".to_vec()),
+            ("items".into(), b"k2".to_vec()),
+        ];
+        let changed = changed_map(&wtxn, &affected);
+        let deltas = registry
+            .apply(&affected, &changed, &[], &AtomicCounters::default())
             .unwrap();
         wtxn.commit().unwrap();
         assert_eq!(deltas.len(), 1);
@@ -780,7 +856,7 @@ mod tests {
         let (path, db) = seed_db("apply-del");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         // Delete k1 via an affected-key entry with no current row.
         let wtxn = db.begin_write().unwrap();
@@ -788,8 +864,14 @@ mod tests {
             let mut t = wtxn.open_table(table_definition("items")).unwrap();
             t.remove(b"k1".as_slice()).unwrap();
         }
+        let changed = changed_map(&wtxn, &[("items".into(), b"k1".to_vec())]);
         let deltas = registry
-            .apply(&wtxn, &[("items".into(), b"k1".to_vec())], &[], &AtomicCounters::default())
+            .apply(
+                &[("items".into(), b"k1".to_vec())],
+                &changed,
+                &[],
+                &AtomicCounters::default(),
+            )
             .unwrap();
         wtxn.commit().unwrap();
         let delta = &deltas[0];
@@ -806,7 +888,7 @@ mod tests {
         let (path, db) = seed_db("apply-clear");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         let wtxn = db.begin_write().unwrap();
         {
@@ -816,8 +898,9 @@ mod tests {
                 t.remove(k.as_slice()).unwrap();
             }
         }
+        let changed = changed_map(&wtxn, &[]);
         let deltas = registry
-            .apply(&wtxn, &[], &["items".into()], &AtomicCounters::default())
+            .apply(&[], &changed, &["items".into()], &AtomicCounters::default())
             .unwrap();
         wtxn.commit().unwrap();
         let delta = &deltas[0];
@@ -829,11 +912,47 @@ mod tests {
         assert!(!delta.unchanged);
         // Clearing an already-empty table is unchanged.
         let wtxn2 = db.begin_write().unwrap();
+        let changed2 = changed_map(&wtxn2, &[]);
         let deltas2 = registry
-            .apply(&wtxn2, &[], &["items".into()], &AtomicCounters::default())
+            .apply(&[], &changed2, &["items".into()], &AtomicCounters::default())
             .unwrap();
         wtxn2.commit().unwrap();
         assert!(deltas2[0].unchanged);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn watch_all_diff_delta_skips_the_full_snapshot() {
+        let (path, db) = seed_db("diff-snapshot");
+        let mut registry = LiveRegistry::new();
+        let txn = db.begin_read().unwrap();
+        let (id, _) = registry
+            .register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAllDiff)
+            .unwrap();
+        drop(txn);
+        // A put joining the set: the diff must carry the added row but NOT the
+        // full snapshot (Dart maintains its own incremental snapshot).
+        put(&db, "items", b"k4", &encode_row(&[("g", encode_string("g0")), ("age", encode_int64(50))]));
+        let deltas = apply_batch(&db, &mut registry, &[("items".into(), b"k4".to_vec())], &[]);
+        assert_eq!(deltas.len(), 1);
+        let delta = &deltas[0];
+        assert_eq!(delta.id, id);
+        assert_eq!(delta.added.len(), 1);
+        assert_eq!(delta.added[0].0, b"k4");
+        assert!(delta.snapshot.is_empty(), "watchAllDiff must not clone the full snapshot");
+        assert!(!delta.unchanged);
+        // The same delta shape for a watchAll registration DOES carry the full
+        // snapshot (its consumers need it).
+        let mut watch_all = LiveRegistry::new();
+        let txn = db.begin_read().unwrap();
+        let (wid, _) = watch_all
+            .register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll)
+            .unwrap();
+        drop(txn);
+        let deltas = apply_batch(&db, &mut watch_all, &[("items".into(), b"k4".to_vec())], &[]);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].id, wid);
+        assert_eq!(deltas[0].snapshot.len(), 5, "watchAll keeps the full snapshot");
         let _ = std::fs::remove_file(path);
     }
 
@@ -844,7 +963,7 @@ mod tests {
         let (path, db) = seed_db("sorted-repos");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &no_filters(), &age_ascending_sort()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &no_filters(), &age_ascending_sort(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         // k0 age 10 → 99: moves to the end (k1,k2,k3,k0).
         put(&db, "items", b"k0", &encode_row(&[("g", encode_string("g0")), ("age", encode_int64(99))]));
@@ -874,7 +993,7 @@ mod tests {
         let (path, db) = seed_db("unreg");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters()).unwrap();
+        let (id, _) = registry.register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         assert_eq!(registry.len(), 1);
         registry.unregister(id);
@@ -894,7 +1013,7 @@ mod tests {
         let (path, db) = seed_db("nondur");
         let mut registry = LiveRegistry::new();
         let txn = db.begin_read().unwrap();
-        registry.register(&txn, "items", &no_filters(), &no_filters()).unwrap();
+        registry.register(&txn, "items", &no_filters(), &no_filters(), LiveQueryKind::WatchAll).unwrap();
         drop(txn);
         assert_eq!(registry.len(), 1);
         // A "restarted" registry (a fresh instance over the same db) sees no

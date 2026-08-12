@@ -691,10 +691,18 @@ impl RedbWorker {
 
         // collect the affected (table, key) pairs and wholesale-cleared
         // tables so the reactive registry can re-evaluate them before commit.
+        // The registry consumes each affected key's POST-COMMIT value (built
+        // here, once, shared across registrations) instead of re-reading the
+        // tree per key per registration.
         let mut affected: Vec<(String, Vec<u8>)> = Vec::new();
         let mut cleared: Vec<String> = Vec::new();
         let mut removed_keys: Vec<(String, Vec<u8>)> = Vec::new();
         let mut previous_values = vec![None; previous_operation_indexes.len()];
+        let registry_active = !self.registry.is_empty();
+        let mut changed: std::collections::HashMap<
+            String,
+            std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>
+        > = std::collections::HashMap::new();
 
         for (operation_index, operation) in operations.iter().enumerate() {
             match operation.kind {
@@ -788,6 +796,12 @@ impl RedbWorker {
                     )?;
                     crate::work_count!(self, rows_written, 1);
                     affected.push((operation.table.clone(), key.to_vec()));
+                    if registry_active {
+                        changed
+                            .entry(operation.table.clone())
+                            .or_default()
+                            .insert(key.to_vec(), Some(value.to_vec()));
+                    }
                     write_prepared_templates(
                         &transaction,
                         &mut handles,
@@ -826,6 +840,12 @@ impl RedbWorker {
                     )?;
                     crate::work_count!(self, rows_written, 1);
                     affected.push((operation.table.clone(), key.to_vec()));
+                    if registry_active {
+                        changed
+                            .entry(operation.table.clone())
+                            .or_default()
+                            .insert(key.to_vec(), None);
+                    }
                     write_prepared_templates(
                         &transaction,
                         &mut handles,
@@ -891,7 +911,13 @@ impl RedbWorker {
                     }
                     for key in keys {
                         removed_keys.push((operation.table.clone(), key.clone()));
-                        affected.push((operation.table.clone(), key));
+                        affected.push((operation.table.clone(), key.clone()));
+                        if registry_active {
+                            changed
+                                .entry(operation.table.clone())
+                                .or_default()
+                                .insert(key, None);
+                        }
                     }
                 }
                 OpKind::Clear => {
@@ -973,7 +999,15 @@ impl RedbWorker {
         if change_log_max_entries > 0 && change_log_touched {
             prune_change_log(&transaction, change_log_max_entries, &self.counters)?;
         }
-        let deltas = self.registry.apply(&transaction, &affected, &cleared, &self.counters)?;
+        // Deduplicate affected (table, key) pairs in batch order so the
+        // registry evaluates each key once against its final post-commit
+        // value (repeated keys arrive in one batch; last state wins).
+        if registry_active {
+            let mut seen: std::collections::HashSet<(String, Vec<u8>)> =
+                std::collections::HashSet::with_capacity(affected.len());
+            affected.retain(|(table, key)| seen.insert((table.clone(), key.clone())));
+        }
+        let deltas = self.registry.apply(&affected, &changed, &cleared, &self.counters)?;
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         if !sequence_neutral {
             self.commit_sequence = sequence;
@@ -997,15 +1031,19 @@ impl RedbWorker {
         sort_bytes: &[u8],
         kind: u8
     ) -> Result<(u64, Vec<ByteEntry>), WorkerError> {
-        // Validate the kind before registering (the registry itself treats all
-        // kinds uniformly; Dart decides no-op suppression from `unchanged`).
-        crate::registry::LiveQueryKind
+        let kind_value = crate::registry::LiveQueryKind
             ::from_u8(kind)
             .ok_or_else(|| {
                 WorkerError::InvalidOperation(format!("unknown live-query kind {kind}"))
             })?;
         let transaction = self.begin_read()?;
-        self.registry.register(&transaction, table, predicate_bytes, sort_bytes)
+        self.registry.register(
+            &transaction,
+            table,
+            predicate_bytes,
+            sort_bytes,
+            kind_value,
+        )
     }
 
     /// removes a live-query registration (idempotent).
@@ -6375,8 +6413,10 @@ mod tests {
     #[test]
     fn live_registry_idempotent_write_is_unchanged() {
         let (path, mut worker) = seed_registry_fixture("registry-idempotent");
+        // kind 0 (watchAll): keeps the full snapshot on every delta, so the
+        // unchanged-write assertion below also checks the snapshot.
         let (_, _) = worker
-            .register_live_query("items", &g0_predicate(), &no_filters(), 1)
+            .register_live_query("items", &g0_predicate(), &no_filters(), 0)
             .unwrap();
         // Same value for k0 → nothing observable changes.
         let result = worker
