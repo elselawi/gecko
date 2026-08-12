@@ -116,6 +116,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<(BigInt, int)> dco_decode_list_record_u_64_u_8(dynamic raw);
 
   @protected
+  List<SyncTransitionUpdate> dco_decode_list_sync_transition_update(
+    dynamic raw,
+  );
+
+  @protected
   (Uint8List, Uint8List)?
   dco_decode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
     dynamic raw,
@@ -153,6 +158,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   StorageStats dco_decode_storage_stats(dynamic raw);
+
+  @protected
+  SyncTransitionUpdate dco_decode_sync_transition_update(dynamic raw);
 
   @protected
   BigInt dco_decode_u_64(dynamic raw);
@@ -273,6 +281,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SyncTransitionUpdate> sse_decode_list_sync_transition_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   (Uint8List, Uint8List)?
   sse_decode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
     SseDeserializer deserializer,
@@ -316,6 +329,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   StorageStats sse_decode_storage_stats(SseDeserializer deserializer);
+
+  @protected
+  SyncTransitionUpdate sse_decode_sync_transition_update(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BigInt sse_decode_u_64(SseDeserializer deserializer);
@@ -463,6 +481,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_sync_transition_update(
+    List<SyncTransitionUpdate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void
   sse_encode_opt_box_autoadd_record_list_prim_u_8_strict_list_prim_u_8_strict(
     (Uint8List, Uint8List)? self,
@@ -516,6 +540,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_storage_stats(StorageStats self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sync_transition_update(
+    SyncTransitionUpdate self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_u_64(BigInt self, SseSerializer serializer);

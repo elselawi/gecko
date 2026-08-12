@@ -28,8 +28,14 @@ pub struct WorkCounters {
     pub table_opens: u64,
     /// Previous-value reads performed by the write path.
     pub previous_value_reads: u64,
+    /// Prepared change templates routed to their target data operation.
+    pub template_routing_inspections: u64,
     /// Durable-index entries inserted or removed during maintenance.
     pub index_maintenance_ops: u64,
+    /// Durable index plan rebuilds (declaration changes).
+    pub index_plan_rebuilds: u64,
+    /// Durable index repair operations (full rebuilds).
+    pub index_repairs: u64,
     /// Change-log entries scanned by retention pruning.
     pub change_log_scanned: u64,
     /// Change-log entries actually pruned.
@@ -70,7 +76,10 @@ pub struct AtomicCounters {
     pub rows_written: AtomicU64,
     pub table_opens: AtomicU64,
     pub previous_value_reads: AtomicU64,
+    pub template_routing_inspections: AtomicU64,
     pub index_maintenance_ops: AtomicU64,
+    pub index_plan_rebuilds: AtomicU64,
+    pub index_repairs: AtomicU64,
     pub change_log_scanned: AtomicU64,
     pub change_log_pruned: AtomicU64,
     pub primary_rows_visited: AtomicU64,
@@ -118,7 +127,10 @@ impl AtomicCounters {
             rows_written: self.rows_written.swap(0, Ordering::Relaxed),
             table_opens: self.table_opens.swap(0, Ordering::Relaxed),
             previous_value_reads: self.previous_value_reads.swap(0, Ordering::Relaxed),
+            template_routing_inspections: self.template_routing_inspections.swap(0, Ordering::Relaxed),
             index_maintenance_ops: self.index_maintenance_ops.swap(0, Ordering::Relaxed),
+            index_plan_rebuilds: self.index_plan_rebuilds.swap(0, Ordering::Relaxed),
+            index_repairs: self.index_repairs.swap(0, Ordering::Relaxed),
             change_log_scanned: self.change_log_scanned.swap(0, Ordering::Relaxed),
             change_log_pruned: self.change_log_pruned.swap(0, Ordering::Relaxed),
             primary_rows_visited: self.primary_rows_visited.swap(0, Ordering::Relaxed),

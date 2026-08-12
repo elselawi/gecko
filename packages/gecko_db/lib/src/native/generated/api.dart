@@ -110,6 +110,10 @@ abstract class NativeWorker implements RustOpaqueInterface {
   /// Rust. Dart decodes the returned records into `PendingChange`.
   Future<List<(Uint8List, Uint8List)>> pendingChanges();
 
+  /// The on-disk file length, O(1) — for compaction reporting where the
+  /// logical-size scan is never needed. See [`RedbWorker::physical_size`].
+  Future<BigInt> physicalSize();
+
   /// step 2: full-scan with a pushed predicate. Scans every row in
   /// [table], evaluates [predicate] against each row's encoded bytes IN RUST
   /// (decoding only the referenced fields), and returns only the matching
@@ -229,6 +233,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String table,
     Uint8List? start,
     Uint8List? end,
+    BigInt? limit,
   });
 
   /// registers a live query with the worker's reactive
@@ -414,6 +419,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String table,
     Uint8List? start,
     Uint8List? end,
+    BigInt? limit,
   });
 
   /// /snapshot-bound child retrieval using durable index ranges or
@@ -458,6 +464,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
   /// large sync-state table is never scanned + decoded in Dart.
   Future<List<(Uint8List, Uint8List)>> syncStateMatching({
     required List<Uint8List> matchers,
+  });
+
+  /// Applies mark-synchronizing / mark-synced / mark-failed transitions in
+  /// ONE Rust write transaction (sync state, plus the matching change-log
+  /// records when [update_log] is set). See
+  /// [`RedbWorker::sync_transition`].
+  Future<void> syncTransition({
+    required List<SyncTransitionUpdate> updates,
+    required bool updateLog,
   });
 
   Future<List<String>> tables();

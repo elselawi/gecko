@@ -14,6 +14,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use redb::{ ReadTransaction, TableError, ReadableTable };
 
@@ -71,21 +72,104 @@ struct LiveQuery {
     kind: LiveQueryKind,
     predicate: Predicate,
     predicate_scratch: crate::predicate::PredicateScratch,
-    specs: SortSpecs,
+    specs: Arc<SortSpecs>,
     /// Byte-key-ordered materialized result set (key bytes → row bytes).
     rows: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
-    /// Comparator-ordered list for sorted registrations (None when unsorted).
-    sorted: Option<Vec<ByteEntry>>,
-    /// Key → position in [sorted] (None when unsorted). Locates a key in the
-    /// sorted list in O(1) instead of the previous linear scan.
-    sorted_index: std::collections::HashMap<Vec<u8>, usize>,
+    /// Comparator-ordered tree for sorted registrations (None when unsorted):
+    /// a [SortedKey]-keyed BTreeMap gives O(log n) ordered insert/remove
+    /// without shifting a Vec or rewriting every later position.
+    sorted: Option<std::collections::BTreeMap<SortedKey, Vec<u8>>>,
+    /// Record key → its current [SortedKey] (None when unsorted). Locates the
+    /// old sort key of an updated row in O(1) so the tree remove is O(log n).
+    sorted_keys: HashMap<Vec<u8>, SortedKey>,
+}
+
+/// The comparator key of one row under a registration's sort specs: the
+/// decoded sort values (`None` = the field is missing) plus the record-key
+/// tiebreak. Values are stored DECODED once at insert time, so a tree keyed
+/// by [SortedKey] orders rows exactly like `compare_entry` (which decodes on
+/// every comparison) while keeping ordered insert/remove O(log n).
+#[derive(Clone)]
+struct SortedKey {
+    specs: Arc<SortSpecs>,
+    values: Vec<Option<value_codec::RowValue>>,
+    record_key: Vec<u8>,
+}
+
+/// Decodes the sort values of [row] into a [SortedKey] (missing field → None,
+/// explicit null → Some(Null), mirroring `compare_entry`'s `find_field`).
+fn decode_sort_key(row: &[u8], record_key: &[u8], specs: &Arc<SortSpecs>) -> SortedKey {
+    let values = specs
+        .specs
+        .iter()
+        .map(|spec| value_codec::find_field(row, &spec.field).ok().flatten())
+        .collect();
+    SortedKey {
+        specs: Arc::clone(specs),
+        values,
+        record_key: record_key.to_vec(),
+    }
+}
+
+impl PartialEq for SortedKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl Eq for SortedKey {}
+impl PartialOrd for SortedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SortedKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Exactly mirrors `compare_entry`/`sort_spec::compare_rows`: missing
+        // fields sort last ascending / first descending, explicit null is a
+        // present value, and the record key is the deterministic tiebreak.
+        for ((spec, a), b) in self
+            .specs
+            .specs
+            .iter()
+            .zip(self.values.iter())
+            .zip(other.values.iter())
+        {
+            match (a, b) {
+                (Some(x), Some(y)) => {
+                    let c = value_codec::sort_compare(x, y);
+                    if c != Ordering::Equal {
+                        return if spec.descending { c.reverse() } else { c };
+                    }
+                }
+                (Some(_), None) => {
+                    return if spec.descending {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    };
+                }
+                (None, Some(_)) => {
+                    return if spec.descending {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    };
+                }
+                (None, None) => {}
+            }
+        }
+        self.record_key.cmp(&other.record_key)
+    }
 }
 
 impl LiveQuery {
     /// The full current result set in order.
     fn snapshot(&self) -> Vec<ByteEntry> {
         match &self.sorted {
-            Some(list) => list.clone(),
+            Some(tree) => tree
+                .iter()
+                .map(|(key, row)| (key.record_key.clone(), row.clone()))
+                .collect(),
             None => self
                 .rows
                 .iter()
@@ -97,7 +181,9 @@ impl LiveQuery {
 
 /// Compares two entries by [specs] (missing fields sort last ascending / first
 /// descending, matching `sort_spec::compare_rows`), then by key bytes for a
-/// deterministic total order (the same tiebreak as `query_sorted`).
+/// deterministic total order (the same tiebreak as `query_sorted`). Retained
+/// as the reference for [SortedKey]'s `Ord`, which mirrors it exactly.
+#[allow(dead_code)]
 fn compare_entry(a: &ByteEntry, b: &ByteEntry, specs: &[SortSpec]) -> Ordering {
     for spec in specs {
         let a_value = value_codec::find_field(&a.1, &spec.field).ok().flatten();
@@ -129,68 +215,44 @@ fn compare_entry(a: &ByteEntry, b: &ByteEntry, specs: &[SortSpec]) -> Ordering {
     a.0.cmp(&b.0)
 }
 
-/// First index at which [item] would sort under [specs].
-fn lower_bound(list: &[ByteEntry], item: &ByteEntry, specs: &[SortSpec]) -> usize {
-    let mut lo = 0;
-    let mut hi = list.len();
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if compare_entry(&list[mid], item, specs) == Ordering::Less {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
-}
-
+/// Inserts [row] into the sorted tree under [sort_key], recording the
+/// record-key → sort-key mapping so an update locates and removes the old key
+/// in O(log n).
 fn insert_sorted(
-    list: &mut Vec<ByteEntry>,
-    index: &mut std::collections::HashMap<Vec<u8>, usize>,
-    key: Vec<u8>,
+    tree: &mut std::collections::BTreeMap<SortedKey, Vec<u8>>,
+    sorted_keys: &mut HashMap<Vec<u8>, SortedKey>,
+    sort_key: SortedKey,
     row: Vec<u8>,
-    specs: &[SortSpec],
 ) {
-    let entry = (key, row);
-    let at = lower_bound(list, &entry, specs);
-    // Bump every existing index at or after the insertion point.
-    for pos in index.values_mut() {
-        if *pos >= at {
-            *pos += 1;
-        }
-    }
-    list.insert(at, entry);
-    index.insert(list[at].0.clone(), at);
+    sorted_keys.insert(sort_key.record_key.clone(), sort_key.clone());
+    tree.insert(sort_key, row);
 }
 
-/// Replaces [key] in the sorted list (when present) and re-inserts it at the
-/// comparator position. [index] locates the key in O(1).
+/// Replaces [key]'s sorted entry with the new [row]: removes the old sort key
+/// (O(log n)) and inserts the freshly decoded one (O(log n)).
 fn upsert_sorted(
-    list: &mut Vec<ByteEntry>,
-    index: &mut std::collections::HashMap<Vec<u8>, usize>,
+    tree: &mut std::collections::BTreeMap<SortedKey, Vec<u8>>,
+    sorted_keys: &mut HashMap<Vec<u8>, SortedKey>,
     key: &[u8],
     row: &[u8],
     was_present: bool,
-    specs: &[SortSpec],
+    specs: &Arc<SortSpecs>,
 ) {
     if was_present {
-        remove_sorted(list, index, key);
+        remove_sorted(tree, sorted_keys, key);
     }
-    insert_sorted(list, index, key.to_vec(), row.to_vec(), specs);
+    let sort_key = decode_sort_key(row, key, specs);
+    insert_sorted(tree, sorted_keys, sort_key, row.to_vec());
 }
 
+/// Removes [record_key]'s entry from the sorted tree in O(log n).
 fn remove_sorted(
-    list: &mut Vec<ByteEntry>,
-    index: &mut std::collections::HashMap<Vec<u8>, usize>,
-    key: &[u8],
+    tree: &mut std::collections::BTreeMap<SortedKey, Vec<u8>>,
+    sorted_keys: &mut HashMap<Vec<u8>, SortedKey>,
+    record_key: &[u8],
 ) {
-    if let Some(i) = index.remove(key) {
-        list.remove(i);
-        for pos in index.values_mut() {
-            if *pos > i {
-                *pos -= 1;
-            }
-        }
+    if let Some(sort_key) = sorted_keys.remove(record_key) {
+        tree.remove(&sort_key);
     }
 }
 
@@ -231,13 +293,19 @@ impl LiveRegistry {
     ) -> Result<(u64, Vec<ByteEntry>), WorkerError> {
         let predicate = decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
-        let specs = decode_sort_specs(sort_bytes).map_err(WorkerError::Wire)?;
+        let specs = Arc::new(decode_sort_specs(sort_bytes).map_err(WorkerError::Wire)?);
         let id = self.next_id;
         self.next_id += 1;
         let mut rows = std::collections::BTreeMap::new();
-        let mut sorted: Option<Vec<ByteEntry>> = if specs.is_empty() { None } else { Some(Vec::new()) };
-        let mut sorted_index: std::collections::HashMap<Vec<u8>, usize> =
-            std::collections::HashMap::new();
+        let has_specs = !specs.specs.is_empty();
+        let mut sorted: Option<std::collections::BTreeMap<SortedKey, Vec<u8>>> =
+            if has_specs { Some(Default::default()) } else { None };
+        let mut sorted_keys: HashMap<Vec<u8>, SortedKey> = HashMap::new();
+        // Accepted (key, row) pairs collected before the single sort pass so
+        // registration is O(n log n), not O(n²) per-row binary insert.
+        let mut accepted: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        // One predicate scratch buffer reused for the whole scan.
+        let mut predicate_scratch = predicate.scratch();
         match txn.open_table(table_definition(table)) {
             Ok(t) => {
                 for entry in t
@@ -247,22 +315,39 @@ impl LiveRegistry {
                     let (key, value) = entry
                         .map_err(|error| WorkerError::Storage(error.to_string()))?;
                     let row = value.value().to_vec();
-                    let mut predicate_scratch = predicate.scratch();
                     if !predicate.test_bytes_with_scratch(&row, &mut predicate_scratch) {
                         continue;
                     }
                     let key_bytes = key.value().to_vec();
                     rows.insert(key_bytes.clone(), row.clone());
-                    if let Some(list) = sorted.as_mut() {
-                        insert_sorted(list, &mut sorted_index, key_bytes, row, &specs.specs);
-                    }
+                    accepted.push((key_bytes, row));
                 }
             }
             Err(TableError::TableDoesNotExist(_)) => {}
             Err(error) => return Err(WorkerError::Storage(error.to_string())),
         }
+        // Decode every accepted row's sort key, sort ONCE, then build the
+        // ordered tree and the record-key → sort-key map in one pass.
+        if let Some(tree) = sorted.as_mut() {
+            let mut keys: Vec<SortedKey> = accepted
+                .iter()
+                .map(|(key, row)| decode_sort_key(row, key, &specs))
+                .collect();
+            keys.sort();
+            for sort_key in keys {
+                let row = rows
+                    .get(&sort_key.record_key)
+                    .expect("accepted row inserted above")
+                    .clone();
+                sorted_keys.insert(sort_key.record_key.clone(), sort_key.clone());
+                tree.insert(sort_key, row);
+            }
+        }
         let initial = match &sorted {
-            Some(list) => list.clone(),
+            Some(tree) => tree
+                .iter()
+                .map(|(key, row)| (key.record_key.clone(), row.clone()))
+                .collect(),
             None => rows
                 .iter()
                 .map(|(key, row)| (key.clone(), row.clone()))
@@ -278,7 +363,7 @@ impl LiveRegistry {
                 specs,
                 rows,
                 sorted,
-                sorted_index,
+                sorted_keys,
             },
         );
         self.by_table.entry(table.to_string()).or_default().push(id);
@@ -316,7 +401,17 @@ impl LiveRegistry {
         }
         let mut touched: Vec<u64> = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        // Deduplicate touched table names first, then collect registration ids
+        // ONCE per table — a batch touching K keys in one table never walks
+        // that table's registration list K times.
+        let mut affected_tables: Vec<&str> = Vec::new();
+        let mut table_seen = std::collections::HashSet::new();
         for (table, _) in affected {
+            if table_seen.insert(table.as_str()) {
+                affected_tables.push(table.as_str());
+            }
+        }
+        for table in affected_tables {
             if let Some(ids) = self.by_table.get(table) {
                 for id in ids {
                     if seen.insert(*id) {
@@ -357,10 +452,10 @@ impl LiveRegistry {
         if cleared.contains(&table) {
             let removed = query.snapshot();
             query.rows.clear();
-            if let Some(list) = query.sorted.as_mut() {
-                list.clear();
+            if let Some(tree) = query.sorted.as_mut() {
+                tree.clear();
             }
-            query.sorted_index.clear();
+            query.sorted_keys.clear();
             counters.bump(&counters.registry_rows_removed, removed.len() as u64);
             counters.bump(&counters.registry_rows_cloned, removed.len() as u64);
             counters.bump(
@@ -417,22 +512,26 @@ impl LiveRegistry {
                     counters.bump(&counters.registry_rows_added, 1);
                 }
                 query.rows.insert(key_bytes.clone(), row.clone());
-                if let Some(list) = query.sorted.as_mut() {
+                if let Some(tree) = query.sorted.as_mut() {
                     upsert_sorted(
-                        list,
-                        &mut query.sorted_index,
+                        tree,
+                        &mut query.sorted_keys,
                         &key_bytes,
                         &row,
                         was_present,
-                        &query.specs.specs,
+                        &query.specs,
                     );
                 }
             } else if was_present {
                 let old = query.rows.remove(&key_bytes).expect("was_present row exists");
                 removed.push((key_bytes.clone(), old));
                 counters.bump(&counters.registry_rows_removed, 1);
-                if let Some(list) = query.sorted.as_mut() {
-                    remove_sorted(list, &mut query.sorted_index, &key_bytes);
+                if query.sorted.is_some() {
+                    remove_sorted(
+                        query.sorted.as_mut().expect("sorted tree present"),
+                        &mut query.sorted_keys,
+                        &key_bytes,
+                    );
                 }
             }
         }
@@ -706,6 +805,76 @@ mod tests {
             t.insert(key, row).unwrap();
         }
         txn.commit().unwrap();
+    }
+
+    fn delete(db: &Database, table: &str, key: &[u8]) {
+        let txn = db.begin_write().unwrap();
+        {
+            let mut t = txn.open_table(table_definition(table)).unwrap();
+            t.remove(key).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
+    #[test]
+    fn sorted_registration_scales_and_repositions_at_scale() {
+        let path = temp_path("reg-scale");
+        let db = Database::create(&path).unwrap();
+        // Seed 10k rows with `age` 0..10000 inserted in REVERSE so the
+        // registration must sort the accepted set once.
+        {
+            let txn = db.begin_write().unwrap();
+            {
+                let mut t = txn.open_table(table_definition("items")).unwrap();
+                for i in (0..10000u64).rev() {
+                    let key = format!("k{i:05}");
+                    t.insert(
+                        key.as_bytes(),
+                        encode_row(&[("age", encode_int64(i as i64))]).as_slice(),
+                    )
+                    .unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        let mut registry = LiveRegistry::new();
+        let txn = db.begin_read().unwrap();
+        let (id, initial) = registry
+            .register(&txn, "items", &no_filters(), &age_ascending_sort(), LiveQueryKind::Query)
+            .unwrap();
+        drop(txn);
+        assert_eq!(id, 0);
+        assert_eq!(initial.len(), 10000);
+        assert_eq!(initial[0].0, b"k00000", "ascending order starts at 0");
+        assert_eq!(initial[9999].0, b"k09999", "ascending order ends at 9999");
+
+        // Reposition: give k05000 age -1 so it moves to the front (tree
+        // remove + reinsert, O(log n)).
+        put(&db, "items", b"k05000", &encode_row(&[("age", encode_int64(-1))]));
+        let deltas = apply_batch(&db, &mut registry, &[("items".into(), b"k05000".to_vec())], &[]);
+        assert_eq!(deltas.len(), 1);
+        let delta = &deltas[0];
+        assert_eq!(delta.updated.len(), 1);
+        assert_eq!(delta.snapshot.len(), 10000);
+        assert_eq!(delta.snapshot[0].0, b"k05000", "repositioned row is first");
+
+        // Remove a row from the middle: order stays intact after the tree
+        // remove.
+        delete(&db, "items", b"k03000");
+        let deltas = apply_batch(&db, &mut registry, &[("items".into(), b"k03000".to_vec())], &[]);
+        let delta = &deltas[0];
+        assert_eq!(delta.removed.len(), 1);
+        assert_eq!(delta.snapshot.len(), 9999);
+        let ages: Vec<i64> = delta
+            .snapshot
+            .iter()
+            .map(|(_, row)| match value_codec::find_field(row, "age") {
+                Ok(Some(value_codec::RowValue::Int64(n))) => n,
+                _ => panic!("age field"),
+            })
+            .collect();
+        assert!(ages.windows(2).all(|w| w[0] <= w[1]), "order preserved after remove");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

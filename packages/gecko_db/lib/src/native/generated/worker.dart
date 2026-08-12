@@ -74,3 +74,46 @@ class StorageStats {
           openSnapshots == other.openSnapshots &&
           commitSequence == other.commitSequence;
 }
+
+/// One mark-synchronizing / mark-synced / mark-failed transition: the encoded
+/// collection + recordId of a selected sync-state record, its
+/// `localMutationId` (the change-log LSN), and the fully rewritten change
+/// record to persist in both sync state and the matching change-log records.
+class SyncTransitionUpdate {
+  /// DefaultWireCodec-encoded collection string.
+  final Uint8List collection;
+
+  /// DefaultWireCodec-encoded recordId string.
+  final Uint8List recordId;
+
+  /// The change-log LSN (the record's localMutationId) whose records are
+  /// rewritten.
+  final BigInt localMutationId;
+
+  /// The fully rewritten change record (encoded map) to persist.
+  final Uint8List newState;
+
+  const SyncTransitionUpdate({
+    required this.collection,
+    required this.recordId,
+    required this.localMutationId,
+    required this.newState,
+  });
+
+  @override
+  int get hashCode =>
+      collection.hashCode ^
+      recordId.hashCode ^
+      localMutationId.hashCode ^
+      newState.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SyncTransitionUpdate &&
+          runtimeType == other.runtimeType &&
+          collection == other.collection &&
+          recordId == other.recordId &&
+          localMutationId == other.localMutationId &&
+          newState == other.newState;
+}

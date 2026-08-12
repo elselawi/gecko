@@ -22,8 +22,17 @@ class WorkCounters {
   /// Previous-value reads performed by the write path.
   final BigInt previousValueReads;
 
+  /// Prepared change templates routed to their target data operation.
+  final BigInt templateRoutingInspections;
+
   /// Durable-index entries inserted or removed during maintenance.
   final BigInt indexMaintenanceOps;
+
+  /// Durable index plan rebuilds (declaration changes).
+  final BigInt indexPlanRebuilds;
+
+  /// Durable index repair operations (full rebuilds).
+  final BigInt indexRepairs;
 
   /// Change-log entries scanned by retention pruning.
   final BigInt changeLogScanned;
@@ -75,7 +84,10 @@ class WorkCounters {
     required this.rowsWritten,
     required this.tableOpens,
     required this.previousValueReads,
+    required this.templateRoutingInspections,
     required this.indexMaintenanceOps,
+    required this.indexPlanRebuilds,
+    required this.indexRepairs,
     required this.changeLogScanned,
     required this.changeLogPruned,
     required this.primaryRowsVisited,
@@ -99,7 +111,10 @@ class WorkCounters {
       rowsWritten.hashCode ^
       tableOpens.hashCode ^
       previousValueReads.hashCode ^
+      templateRoutingInspections.hashCode ^
       indexMaintenanceOps.hashCode ^
+      indexPlanRebuilds.hashCode ^
+      indexRepairs.hashCode ^
       changeLogScanned.hashCode ^
       changeLogPruned.hashCode ^
       primaryRowsVisited.hashCode ^
@@ -125,7 +140,10 @@ class WorkCounters {
           rowsWritten == other.rowsWritten &&
           tableOpens == other.tableOpens &&
           previousValueReads == other.previousValueReads &&
+          templateRoutingInspections == other.templateRoutingInspections &&
           indexMaintenanceOps == other.indexMaintenanceOps &&
+          indexPlanRebuilds == other.indexPlanRebuilds &&
+          indexRepairs == other.indexRepairs &&
           changeLogScanned == other.changeLogScanned &&
           changeLogPruned == other.changeLogPruned &&
           primaryRowsVisited == other.primaryRowsVisited &&

@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1109865643;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -837452315;
 
 // Section: executor
 
@@ -1051,6 +1051,62 @@ fn wire__crate__api__NativeWorker_pending_changes_impl(
         },
     )
 }
+fn wire__crate__api__NativeWorker_physical_size_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "NativeWorker_physical_size",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok =
+                            crate::api::NativeWorker::physical_size(&*api_that_guard).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__NativeWorker_query_filtered_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1831,6 +1887,7 @@ fn wire__crate__api__NativeWorker_range_scan_impl(
             let api_table = <String>::sse_decode(&mut deserializer);
             let api_start = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
             let api_end = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
+            let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -1857,6 +1914,7 @@ fn wire__crate__api__NativeWorker_range_scan_impl(
                             api_table,
                             api_start,
                             api_end,
+                            api_limit,
                         )
                         .await?;
                         Ok(output_ok)
@@ -3035,6 +3093,7 @@ fn wire__crate__api__NativeWorker_snapshot_range_scan_impl(
             let api_table = <String>::sse_decode(&mut deserializer);
             let api_start = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
             let api_end = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
+            let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -3062,6 +3121,7 @@ fn wire__crate__api__NativeWorker_snapshot_range_scan_impl(
                             api_table,
                             api_start,
                             api_end,
+                            api_limit,
                         )
                         .await?;
                         Ok(output_ok)
@@ -3384,6 +3444,69 @@ fn wire__crate__api__NativeWorker_sync_state_matching_impl(
                         let output_ok = crate::api::NativeWorker::sync_state_matching(
                             &*api_that_guard,
                             api_matchers,
+                        )
+                        .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__NativeWorker_sync_transition_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "NativeWorker_sync_transition",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>,
+            >>::sse_decode(&mut deserializer);
+            let api_updates =
+                <Vec<crate::worker::SyncTransitionUpdate>>::sse_decode(&mut deserializer);
+            let api_update_log = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, true,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref_mut().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let mut api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::NativeWorker::sync_transition(
+                            &mut *api_that_guard,
+                            api_updates,
+                            api_update_log,
                         )
                         .await?;
                         Ok(output_ok)
@@ -3784,6 +3907,20 @@ impl SseDecode for Vec<(u64, u8)> {
     }
 }
 
+impl SseDecode for Vec<crate::worker::SyncTransitionUpdate> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::worker::SyncTransitionUpdate>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Option<(Vec<u8>, Vec<u8>)> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3921,6 +4058,22 @@ impl SseDecode for crate::worker::StorageStats {
     }
 }
 
+impl SseDecode for crate::worker::SyncTransitionUpdate {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_collection = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_recordId = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_localMutationId = <u64>::sse_decode(deserializer);
+        let mut var_newState = <Vec<u8>>::sse_decode(deserializer);
+        return crate::worker::SyncTransitionUpdate {
+            collection: var_collection,
+            record_id: var_recordId,
+            local_mutation_id: var_localMutationId,
+            new_state: var_newState,
+        };
+    }
+}
+
 impl SseDecode for u64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3954,7 +4107,10 @@ impl SseDecode for crate::counters::WorkCounters {
         let mut var_rowsWritten = <u64>::sse_decode(deserializer);
         let mut var_tableOpens = <u64>::sse_decode(deserializer);
         let mut var_previousValueReads = <u64>::sse_decode(deserializer);
+        let mut var_templateRoutingInspections = <u64>::sse_decode(deserializer);
         let mut var_indexMaintenanceOps = <u64>::sse_decode(deserializer);
+        let mut var_indexPlanRebuilds = <u64>::sse_decode(deserializer);
+        let mut var_indexRepairs = <u64>::sse_decode(deserializer);
         let mut var_changeLogScanned = <u64>::sse_decode(deserializer);
         let mut var_changeLogPruned = <u64>::sse_decode(deserializer);
         let mut var_primaryRowsVisited = <u64>::sse_decode(deserializer);
@@ -3975,7 +4131,10 @@ impl SseDecode for crate::counters::WorkCounters {
             rows_written: var_rowsWritten,
             table_opens: var_tableOpens,
             previous_value_reads: var_previousValueReads,
+            template_routing_inspections: var_templateRoutingInspections,
             index_maintenance_ops: var_indexMaintenanceOps,
+            index_plan_rebuilds: var_indexPlanRebuilds,
+            index_repairs: var_indexRepairs,
             change_log_scanned: var_changeLogScanned,
             change_log_pruned: var_changeLogPruned,
             primary_rows_visited: var_primaryRowsVisited,
@@ -4052,181 +4211,185 @@ fn pde_ffi_dispatcher_primary_impl(
         18 => {
             wire__crate__api__NativeWorker_pending_changes_impl(port, ptr, rust_vec_len, data_len)
         }
-        19 => wire__crate__api__NativeWorker_query_filtered_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__NativeWorker_query_filtered_count_impl(
+        19 => wire__crate__api__NativeWorker_physical_size_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__NativeWorker_query_filtered_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__NativeWorker_query_filtered_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        21 => wire__crate__api__NativeWorker_query_filtered_distinct_impl(
+        22 => wire__crate__api__NativeWorker_query_filtered_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        22 => wire__crate__api__NativeWorker_query_filtered_limited_impl(
+        23 => wire__crate__api__NativeWorker_query_filtered_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        23 => wire__crate__api__NativeWorker_query_indexed_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__NativeWorker_query_indexed_count_impl(
+        24 => wire__crate__api__NativeWorker_query_indexed_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__NativeWorker_query_indexed_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        25 => wire__crate__api__NativeWorker_query_indexed_distinct_impl(
+        26 => wire__crate__api__NativeWorker_query_indexed_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        26 => wire__crate__api__NativeWorker_query_indexed_limited_impl(
+        27 => wire__crate__api__NativeWorker_query_indexed_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        27 => wire__crate__api__NativeWorker_query_indexed_multi_impl(
+        28 => wire__crate__api__NativeWorker_query_indexed_multi_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        28 => wire__crate__api__NativeWorker_query_indexed_ordered_impl(
+        29 => wire__crate__api__NativeWorker_query_indexed_ordered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        29 => wire__crate__api__NativeWorker_query_sorted_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__NativeWorker_range_scan_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__NativeWorker_register_live_query_impl(
+        30 => wire__crate__api__NativeWorker_query_sorted_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__NativeWorker_range_scan_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__NativeWorker_register_live_query_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        32 => wire__crate__api__NativeWorker_rekey_encrypted_file_impl(
+        33 => wire__crate__api__NativeWorker_rekey_encrypted_file_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        33 => wire__crate__api__NativeWorker_repair_index_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__NativeWorker_set_composite_indexes_impl(
+        34 => wire__crate__api__NativeWorker_repair_index_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__NativeWorker_set_composite_indexes_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
-        36 => {
+        36 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
+        37 => {
             wire__crate__api__NativeWorker_snapshot_get_many_impl(port, ptr, rust_vec_len, data_len)
         }
-        37 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
+        38 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__api__NativeWorker_snapshot_query_filtered_count_impl(
+        39 => wire__crate__api__NativeWorker_snapshot_query_filtered_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__api__NativeWorker_snapshot_query_filtered_distinct_impl(
+        40 => wire__crate__api__NativeWorker_snapshot_query_filtered_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        40 => wire__crate__api__NativeWorker_snapshot_query_filtered_limited_impl(
+        41 => wire__crate__api__NativeWorker_snapshot_query_filtered_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
+        42 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        42 => wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
+        43 => wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
+        44 => wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
+        45 => wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        45 => wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
+        46 => wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        46 => wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
+        47 => wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__crate__api__NativeWorker_snapshot_query_sorted_impl(
+        48 => wire__crate__api__NativeWorker_snapshot_query_sorted_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        48 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
+        49 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__api__NativeWorker_snapshot_relationship_children_impl(
+        50 => wire__crate__api__NativeWorker_snapshot_relationship_children_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        50 => wire__crate__api__NativeWorker_snapshot_relationship_join_ids_impl(
+        51 => wire__crate__api__NativeWorker_snapshot_relationship_join_ids_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        51 => wire__crate__api__NativeWorker_snapshot_relationship_parent_impl(
+        52 => wire__crate__api__NativeWorker_snapshot_relationship_parent_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        52 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__NativeWorker_sync_state_matching_impl(
+        53 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__NativeWorker_sync_state_matching_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        54 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__api__NativeWorker_take_counters_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__api__NativeWorker_unregister_live_query_impl(
+        55 => {
+            wire__crate__api__NativeWorker_sync_transition_impl(port, ptr, rust_vec_len, data_len)
+        }
+        56 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
+        57 => wire__crate__api__NativeWorker_take_counters_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__api__NativeWorker_unregister_live_query_impl(
             port,
             ptr,
             rust_vec_len,
@@ -4388,6 +4551,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::worker::StorageStats>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::worker::SyncTransitionUpdate {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.collection.into_into_dart().into_dart(),
+            self.record_id.into_into_dart().into_dart(),
+            self.local_mutation_id.into_into_dart().into_dart(),
+            self.new_state.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::worker::SyncTransitionUpdate
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::worker::SyncTransitionUpdate>
+    for crate::worker::SyncTransitionUpdate
+{
+    fn into_into_dart(self) -> crate::worker::SyncTransitionUpdate {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::counters::WorkCounters {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -4395,7 +4581,12 @@ impl flutter_rust_bridge::IntoDart for crate::counters::WorkCounters {
             self.rows_written.into_into_dart().into_dart(),
             self.table_opens.into_into_dart().into_dart(),
             self.previous_value_reads.into_into_dart().into_dart(),
+            self.template_routing_inspections
+                .into_into_dart()
+                .into_dart(),
             self.index_maintenance_ops.into_into_dart().into_dart(),
+            self.index_plan_rebuilds.into_into_dart().into_dart(),
+            self.index_repairs.into_into_dart().into_dart(),
             self.change_log_scanned.into_into_dart().into_dart(),
             self.change_log_pruned.into_into_dart().into_dart(),
             self.primary_rows_visited.into_into_dart().into_dart(),
@@ -4594,6 +4785,16 @@ impl SseEncode for Vec<(u64, u8)> {
     }
 }
 
+impl SseEncode for Vec<crate::worker::SyncTransitionUpdate> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::worker::SyncTransitionUpdate>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<(Vec<u8>, Vec<u8>)> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4698,6 +4899,16 @@ impl SseEncode for crate::worker::StorageStats {
     }
 }
 
+impl SseEncode for crate::worker::SyncTransitionUpdate {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.collection, serializer);
+        <Vec<u8>>::sse_encode(self.record_id, serializer);
+        <u64>::sse_encode(self.local_mutation_id, serializer);
+        <Vec<u8>>::sse_encode(self.new_state, serializer);
+    }
+}
+
 impl SseEncode for u64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4734,7 +4945,10 @@ impl SseEncode for crate::counters::WorkCounters {
         <u64>::sse_encode(self.rows_written, serializer);
         <u64>::sse_encode(self.table_opens, serializer);
         <u64>::sse_encode(self.previous_value_reads, serializer);
+        <u64>::sse_encode(self.template_routing_inspections, serializer);
         <u64>::sse_encode(self.index_maintenance_ops, serializer);
+        <u64>::sse_encode(self.index_plan_rebuilds, serializer);
+        <u64>::sse_encode(self.index_repairs, serializer);
         <u64>::sse_encode(self.change_log_scanned, serializer);
         <u64>::sse_encode(self.change_log_pruned, serializer);
         <u64>::sse_encode(self.primary_rows_visited, serializer);

@@ -523,6 +523,12 @@ pub fn find_field_bytes<'a>(bytes: &'a [u8], field: &str) -> Result<Option<&'a [
 /// values have a range and remain distinct from missing fields (`None`). The
 /// scan stops once every requested field has been found, preserving the
 /// allocation-free early-return behavior of single-field lookup.
+///
+/// A per-call lookup plan maps each encoded field name to every requested
+/// slot (a query can mention one field more than once), turning the walk from
+/// O(F × Q) key comparisons into O(F + Q) hash lookups for F map entries and
+/// Q requested fields. Malformed rows (a non-map, a truncated entry) yield
+/// whatever ranges were found, exactly like the single-field lookup.
 pub fn find_fields_ranges(
     bytes: &[u8],
     fields: &[String],
@@ -535,24 +541,35 @@ pub fn find_fields_ranges(
     if fields.is_empty() {
         return Ok(());
     }
+    // Compile field name → all requested slots once; the lookup borrows
+    // `fields`, which outlives this call.
+    let mut slots_by_field: std::collections::HashMap<&[u8], Vec<usize>> =
+        std::collections::HashMap::with_capacity(fields.len());
+    for (slot, field) in fields.iter().enumerate() {
+        slots_by_field.entry(field.as_bytes()).or_default().push(slot);
+    }
     let mut reader = ValueReader::new(bytes);
     if reader.read_u8()? != TAG_MAP {
         return Ok(());
     }
     let count = reader.read_u32_be()? as usize;
+    let mut remaining = fields.len();
     for _ in 0..count {
         let key = read_string_key(&mut reader)?;
         let value_start = reader.position();
         skip_value(&mut reader)?;
         let value_end = reader.position();
         if let Some(key) = key {
-            for (slot, field) in fields.iter().enumerate() {
-                if ranges[slot].is_none() && key == field.as_bytes() {
-                    ranges[slot] = Some((value_start, value_end));
+            if let Some(slots) = slots_by_field.get(key) {
+                for &slot in slots {
+                    if ranges[slot].is_none() {
+                        ranges[slot] = Some((value_start, value_end));
+                        remaining -= 1;
+                    }
                 }
             }
         }
-        if ranges.iter().all(Option::is_some) {
+        if remaining == 0 {
             break;
         }
     }

@@ -10,6 +10,7 @@ use crate::worker::{
     PreparedChangeTemplate,
     RedbWorker,
     StorageStats,
+    SyncTransitionUpdate,
     WorkCounters,
     WorkerError,
 };
@@ -293,6 +294,18 @@ impl NativeWorker {
         self.worker.changes_since(seq).map_err(encode_worker_error)
     }
 
+    /// Applies mark-synchronizing / mark-synced / mark-failed transitions in
+    /// ONE Rust write transaction (sync state, plus the matching change-log
+    /// records when [update_log] is set). See
+    /// [`RedbWorker::sync_transition`].
+    pub async fn sync_transition(
+        &mut self,
+        updates: Vec<SyncTransitionUpdate>,
+        update_log: bool
+    ) -> Result<(), String> {
+        self.worker.sync_transition(&updates, update_log).map_err(encode_worker_error)
+    }
+
     /// Returns the attachment metadata entries whose parent row no longer
     /// exists — the `orphaned()` scan + parent-existence checks run inside one
     /// Rust read transaction.
@@ -313,10 +326,11 @@ impl NativeWorker {
         &self,
         table: String,
         start: Option<Vec<u8>>,
-        end: Option<Vec<u8>>
+        end: Option<Vec<u8>>,
+        limit: Option<u64>,
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
-            .range_scan(&table, start.as_deref(), end.as_deref())
+            .range_scan(&table, start.as_deref(), end.as_deref(), limit)
             .map_err(encode_worker_error)
     }
 
@@ -372,10 +386,11 @@ impl NativeWorker {
         snapshot: u64,
         table: String,
         start: Option<Vec<u8>>,
-        end: Option<Vec<u8>>
+        end: Option<Vec<u8>>,
+        limit: Option<u64>,
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
-            .snapshot_range_scan(snapshot, &table, start.as_deref(), end.as_deref())
+            .snapshot_range_scan(snapshot, &table, start.as_deref(), end.as_deref(), limit)
             .map_err(encode_worker_error)
     }
 
@@ -915,6 +930,12 @@ impl NativeWorker {
     /// Reports physical/logical size and health counters
     pub async fn storage_stats(&self) -> Result<StorageStats, String> {
         self.worker.storage_stats().map_err(encode_worker_error)
+    }
+
+    /// The on-disk file length, O(1) — for compaction reporting where the
+    /// logical-size scan is never needed. See [`RedbWorker::physical_size`].
+    pub async fn physical_size(&self) -> Result<u64, String> {
+        self.worker.physical_size().map_err(encode_worker_error)
     }
 
     /// Starts recording physical-work counters (zero-cost when off by
