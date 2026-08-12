@@ -72,6 +72,7 @@ class _Options {
     required this.indexed,
     required this.indexedRows,
     required this.counters,
+    required this.encrypted,
   });
 
   final bool json;
@@ -82,6 +83,7 @@ class _Options {
   final bool indexed;
   final int indexedRows;
   final bool counters;
+  final bool encrypted;
 
   Map<String, Object?> toDataset() => {
     'seedRows': rows,
@@ -90,6 +92,7 @@ class _Options {
     'distinctGroups': groups,
     'indexed': indexed,
     'indexedRows': indexed ? indexedRows : 0,
+    'encrypted': encrypted,
     'changeLogMaxEntries': _changeLogMaxEntries,
   };
 }
@@ -302,8 +305,8 @@ Future<void> main(List<String> args) async {
 
   final wall = Stopwatch()..start();
   final outcome = await _benchmark(
-    'native file',
-    () => _openNative(nativePath),
+    opts.encrypted ? 'native file (encrypted)' : 'native file',
+    () => _openNative(nativePath, opts),
     opts,
   );
   wall.stop();
@@ -346,6 +349,7 @@ _Options _parseArgs(List<String> args) {
   var json = false;
   var indexed = false;
   var counters = false;
+  var encrypted = false;
   var rows = _seedRows;
   var batch = _bulkPerCall;
   var groups = _defaultGroups;
@@ -365,6 +369,9 @@ Usage: dart run benchmark/bench.dart [options]
   --indexed            also seed an indexed collection and run indexed
                        equality/range/prefix workloads
   --indexedRows=N      rows in the indexed collection (default $_indexedRows)
+  --encrypted          run the same workloads over a physically encrypted
+                       database (separate baseline; never merged with
+                       plaintext numbers)
   --counters           enable the worker's physical-work counters for the
                        measured workloads and emit them in the JSON output
   --help               this help
@@ -396,6 +403,8 @@ Usage: dart run benchmark/bench.dart [options]
       indexed = true;
     } else if (a == '--counters') {
       counters = true;
+    } else if (a == '--encrypted') {
+      encrypted = true;
     } else if (a.startsWith('--indexedRows=')) {
       indexedRows = _flagInt(a, '--indexedRows=');
     } else {
@@ -422,6 +431,7 @@ Usage: dart run benchmark/bench.dart [options]
     indexed: indexed,
     indexedRows: indexedRows,
     counters: counters,
+    encrypted: encrypted,
   );
 }
 
@@ -484,18 +494,28 @@ String _readRustCrateVersion(String root) {
   return 'unknown';
 }
 
-Future<DatabaseImpl> _openNative(String nativePath) async {
+Future<DatabaseImpl> _openNative(String nativePath, _Options opts) async {
   final dir = await Directory.systemTemp.createTemp('gecko-bench-');
   final db = await DatabaseImpl.open(
     '${dir.path}${Platform.pathSeparator}db.redb',
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
       changeLogMaxEntries: _changeLogMaxEntries,
+      // Physical encryption (AES-256-GCM per page): established as a SEPARATE
+      // baseline, never merged into the plaintext numbers. Fixed 32-byte key
+      // so every encrypted run is comparable.
+      encryptionKey: opts.encrypted ? _benchmarkEncryptionKey : null,
     ),
   );
   _tempDirs.add(dir);
   return db;
 }
+
+/// Fixed 32-byte AES-256 key for the encrypted benchmark baseline.
+const List<int> _benchmarkEncryptionKey = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+];
 
 Future<_BenchOutcome> _benchmark(
   String label,

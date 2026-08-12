@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>gecko_db web/OPFS benchmark</title>
+</head>
+
+<body>
+    <pre id="out">loading…</pre>
+    <script>
+        // Spawns the benchmark worker (web_opfs_bench.js) and mirrors its
+        // postMessage lines into #out so the CDP driver can read the markers.
+        const out = document.getElementById('out');
+        const w = new Worker('web_opfs_bench.js');
+        w.onmessage = (e) => {
+            out.textContent = out.textContent + '\n' + String(e.data);
+        };
+        w.onerror = (e) => {
+            out.textContent = out.textContent + '\nWEB-OPFS-BENCH-FAIL: ' + e.message;
+        };
+    </script>
+</body>
+
+</html>
