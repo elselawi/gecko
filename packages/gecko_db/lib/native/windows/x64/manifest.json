@@ -5,10 +5,10 @@
   "architecture": "x64",
   "triple": "x86_64-pc-windows-msvc",
   "version": "0.0.1",
-  "sha256": "e260b8e3437fc9cadcece40c50d364972d8a16b5c683f0a059e4910e149d7c03",
-  "sizeBytes": 3859968,
+  "sha256": "3b237d6861104b1066d69c78abc3d705af65ed3f21faa136e5abe04dfff8d8f3",
+  "sizeBytes": 3586560,
   "build": {
-    "commit": "d12eb3497dd71341c404191d5e701fd6e6fe5c30",
+    "commit": "9e4b342516de18e2939a52eafe8ce1a1b56bcd1e",
     "workflow": "local",
     "rustToolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
     "frbCodegenVersion": "2.12.0",

@@ -5,10 +5,10 @@
   "architecture": "wasm32",
   "triple": "wasm32-unknown-unknown",
   "version": "0.0.1",
-  "sha256": "4831f3e478f9e329ca40667ec2c64af73c4bc508011ab114c2a3861dd93ea9d7",
-  "sizeBytes": 1051961,
+  "sha256": "64601069a906212139f0d78ee824b2e7f500fd1ad9e2059aea8e75b3fc3c42ba",
+  "sizeBytes": 1542197,
   "build": {
-    "commit": "3cb2f7d69f6c653ca20cdeab42f2bf27c777dc24",
+    "commit": "9e4b342516de18e2939a52eafe8ce1a1b56bcd1e",
     "workflow": "local",
     "rustToolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
     "frbCodegenVersion": "2.12.0",
