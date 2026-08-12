@@ -59,6 +59,31 @@ Future<String?> bundledWebGluePrefix() async {
 }
 // coverage:ignore-end
 
+/// Returns the URL of the in-package OPFS worker entry
+/// (`web/gecko_db_worker.js`, compiled by the consumer or a bundling step and
+/// served alongside the app), or null when not on the web. Tries the package
+/// URI first (Flutter web resolves it to the asset server) and falls back to
+/// the conventional `packages/<package>/...` path — the same resolution the
+/// web glue uses, so no consumer build step beyond serving package assets is
+/// required.
+// coverage:ignore-start web only validated live by tool web smoke
+Future<String?> bundledWebWorkerUrl() async {
+  if (!isWeb) return null;
+  const relative = 'web/gecko_db_worker.js';
+  try {
+    final uri = await Isolate.resolvePackageUri(
+      Uri.parse('package:gecko_db/$relative'),
+    );
+    if (uri != null && uri.scheme != 'data') {
+      return uri.toString();
+    }
+  } catch (_) {
+    // Fall through to the conventional path.
+  }
+  return 'packages/gecko_db/$relative';
+}
+// coverage:ignore-end
+
 /// Returns the bundled artifact path for the *current* platform and
 /// architecture, or null when this host has no bundled artifact. Used as the
 /// no-build-steps fallback when a consumer does not supply an explicit

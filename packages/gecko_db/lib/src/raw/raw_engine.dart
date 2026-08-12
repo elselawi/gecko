@@ -95,12 +95,17 @@ class RawEngine {
   /// in commit order. Each delta carries the registration id it belongs to.
   Stream<RegistryDelta> get liveDeltas => _liveDeltas.stream;
 
-  /// registers a live query with the worker's reactive registry.
+  /// registers a live query with the worker's reactive registry. A windowed
+  /// query ([limit] is non-null) receives only the ordered slice
+  /// `[offset, offset + limit)` while the registry maintains the full matching
+  /// set incrementally.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) {
     _assertUsable();
     return _backend.registerLiveQuery(
@@ -108,6 +113,8 @@ class RawEngine {
       predicateBytes: predicateBytes,
       sortBytes: sortBytes,
       kind: kind,
+      limit: limit,
+      offset: offset,
     );
   }
 
@@ -317,9 +324,19 @@ class RawEngine {
     }
   }
 
+  /// Table-generation invalidation: evicts every cached entry (positive and
+  /// negative) for [table] without enumerating its keys. Used after a
+  /// wholesale clear in no-report mode, where the worker deliberately does not
+  /// return every removed key.
+  void _invalidateTable(String table) {
+    _lru.removeWhere((key) => key.table == table);
+    _negativeLru.removeWhere((key) => key.table == table);
+  }
+
   /// Selectively invalidates the keys touched by [ops] (put/delete carry the
   /// key; delete-range/clear keys come from [result].removedKeys) instead of
-  /// clearing the whole LRU after every batch.
+  /// clearing the whole LRU after every batch. Whole-table clears reported via
+  /// [ApplyBatchResult.cleared] invalidate the table generation in one pass.
   void _invalidateForOps(RawBatch ops, ApplyBatchResult result) {
     for (final op in ops) {
       switch (op) {
@@ -328,8 +345,11 @@ class RawEngine {
         case RawDelete(:final table, :final key):
           _invalidate(table, key);
         default:
-          break; // delete-range/clear keys arrive via removedKeys
+          break; // delete-range/clear keys arrive via removedKeys/cleared
       }
+    }
+    for (final table in result.cleared) {
+      _invalidateTable(table);
     }
     _invalidateAll(result.removedKeys);
   }
@@ -419,11 +439,14 @@ class RawEngine {
     return _writeGate.run(() async {
       try {
         final result = await _applyBatchWithDeltas(
-          RawBatchPlan(ops: [RawClear(table)]),
+          // Internal no-report mode: the worker does not collect every removed
+          // key (memory proportional to deleted rows is avoided); the whole
+          // table is invalidated below as one cache generation.
+          RawBatchPlan(ops: [RawClear(table)], reportRemovedKeys: false),
         );
-        // The worker reports every removed key; invalidate only those (a
-        // whole-table clear does not have to evict unrelated hot keys).
-        _invalidateAll(result.removedKeys);
+        for (final cleared in result.cleared) {
+          _invalidateTable(cleared);
+        }
         _publishAt(result.sequence, [
           (table, ByteKey(const []), ChangeKind.delete),
         ]);

@@ -8,7 +8,6 @@ library;
 
 import 'dart:async';
 
-import '../api/change.dart';
 import '../api/maintenance.dart';
 import '../api/query.dart';
 import '../backend/byte_key.dart';
@@ -1172,28 +1171,21 @@ class QueryImpl<T> implements Query<T> {
   /// Reactive filtered query: re-emits the matching list whenever a change in
   /// this collection might affect membership.
   ///
-  /// unbounded queries register with the worker's reactive
-  /// registry — Rust maintains the matching result set (predicate + sort), and
-  /// Dart forwards worker deltas. Windowed queries (limit/offset) keep full
-  /// re-evaluation because a window can reorder under a write.
+  /// Every query registers with the worker's reactive registry — Rust
+  /// maintains the matching result set (predicate + sort) incrementally, and
+  /// Dart forwards worker deltas. Windowed queries (limit/offset) receive the
+  /// ordered `[offset, offset + limit)` slice from the registry, so a write
+  /// that reorders the window (or happens entirely outside it) is maintained
+  /// natively instead of re-running `findAll()` per change.
   @override
   Stream<List<T>> watch() {
     late StreamController<List<T>> controller;
     late StreamSubscription<Object?> sub;
     var registrationId = -1;
-    final incremental = _limit == null && (_offset ?? 0) == 0;
+    final limit = _limit;
+    final offset = _offset ?? 0;
     controller = StreamController<List<T>>(
       onListen: () {
-        if (!incremental) {
-          // Emit current snapshot immediately (full re-evaluation per change).
-          unawaited(findAll().then(controller.add));
-          sub = _engine.changes.stream.listen((ChangeSet changeSet) {
-            if (changeSet.changes.any((Change c) => c.table == _table)) {
-              unawaited(_decodeSnapshot().then(controller.add));
-            }
-          });
-          return;
-        }
         // Subscribe to deltas BEFORE registering so no delta produced after
         // registration completes can be missed (registration is async).
         sub = _engine.liveDeltas.listen((delta) {
@@ -1209,6 +1201,8 @@ class QueryImpl<T> implements Query<T> {
             predicateBytes: encodePredicate(_filters, codec: _codec),
             sortBytes: encodeSortSpecs(_sort),
             kind: LiveQueryKind.query.value,
+            limit: limit,
+            offset: offset,
           );
           if (controller.isClosed) {
             // Best-effort cleanup: the engine may already be closed (a
@@ -1238,10 +1232,6 @@ class QueryImpl<T> implements Query<T> {
       },
     );
     return controller.stream;
-  }
-
-  Future<List<T>> _decodeSnapshot() async {
-    return findAll();
   }
 
   /// Materializes the ordered matching set against [snap] (used by the

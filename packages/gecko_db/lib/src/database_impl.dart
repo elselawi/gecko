@@ -19,6 +19,7 @@ import 'namespaces.dart';
 import 'backend/native_raw_backend.dart';
 import 'native/native_resolver.dart' show isWeb;
 import 'query/query_impl.dart';
+import 'query/filter.dart' show Filter;
 import 'query/predicate_codec.dart';
 import 'query/sort_spec_codec.dart';
 import 'raw/raw_engine.dart';
@@ -30,6 +31,7 @@ import 'api/change.dart';
 import 'api/change_tracking.dart';
 import 'api/collection.dart';
 import 'api/collection_diff.dart';
+import 'api/stream_utils.dart' show latestStateOnly;
 import 'crypto/physical_encryption.dart';
 import 'api/conflict.dart';
 import 'api/database.dart';
@@ -850,6 +852,80 @@ class _CollectionImpl<T> implements Collection<T> {
     return controller.stream;
   }
 
+  /// Snapshot-less per-row deltas (additive): the same worker `watchAllDiff`
+  /// registration as [watchAllDiff], but the emitted shape carries only
+  /// added/updated/removed rows — no full snapshot is ever built on the Dart
+  /// side, so a large collection never pays to materialize the whole list per
+  /// emission. Consumers with their own state store use this stream and fold
+  /// the deltas themselves.
+  @override
+  Stream<CollectionDelta<T>> watchAllDeltas() {
+    _db._assertOpen();
+    late StreamController<CollectionDelta<T>> controller;
+    late StreamSubscription<RegistryDelta> sub;
+    var registrationId = -1;
+    controller = StreamController<CollectionDelta<T>>(
+      onListen: () {
+        sub = _db.engine.liveDeltas.listen((delta) {
+          if (delta.id != registrationId) return;
+          if (delta.unchanged) return;
+          controller.add(
+            CollectionDelta<T>(
+              added: [
+                for (final entry in delta.added)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+              updated: [
+                for (final entry in delta.updated)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+              removed: [
+                for (final entry in delta.removed)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+            ),
+          );
+        });
+        unawaited(() async {
+          final registration = await _db.engine.registerLiveQuery(
+            table: name,
+            predicateBytes: encodePredicate(const [], codec: _codec),
+            sortBytes: encodeSortSpecs(const []),
+            kind: LiveQueryKind.watchAllDiff.value,
+          );
+          if (controller.isClosed) {
+            try {
+              await _db.engine.unregisterLiveQuery(registration.id);
+            } catch (_) {}
+            return;
+          }
+          registrationId = registration.id;
+          controller.add(
+            CollectionDelta<T>(
+              added: [
+                for (final entry in registration.initial)
+                  _fromRow(_codec.decode(entry.value ?? const [])),
+              ],
+              updated: const [],
+              removed: const [],
+            ),
+          );
+        }());
+      },
+      onCancel: () async {
+        await sub.cancel();
+        if (registrationId >= 0) {
+          try {
+            await _db.engine.unregisterLiveQuery(registrationId);
+          } catch (_) {
+            // Best-effort: the engine may already be closed.
+          }
+        }
+      },
+    );
+    return controller.stream;
+  }
+
   /// the full-set stream is maintained by the worker's reactive
   /// registry. Dart registers on listen, emits the initial snapshot, and
   /// forwards worker deltas — no Dart-side result-set computation.
@@ -904,6 +980,14 @@ class _CollectionImpl<T> implements Collection<T> {
     return controller.stream;
   }
 
+  /// Opt-in latest-state mode (additive): wraps [watchAll] so a burst of full
+  /// snapshots within one event-loop turn collapses to a single emission of
+  /// the final state. The initial and final states are always delivered;
+  /// intermediate states are dropped for slow listeners. [watchAll] semantics
+  /// are unchanged.
+  @override
+  Stream<List<T>> watchAllLatest() => latestStateOnly(watchAll());
+
   @override
   Query<T> where([Map<String, Object?>? predicates]) {
     _db._assertOpen();
@@ -918,6 +1002,8 @@ class _CollectionImpl<T> implements Collection<T> {
     );
   }
 }
+
+
 
 /// A staged transaction. Reads consult the immutable opening snapshot first,
 /// then overlay the transaction's own writes; no backend write occurs until
@@ -1872,6 +1958,24 @@ class _ConflictApiImpl implements ConflictApi {
   @override
   Future<List<PreservedConflict>> readPending() async {
     _db._assertOpen();
+    final backend = _db.engine.backend;
+    if (backend is NativeRawBackend) {
+      // Unresolved conflicts (explicit `resolution: null`) are filtered in
+      // Rust in one scan; Dart decodes only the pending rows.
+      final entries = await backend.metadataQuery(
+        geckoConflictTable,
+        encodePredicate(
+          [Filter.eq('resolution', null)],
+          codec: _codec,
+        ),
+      );
+      final conflicts = [
+        for (final entry in entries)
+          _conflictFromMap(_codec.decode(entry.value ?? const [])),
+      ];
+      conflicts.sort((a, b) => a.conflictId.compareTo(b.conflictId));
+      return conflicts;
+    }
     final entries = await _db.engine.rawScanAll(geckoConflictTable);
     final conflicts = [
       for (final entry in entries)
@@ -2206,6 +2310,30 @@ class _AttachmentApiImpl implements AttachmentApi {
   @override
   Future<List<AttachmentMetadata>> query([AttachmentQuery? query]) async {
     _db._assertOpen();
+    final backend = _db.engine.backend;
+    if (backend is NativeRawBackend) {
+      // Filtering + ordering execute in Rust (one scan, no full-catalog
+      // materialization in Dart); Dart decodes only the matching rows.
+      final filters = <Filter>[
+        if (query?.uploadState != null)
+          Filter.eq('uploadState', query!.uploadState!.name),
+        if (query?.deleteState != null)
+          Filter.eq('deleteState', query!.deleteState!.name),
+        if (query?.parentCollection != null)
+          Filter.eq('parentCollection', query!.parentCollection!),
+        if (query?.parentId != null) Filter.eq('parentId', query!.parentId),
+      ];
+      final entries = await backend.metadataQuery(
+        geckoAttachmentTable,
+        encodePredicate(filters, codec: _codec),
+      );
+      final list = [
+        for (final entry in entries)
+          _attachmentFromMap(_codec.decode(entry.value ?? const [])),
+      ];
+      list.sort((a, b) => a.id.compareTo(b.id));
+      return list;
+    }
     final scan = await _db.engine.rawScanAll(geckoAttachmentTable);
     final list =
         [
@@ -2768,7 +2896,19 @@ class _MaintenanceApiImpl implements MaintenanceApi {
   }
 
   Future<String?> _readMarker() async {
-    final snapshot = await _db.engine.backend.snapshot();
+    final backend = _db.engine.backend;
+    // A single point read on the open path: use the direct read when the
+    // backend exposes one (no snapshot handle is created just for a marker).
+    if (backend is DirectReadBackend) {
+      final raw = await (backend as DirectReadBackend).directRead(
+        geckoMaintenanceTable,
+        ByteKey(DatabaseImpl._codec.encode(geckoMaintenanceStateKey)),
+      );
+      if (raw == null) return null;
+      final decoded = DatabaseImpl._codec.decode(raw);
+      return decoded is String ? decoded : null;
+    }
+    final snapshot = await backend.snapshot();
     try {
       final raw = await snapshot.read(
         geckoMaintenanceTable,

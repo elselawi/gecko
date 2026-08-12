@@ -8,7 +8,8 @@ library;
 
 export 'src/api/database.dart' show Database, DatabaseConfig, WriteCallback;
 export 'src/api/collection.dart' show Collection, RowMapper, IdExtractor;
-export 'src/api/collection_diff.dart' show CollectionDiff;
+export 'src/api/collection_diff.dart' show CollectionDiff, CollectionDelta;
+export 'src/api/stream_utils.dart' show latestStateOnly;
 export 'src/api/query.dart'
     show Query, QueryCursor, SortOrder, SortSpec, IndexPlan;
 export 'src/api/maintenance.dart'
@@ -99,6 +100,7 @@ export 'src/native/native_resolver.dart'
         bundledArtifactPath,
         bundledNativeDir,
         bundledWebGluePrefix,
+        bundledWebWorkerUrl,
         isWeb,
         nativeArtifactSha256,
         nativeArtifactManifest;

@@ -12,7 +12,6 @@ import '../namespaces.dart';
 import '../native/generated/counters.dart' show WorkCounters;
 import '../native/generated/worker.dart' show StorageStats;
 import '../native/generated/api.dart' show PreparedChange;
-import '../wire/compatibility.dart';
 import '../wire/op.dart';
 import '../worker/native_worker_client.dart';
 import 'byte_key.dart';
@@ -165,6 +164,10 @@ class NativeRawBackend
   /// Rust AES-256-GCM physical page encryption;
   /// [encryptionKeyGeneration] selects the key generation for interrupted
   /// rotation recovery.
+  ///
+  /// The compatibility handshake is validated exactly ONCE, in the worker
+  /// bootstrap (`NativeWorkerClient.open` waits for the isolate to finish the
+  /// handshake before returning) — it is not re-requested here.
   static Future<NativeRawBackend> open(
     String path, {
     bool readOnly = false,
@@ -185,16 +188,7 @@ class NativeRawBackend
         readOnly,
         changeLogMaxEntries: changeLogMaxEntries,
       );
-      try {
-        final handshake = CompatibilityHandshake.decode(
-          await backend._worker.compatibilityHandshake(),
-        );
-        handshake.validateCompatibility();
-        return backend;
-      } catch (error) {
-        await backend.close();
-        rethrow;
-      }
+      return backend;
     } catch (error) {
       throw mapNativeError(
         error,
@@ -243,7 +237,7 @@ class NativeRawBackend
         PreparedChange(
           operationIndex: BigInt.from(template.operationIndex),
           ordinal: BigInt.from(template.ordinal),
-          syncStateKey: template.syncStateKey.bytes,
+          syncStateKey: template.syncStateKey.bytesUnsafe,
           recordTemplate: Uint8List.fromList(template.recordTemplate),
           fillPreviousVersion: template.fillPreviousVersion,
         ),
@@ -263,6 +257,7 @@ class NativeRawBackend
             (BigInt.from(entry.key), _putMode(entry.value)),
         ],
         changes: preparedChanges,
+        reportRemovedKeys: plan.reportRemovedKeys,
       );
       return _rawApplyResult(result, plan.ops);
     } catch (error) {
@@ -289,6 +284,7 @@ class NativeRawBackend
       sequence: result.sequence,
       previousValues: result.previousValues,
       removedKeys: result.removedKeys,
+      cleared: result.cleared,
     );
   }
 
@@ -301,7 +297,7 @@ class NativeRawBackend
   @override
   Future<List<int>?> directRead(String table, ByteKey key) async {
     try {
-      return await _worker.get(table: table, key: key.bytes);
+      return await _worker.get(table: table, key: key.bytesUnsafe);
     } catch (error) {
       throw mapNativeError(
         error,
@@ -318,8 +314,8 @@ class NativeRawBackend
     try {
       final pairs = await _worker.rangeScan(
         table: table,
-        start: start?.bytes,
-        end: end?.bytes,
+        start: start?.bytesUnsafe,
+        end: end?.bytesUnsafe,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -336,6 +332,8 @@ class NativeRawBackend
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) async {
     try {
       return await _worker.registerLiveQuery(
@@ -343,11 +341,30 @@ class NativeRawBackend
         predicateBytes: predicateBytes,
         sortBytes: sortBytes,
         kind: kind,
+        limit: limit,
+        offset: offset,
       );
     } catch (error) {
       throw mapNativeError(
         error,
       ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Scans a metadata table ([table]) returning entries whose row matches
+  /// [predicateBytes]; filtering/ordering execute in Rust.
+  Future<List<RawEntry>> metadataQuery(
+    String table,
+    List<int> predicateBytes,
+  ) async {
+    try {
+      final pairs = await _worker.metadataQuery(
+        table: table,
+        predicateBytes: predicateBytes,
+      );
+      return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
+    } catch (error) {
+      throw mapNativeError(error);
     }
   }
 
@@ -460,7 +477,7 @@ class NativeRawBackend
     try {
       final pairs = await _worker.getMany(
         table: table,
-        keys: [for (final k in keys) k.bytes],
+        keys: [for (final k in keys) k.bytesUnsafe],
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -504,8 +521,8 @@ class NativeRawBackend
       final pairs = await _worker.queryIndexed(
         table: table,
         indexTable: indexTable,
-        start: start.bytes,
-        end: end.bytes,
+        start: start.bytesUnsafe,
+        end: end.bytesUnsafe,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -573,8 +590,8 @@ class NativeRawBackend
       final pairs = await _worker.queryIndexedLimited(
         table: table,
         indexTable: indexTable,
-        start: start.bytes,
-        end: end.bytes,
+        start: start.bytesUnsafe,
+        end: end.bytesUnsafe,
         predicateBytes: predicateBytes,
         covered: covered,
         limit: limit,
@@ -605,8 +622,8 @@ class NativeRawBackend
       final pairs = await _worker.queryIndexedOrdered(
         table: table,
         indexTable: indexTable,
-        start: start.bytes,
-        end: end.bytes,
+        start: start.bytesUnsafe,
+        end: end.bytesUnsafe,
         predicateBytes: predicateBytes,
         sortField: sortField,
         eqBounded: eqBounded,
@@ -636,7 +653,7 @@ class NativeRawBackend
       final pairs = await _worker.queryIndexedMulti(
         table: table,
         indexTable: indexTable,
-        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        ranges: [for (final range in ranges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe)],
         predicateBytes: predicateBytes,
         covered: covered,
         limit: limit,
@@ -662,7 +679,7 @@ class NativeRawBackend
       return await _worker.queryIndexedDistinct(
         table: table,
         indexTable: indexTable,
-        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        ranges: [for (final range in ranges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe)],
         predicateBytes: predicateBytes,
         field: field,
         covered: covered,
@@ -685,7 +702,7 @@ class NativeRawBackend
       return await _worker.queryIndexedCount(
         table: table,
         indexTable: indexTable,
-        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        ranges: [for (final range in ranges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe)],
         predicateBytes: predicateBytes,
         covered: covered,
       );
@@ -796,19 +813,19 @@ class NativeRawBackend
     RawPut(:final table, :final key, :final value) => Op(
       op: OpKind.put,
       table: table,
-      key: key.bytes,
+      key: key.bytesUnsafe,
       value: value is Uint8List ? value : Uint8List.fromList(value),
     ),
     RawDelete(:final table, :final key) => Op(
       op: OpKind.delete,
       table: table,
-      key: key.bytes,
+      key: key.bytesUnsafe,
     ),
     RawDeleteRange(:final table, :final start, :final end) => Op(
       op: OpKind.deleteRange,
       table: table,
-      start: start.bytes,
-      end: end.bytes,
+      start: start.bytesUnsafe,
+      end: end.bytesUnsafe,
     ),
     RawClear(:final table) => Op(op: OpKind.clear, table: table),
   };
@@ -855,7 +872,7 @@ class NativeRawSnapshot implements RawSnapshot {
       return await _worker.snapshotGet(
         snapshot: _snapshotId,
         table: table,
-        key: key.bytes,
+        key: key.bytesUnsafe,
       );
     } catch (error) {
       throw mapNativeError(error);
@@ -871,27 +888,18 @@ class NativeRawSnapshot implements RawSnapshot {
     bool endInclusive = true,
     int? limit,
   }) async {
-    if (!startInclusive || !endInclusive) {
-      final entries = await scanAll(table);
-      return entries.where((entry) {
-        final afterStart =
-            start == null ||
-            entry.key.compareTo(start) > 0 ||
-            (startInclusive && entry.key == start);
-        final beforeEnd =
-            end == null ||
-            entry.key.compareTo(end) < 0 ||
-            (endInclusive && entry.key == end);
-        return afterStart && beforeEnd;
-      }).take(limit ?? entries.length).toList();
-    }
+    // Inclusive/exclusive flags are pushed into Rust and mapped directly onto
+    // redb range bounds — an exclusive raw range never falls back to a full
+    // scan + Dart filtering (the historical O(n) behavior).
     try {
       final pairs = await _worker.snapshotRangeScan(
         snapshot: _snapshotId,
         table: table,
-        start: start?.bytes,
-        end: end?.bytes,
+        start: start?.bytesUnsafe,
+        end: end?.bytesUnsafe,
         limit: limit,
+        startInclusive: startInclusive,
+        endInclusive: endInclusive,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -927,8 +935,8 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         table: table,
         indexTable: indexTable,
-        start: start.bytes,
-        end: end.bytes,
+        start: start.bytesUnsafe,
+        end: end.bytesUnsafe,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -966,7 +974,7 @@ class NativeRawSnapshot implements RawSnapshot {
       final pairs = await _worker.snapshotGetMany(
         snapshot: _snapshotId,
         table: table,
-        keys: [for (final k in keys) k.bytes],
+        keys: [for (final k in keys) k.bytesUnsafe],
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -1023,7 +1031,7 @@ class NativeRawSnapshot implements RawSnapshot {
       final pair = await _worker.snapshotRelationshipParent(
         snapshot: _snapshotId,
         childTable: childTable,
-        childKey: childKey.bytes,
+        childKey: childKey.bytesUnsafe,
         parentTable: parentTable,
         foreignKeyField: foreignKeyField,
       );
@@ -1051,10 +1059,10 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         childTable: childTable,
         foreignKeyField: foreignKeyField,
-        parentIds: [for (final id in parentIds) id.bytes],
+        parentIds: [for (final id in parentIds) id.bytesUnsafe],
         indexTable: indexTable,
         indexRanges: [
-          for (final range in indexRanges) (range.$1.bytes, range.$2.bytes),
+          for (final range in indexRanges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe),
         ],
         predicateBytes: predicateBytes,
       );
@@ -1085,7 +1093,7 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         joinTable: joinTable,
         field: field,
-        wantedId: wantedId.bytes,
+        wantedId: wantedId.bytesUnsafe,
       );
     } catch (error) {
       throw mapNativeError(
@@ -1133,7 +1141,7 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         table: table,
         indexTable: indexTable,
-        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        ranges: [for (final range in ranges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe)],
         predicateBytes: predicateBytes,
         covered: covered,
       );
@@ -1159,7 +1167,7 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         table: table,
         indexTable: indexTable,
-        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        ranges: [for (final range in ranges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe)],
         predicateBytes: predicateBytes,
         field: field,
         covered: covered,
@@ -1187,7 +1195,7 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         table: table,
         indexTable: indexTable,
-        ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
+        ranges: [for (final range in ranges) (range.$1.bytesUnsafe, range.$2.bytesUnsafe)],
         predicateBytes: predicateBytes,
         covered: covered,
         limit: limit,
@@ -1217,8 +1225,8 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         table: table,
         indexTable: indexTable,
-        start: start.bytes,
-        end: end.bytes,
+        start: start.bytesUnsafe,
+        end: end.bytesUnsafe,
         predicateBytes: predicateBytes,
         covered: covered,
         limit: limit,
@@ -1284,8 +1292,8 @@ class NativeRawSnapshot implements RawSnapshot {
         snapshot: _snapshotId,
         table: table,
         indexTable: indexTable,
-        start: start.bytes,
-        end: end.bytes,
+        start: start.bytesUnsafe,
+        end: end.bytesUnsafe,
         predicateBytes: predicateBytes,
         sortField: sortField,
         eqBounded: eqBounded,

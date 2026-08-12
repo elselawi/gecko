@@ -7,6 +7,8 @@ library;
 
 import 'dart:typed_data';
 
+import 'package:meta/meta.dart';
+
 /// An immutable byte key with byte-wise ordering semantics.
 ///
 /// Equality and ordering compare bytes, not identity, so two separately-built
@@ -25,6 +27,15 @@ class ByteKey implements Comparable<ByteKey> {
   /// equality/ordering. (The boundary-side second copy is removed in the
   /// transport layer, not here.)
   Uint8List get bytes => Uint8List.fromList(_bytes);
+
+  /// In-package transport accessor: returns the LIVE backing bytes with NO
+  /// copy, so the worker client / dispatch / backend layers stop reshuffling
+  /// key bytes on the hot path. Only for internal transport that immediately
+  /// encodes or sends the bytes and never retains or mutates them; mutating
+  /// the returned list corrupts the key's equality/ordering contract. Public
+  /// callers must use [bytes] (the copying accessor).
+  @internal
+  Uint8List get bytesUnsafe => _bytes;
 
   int get length => _bytes.length;
 

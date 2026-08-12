@@ -66,4 +66,17 @@ abstract class Collection<T> {
   /// Per-row diff mode for large watched collections. The initial emission
   /// reports the current rows as [CollectionDiff.added].
   Stream<CollectionDiff<T>> watchAllDiff();
+
+  /// Snapshot-less per-row deltas (additive): emits only
+  /// added/updated/removed rows and never builds a full collection snapshot,
+  /// for consumers that maintain their own state store. The initial emission
+  /// reports the current rows as [CollectionDelta.added].
+  Stream<CollectionDelta<T>> watchAllDeltas();
+
+  /// Latest-state mode for [watchAll] (opt-in, additive): intermediate full
+  /// snapshots produced within a single event-loop turn are collapsed into one
+  /// emission of the final state, so a slow listener never accumulates a burst
+  /// of redundant snapshots. The initial state and the final state are always
+  /// delivered; [watchAll] itself keeps its current event-delivery semantics.
+  Stream<List<T>> watchAllLatest();
 }

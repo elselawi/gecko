@@ -171,8 +171,12 @@ void _writeBytes(BytesBuilder out, Uint8List? b) {
 }
 
 class _OpReader {
-  _OpReader(this._bytes);
-  final List<int> _bytes;
+  _OpReader(List<int> bytes)
+    : _bytes = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+
+  /// The batch buffer as a typed array (normalized once at construction; the
+  /// zero-copy transport already delivers `Uint8List`, so no copy occurs).
+  final Uint8List _bytes;
   int _pos = 0;
 
   int get remaining => _bytes.length - _pos;
@@ -204,11 +208,11 @@ class _OpReader {
     if (len < 0 || len > _bytes.length - _pos) {
       throw const OpDecodeException('String length out of range');
     }
-    final bytes = <int>[];
-    for (var i = 0; i < len; i++) {
-      bytes.add(readByte());
-    }
-    return utf8.decode(bytes);
+    // Bulk typed-array view: decode the UTF-8 span directly instead of
+    // building a byte-per-element list (utf8.decode never mutates the input).
+    final out = utf8.decode(Uint8List.sublistView(_bytes, _pos, _pos + len));
+    _pos += len;
+    return out;
   }
 
   Uint8List? readBytes() {
@@ -218,10 +222,12 @@ class _OpReader {
     if (len < 0 || len > _bytes.length - _pos) {
       throw const OpDecodeException('Bytes length out of range');
     }
-    final out = Uint8List(len);
-    for (var i = 0; i < len; i++) {
-      out[i] = readByte();
-    }
+    // Bulk typed-array view: zero-copy slice of the decode buffer (the buffer
+    // is private to this decode and discarded immediately after). Callers
+    // must treat the returned bytes as immutable — as with every raw value
+    // crossing the wire — and must not mutate them in place.
+    final out = Uint8List.sublistView(_bytes, _pos, _pos + len);
+    _pos += len;
     return out;
   }
 }

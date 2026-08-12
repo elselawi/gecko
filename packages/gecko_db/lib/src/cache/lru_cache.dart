@@ -78,6 +78,19 @@ class LruCache<K, V> {
   /// Invalidates [key] (e.g. after a write that changed it).
   void invalidate(K key) => remove(key);
 
+  /// Removes every entry satisfying [test], maintaining weight bookkeeping.
+  /// Used for whole-table invalidation without enumerating keys from the
+  /// engine (e.g. after a wholesale clear).
+  void removeWhere(bool Function(K key) test) {
+    final doomed = <K>[];
+    for (final key in _map.keys) {
+      if (test(key)) doomed.add(key);
+    }
+    for (final key in doomed) {
+      remove(key);
+    }
+  }
+
   void clear() {
     _map.clear();
     _weight = 0;

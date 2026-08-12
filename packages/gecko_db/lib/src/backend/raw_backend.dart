@@ -79,6 +79,7 @@ class RawBatchPlan {
     this.changeTemplates = const <RawChangeTemplate>[],
     this.putModes = const <int, RawPutMode>{},
     this.previousOperationIndexes = const <int>[],
+    this.reportRemovedKeys = true,
   });
 
   final RawBatch ops;
@@ -89,6 +90,13 @@ class RawBatchPlan {
   /// be returned by the worker. Indexes are positional so repeated keys remain
   /// distinguishable.
   final List<int> previousOperationIndexes;
+
+  /// Internal response mode: when false, delete-range/clear operations do not
+  /// collect every removed key (avoids memory proportional to deleted rows);
+  /// whole-table clears are still reported through [ApplyBatchResult.cleared]
+  /// for table-generation cache invalidation. Defaults to true so existing
+  /// callers keep per-key reporting.
+  final bool reportRemovedKeys;
 }
 
 /// Optional native capability used by [RawEngine] for one-hop writes.
@@ -220,6 +228,7 @@ class ApplyBatchResult {
     this.sequence = 0,
     this.previousValues = const <List<int>?>[],
     this.removedKeys = const <(String, ByteKey)>[],
+    this.cleared = const <String>[],
   });
 
   final Set<(String, ByteKey)> affected;
@@ -234,7 +243,14 @@ class ApplyBatchResult {
   final List<List<int>?> previousValues;
 
   /// Keys actually removed by range/clear operations, as returned by Rust.
+  /// Empty when the batch ran in no-report mode ([RawBatchPlan.reportRemovedKeys]
+  /// is false) — callers that only need cache invalidation use [cleared].
   final List<(String, ByteKey)> removedKeys;
+
+  /// Tables wholesale-cleared by [RawClear] operations, in batch order
+  /// (deduplicated by Rust). Used for table-generation cache invalidation
+  /// without enumerating every removed key.
+  final List<String> cleared;
 }
 
 /// the kind of live result a registration maintains (mirrors
@@ -284,12 +300,17 @@ abstract class RawBackend {
   /// registers a live query with the worker's reactive
   /// registry and materializes its initial result set. [kind] is 0 = watchAll,
   /// 1 = watchAllDiff, 2 = query. [predicateBytes]/[sortBytes] are the encoded
-  /// predicate/sort payloads (empty predicate matches everything).
+  /// predicate/sort payloads (empty predicate matches everything). A windowed
+  /// query ([limit] is non-null) receives only the ordered slice
+  /// `[offset, offset + limit)`; the registry maintains the full matching set
+  /// incrementally so the window stays correct under writes.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   });
 
   /// removes a live-query registration (idempotent).

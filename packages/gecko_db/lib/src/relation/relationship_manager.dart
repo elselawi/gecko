@@ -468,6 +468,18 @@ class RelationshipManager {
       fk,
       snapshot: snapshot,
     );
+    return _resolveDeleteFromRows(relationship, parentId, dependentRows);
+  }
+
+  /// The delete-behavior decision over already-read dependent [rows] — shared
+  /// by [resolveDelete] and the cascade planner so dependent rows are fetched
+  /// exactly once per parent (no double read in `_collectDeleteOps`).
+  Future<List<RawOp>> _resolveDeleteFromRows(
+    Relationship relationship,
+    Object? parentId,
+    List<Map<Object?, Object?>> dependentRows,
+  ) async {
+    final fk = _fkField(relationship);
     switch (relationship.deleteBehavior) {
       case DeleteBehavior.none:
         return const [];
@@ -599,17 +611,21 @@ class RelationshipManager {
       return;
     }
     final ownDelete = relationship.deleteBehavior;
+    final fk = _fkField(relationship);
+    // Read the dependent rows ONCE; the same rows feed the restrict check,
+    // the delete-behavior decision, and the cascade recursion (they were
+    // previously read up to three times per parent).
+    final dependentRows = await _childRows(
+      relationship,
+      parentId,
+      fk,
+      snapshot: snapshot,
+    );
     // Check restrict entirely first (restrict wins over cascade).
     if (ownDelete == DeleteBehavior.restrict) {
-      final dependents = await _childRows(
-        relationship,
-        parentId,
-        _fkField(relationship),
-        snapshot: snapshot,
-      );
-      if (dependents.isNotEmpty) {
+      if (dependentRows.isNotEmpty) {
         final offender = _accessors[relationship.childCollection]?.childIdOf(
-          dependents.first,
+          dependentRows.first,
         );
         throw GeckoError(
           GeckoErrorType.invalidOperation,
@@ -622,20 +638,15 @@ class RelationshipManager {
         );
       }
     }
-    final subOps = await resolveDelete(
+    final subOps = await _resolveDeleteFromRows(
       relationship,
       parentId,
-      snapshot: snapshot,
+      dependentRows,
     );
     ops.addAll(subOps);
     // Recurse into child rows for cascade chains.
     if (ownDelete == DeleteBehavior.cascade) {
-      final childIds = await _childIds(
-        relationship,
-        parentId,
-        _fkField(relationship),
-        snapshot: snapshot,
-      );
+      final childIds = _idsOfRows(relationship, dependentRows);
       for (final childId in childIds) {
         for (final next in _relationships) {
           if (next.parentCollection == relationship.childCollection) {
@@ -670,13 +681,10 @@ class RelationshipManager {
     }
   }
 
-  Future<List<Object?>> _childIds(
-    Relationship r,
-    Object? parentId,
-    String fk, {
-    RawSnapshot? snapshot,
-  }) async {
-    final rows = await _childRows(r, parentId, fk, snapshot: snapshot);
+  /// Derives the child record ids from already-decoded dependent [rows] —
+  /// shared by the cascade planner so ids never require a second fetch of the
+  /// rows they are derived from.
+  List<Object?> _idsOfRows(Relationship r, List<Map<Object?, Object?>> rows) {
     final accessor = _accessors[r.childCollection];
     return [
       for (final row in rows)

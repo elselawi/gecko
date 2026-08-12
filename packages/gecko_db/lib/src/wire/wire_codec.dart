@@ -80,7 +80,11 @@ class DefaultWireCodec implements WireCodec {
   Uint8List encode(RowValue value) {
     final out = BytesBuilder();
     _write(out, value);
-    return Uint8List.fromList(out.toBytes());
+    // `BytesBuilder.toBytes()` already returns a fresh, unaliased Uint8List
+    // owned solely by this call; wrapping it in `Uint8List.fromList` would
+    // copy the whole encoded row a second time. No caller can mutate a shared
+    // cache or the input through the returned list (it is a private buffer).
+    return out.toBytes();
   }
 
   void _write(BytesBuilder out, Object? value) {
