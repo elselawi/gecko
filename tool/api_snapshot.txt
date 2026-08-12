@@ -10,7 +10,7 @@ export: src/api/collection.dart show: Collection, RowMapper, IdExtractor
 export: src/api/collection_diff.dart show: CollectionDiff
 export: src/api/conflict.dart show: ConflictApi, ConflictRequest, ConflictResolutionResult, ConflictStrategy, ConflictStrategyHandler, ConflictVersion, PreservedConflict, Resolution, ResolutionKind
 export: src/api/database.dart show: Database, DatabaseConfig, WriteCallback
-export: src/api/diagnostics.dart show: DiagnosticsApi, DiagnosticsSnapshot
+export: src/api/diagnostics.dart show: DiagnosticsApi, DiagnosticsSnapshot, WorkerContention
 export: src/api/maintenance.dart show: MaintenanceApi, MaintenanceState, StorageStats, SlowQueryRecord, QueryStageTimings
 export: src/api/query.dart show: Query, QueryCursor, SortOrder, SortSpec, IndexPlan
 export: src/api/schema.dart show: SchemaApi, MigrationStep, MigrationPlan, MigrationFailure, RecordRewriter
