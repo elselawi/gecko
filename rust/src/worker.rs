@@ -672,6 +672,7 @@ impl RedbWorker {
 
     /// Same as [`Self::apply_prepared_batch`] but with an explicit removed-key
     /// reporting mode (see [`Self::apply_batch_reactive_with_retention_mode`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_prepared_batch_mode(
         &mut self,
         operations: &[Op],
@@ -1924,6 +1925,7 @@ impl RedbWorker {
     /// large table without materializing the full tail in memory.
     /// [start_inclusive]/[end_inclusive] map directly to redb range bounds, so
     /// exclusive raw ranges never fall back to a full scan + Dart filtering.
+    #[allow(clippy::too_many_arguments)]
     pub fn snapshot_range_scan(
         &self,
         id: u64,

@@ -192,6 +192,7 @@ impl NativeWorker {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_prepared_batch(
         &mut self,
         encoded_ops: Vec<u8>,
@@ -417,6 +418,7 @@ impl NativeWorker {
         self.worker.snapshot_get(snapshot, &table, &key).map_err(encode_worker_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_range_scan(
         &self,
         snapshot: u64,

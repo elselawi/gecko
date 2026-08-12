@@ -341,6 +341,7 @@ impl LiveRegistry {
     /// windowed registrations ([limit] is Some) the initial snapshot is the
     /// ordered slice `[offset, offset + limit)`; the full matching set is
     /// still maintained internally so later windows stay correct incrementally.
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &mut self,
         txn: &ReadTransaction,
