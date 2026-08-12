@@ -41,6 +41,9 @@ const int _writeRuns = 40; // writes measured per size
 const int _warmup = 5; // warmup writes before measuring
 const Duration _poll = Duration(microseconds: 100);
 
+/// Rows in the large watched-result-set profile.
+const int _largeWatchRows = 10000;
+
 class _Row {
   _Row(this.id, this.num, this.group);
   final String id;
@@ -118,6 +121,9 @@ Future<void> main(List<String> args) async {
     'sublinear (~1.3-2x, deeper B-tree point reads) ratio with zero scans '
     'confirms incremental updates.',
   );
+
+  // Large watched result sets, windowed queries, and relationship watches.
+  await _profileLargeWatches(nativePath);
 }
 
 /// Holds one live subscription's emission counter.
@@ -269,5 +275,229 @@ Future<int> _singleWrite(
 Future<void> _waitAll(List<_Live> lives) async {
   for (var i = 0; i < 400 && lives.any((l) => l.emissions == 0); i++) {
     await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
+// ── large watched result sets / windowed / relationship watches ─────────────
+
+Future<void> _waitForCount(List<Object?> counts, int count) async {
+  final sw = Stopwatch()..start();
+  while (counts.length < count && sw.elapsedMilliseconds < 5000) {
+    await Future<void>.delayed(_poll);
+  }
+}
+
+/// Runs [write] and returns the µs until [counts] grew to [target].
+Future<int> _timeEmission(
+  Future<void> Function() write,
+  List<Object?> counts,
+  int target,
+) async {
+  final sw = Stopwatch()..start();
+  await write();
+  await _waitForCount(counts, target);
+  sw.stop();
+  return sw.elapsedMicroseconds;
+}
+
+void _report(String label, int us) {
+  stdout.writeln('  ${label.padRight(46)} ${us.toString().padLeft(6)} µs');
+}
+
+/// Measures the end-to-end latency of one write until a watched result set
+/// re-emits, across the scenarios the reactive path must handle well:
+/// large watchAll (full snapshot — API contract), watchAllDiff (diff-only),
+/// membership enter/leave, idempotent writes (no emission), a whole-table
+/// clear, a large batch (one emission), sorted reorder, a windowed query
+/// (Dart re-evaluation today), and a relationship watch.
+Future<void> _profileLargeWatches(String nativePath) async {
+  stdout.writeln('\n=== gecko_db large watched result sets ===');
+  final dir = await Directory.systemTemp.createTemp('gecko-largereact-');
+  final dbPath = '${dir.path}${Platform.pathSeparator}large.redb';
+  try {
+    final db = await DatabaseImpl.open(
+      dbPath,
+      config: DatabaseConfig(
+        nativeLibraryPath: nativePath,
+        changeLogMaxEntries: 0,
+      ),
+    );
+    final col = db.collection<_Row>(
+      'items',
+      toRow: _toRow,
+      fromRow: _fromRow,
+      id: _id,
+      indexFields: const ['group'],
+    );
+    const chunk = 2000;
+    final seedWatch = Stopwatch()..start();
+    for (var start = 0; start < _largeWatchRows; start += chunk) {
+      final end = (start + chunk > _largeWatchRows)
+          ? _largeWatchRows
+          : start + chunk;
+      await db.bulkWrite([
+        for (var i = start; i < end; i++)
+          BulkMutation.put(
+            table: 'items',
+            key: 'r$i',
+            value: {'id': 'r$i', 'num': i, 'group': 'g${i % 100}'},
+          ),
+      ]);
+    }
+    seedWatch.stop();
+    stdout.writeln(
+      '  seeded $_largeWatchRows rows in '
+      '${(seedWatch.elapsedMilliseconds / 1000).toStringAsFixed(2)} s',
+    );
+
+    // JIT warm the read/write paths before timing anything.
+    for (var i = 0; i < 300; i++) {
+      await col.get('r0');
+      if (i % 100 == 0) await col.put(_Row('warm$i', 90000 + i, 'g0'));
+    }
+
+    // 1. watchAll: one-row update forces a FULL 10k snapshot emission.
+    final allCounts = <Object?>[];
+    final allSub = col.watchAll().listen(allCounts.add);
+    await _waitForCount(allCounts, 1);
+    final watchAllUs = await _timeEmission(
+      () => col.put(_Row('r1', 100001, 'g0')),
+      allCounts,
+      2,
+    );
+    _report('watchAll one-row update (10k snapshot)', watchAllUs);
+    await allSub.cancel();
+
+    // 2. watchAllDiff: same write emits only the diff (no full snapshot).
+    final diffCounts = <Object?>[];
+    final diffSub = col.watchAllDiff().listen(diffCounts.add);
+    await _waitForCount(diffCounts, 1);
+    final diffUs = await _timeEmission(
+      () => col.put(_Row('r2', 100002, 'g0')),
+      diffCounts,
+      2,
+    );
+    _report('watchAllDiff one-row update (diff-only)', diffUs);
+
+    // 3. Membership enter (new matching row joins the set).
+    final enterUs = await _timeEmission(
+      () => col.put(_Row('enter', 100003, 'g0')),
+      diffCounts,
+      3,
+    );
+    _report('watchAllDiff membership enter', enterUs);
+
+    // 4. Membership leave (row deleted).
+    final leaveUs = await _timeEmission(
+      () => col.delete('enter'),
+      diffCounts,
+      4,
+    );
+    _report('watchAllDiff membership leave', leaveUs);
+
+    // 5. Idempotent write: identical value → no emission.
+    await col.put(_Row('r3', 100004, 'g0')); // distinct value
+    await _waitForCount(diffCounts, 5);
+    final beforeIdem = diffCounts.length;
+    await col.put(_Row('r3', 100004, 'g0')); // identical value
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    final idemEmitted = diffCounts.length > beforeIdem;
+    _report('watchAllDiff idempotent write (no emission)', idemEmitted ? -1 : 0);
+
+    // 6. Large batch: 1000-row bulkWrite → exactly ONE emission.
+    final beforeBatch = diffCounts.length;
+    final batchUs = await _timeEmission(
+      () => db.bulkWrite([
+        for (var i = 0; i < 1000; i++)
+          BulkMutation.put(
+            table: 'items',
+            key: 'batch$i',
+            value: {'id': 'batch$i', 'num': 200000 + i, 'group': 'g${i % 100}'},
+          ),
+      ]),
+      diffCounts,
+      beforeBatch + 1,
+    );
+    _report('watchAllDiff 1000-row batch (one emission)', batchUs);
+    await diffSub.cancel();
+
+    // 7. Sorted watch (10k rows, sort by num): update repositions a row.
+    final sortedCounts = <Object?>[];
+    final sortedSub = col.where().sort([SortSpec('num')]).watch().listen(sortedCounts.add);
+    await _waitForCount(sortedCounts, 1);
+    final sortedUs = await _timeEmission(
+      () => col.put(_Row('r5', 300000, 'g0')),
+      sortedCounts,
+      2,
+    );
+    _report('sorted watch one-row update (reposition)', sortedUs);
+    await sortedSub.cancel();
+
+    // 8. Windowed query (limit 100): today falls back to Dart re-evaluation.
+    final windowCounts = <Object?>[];
+    final windowSub = col.where().sort([SortSpec('num')]).limit(100).watch().listen(windowCounts.add);
+    await _waitForCount(windowCounts, 1);
+    final windowUs = await _timeEmission(
+      () => col.put(_Row('r6', 400000, 'g0')),
+      windowCounts,
+      2,
+    );
+    _report('windowed query watch (limit 100, Dart re-eval)', windowUs);
+    await windowSub.cancel();
+
+    // 9. Relationship watchChildren: one child put → parent's list re-emits.
+    const rel = Relationship(
+      name: 'author_posts',
+      parentCollection: 'authors',
+      childCollection: 'posts',
+      type: RelationshipType.oneToMany,
+      foreignKeyField: 'authorId',
+    );
+    final relMgr = db.relationships;
+    relMgr.registerAccessors(
+      'posts',
+      RowAccessors(childIdOf: (row) => row['id'], parentIdOf: (row) => row['authorId']),
+    );
+    relMgr.declare(rel);
+    final authors = db.collection<Map<String, Object?>>(
+      'authors',
+      toRow: (m) => m,
+      fromRow: (m) => Map<String, Object?>.from(m as Map),
+      id: (m) => m['id'],
+    );
+    final posts = db.collection<Map<String, Object?>>(
+      'posts',
+      toRow: (m) => m,
+      fromRow: (m) => Map<String, Object?>.from(m as Map),
+      id: (m) => m['id'],
+    );
+    await authors.put({'id': 'a1'});
+    await posts.put({'id': 'p0', 'authorId': 'a1'});
+    final relCounts = <Object?>[];
+    final relSub = relMgr.watchChildren(rel, 'a1').listen(relCounts.add);
+    await _waitForCount(relCounts, 1);
+    final relUs = await _timeEmission(
+      () => posts.put({'id': 'p1', 'authorId': 'a1'}),
+      relCounts,
+      2,
+    );
+    _report('relationship watchChildren child put', relUs);
+    await relSub.cancel();
+
+    // 10. Whole-table clear: everything leaves the set in one emission.
+    final clearCounts = <Object?>[];
+    final clearSub = col.watchAllDiff().listen(clearCounts.add);
+    await _waitForCount(clearCounts, 1);
+    final clearUs = await _timeEmission(
+      () => db.engine.rawClear('items'),
+      clearCounts,
+      2,
+    );
+    _report('watchAllDiff whole-table clear', clearUs);
+    await clearSub.cancel();
+
+    await db.close();
+  } finally {
+    await dir.delete(recursive: true);
   }
 }
