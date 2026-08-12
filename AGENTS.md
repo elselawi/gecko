@@ -67,7 +67,7 @@ Run from the repository root unless noted.
 | `dart run tool/api_contract_gate.dart` | Public API snapshot compare / `--update` |
 | `dart run tool/api_contract_gate_test.dart` | Snapshot gate test |
 | `dart run tool/build_artifacts.dart` | Build / bundle / verify native artifacts (`build`, `bundle`, `check-bindings`) |
-| `dart run tool/perf_gate.dart` | Strict native perf thresholds (used with `--perf`) |
+| `dart run tool/perf_gate.dart --indexed` | Strict native perf thresholds, base + indexed workloads (used with `--perf`) |
 | `dart run tool/artifact_manifest_test.dart`, `coverage_gate_test.dart`, `perf_gate_test.dart`, `security_review_test.dart`, `offline_lint_test.dart`, `docs_examples_test.dart`, `release_checklist_test.dart`, `consumer_fixture_test.dart` | The individual gate tests |
 
 ## Building
@@ -120,7 +120,7 @@ dart run tool/coverage_gate.dart packages/gecko_db/coverage/lcov.info
 ```sh
 # Native workload + strict gate (benchmark is a standalone package)
 cd benchmark && dart run bench.dart --native --json
-cd .. && dart run tool/perf_gate.dart
+cd .. && dart run tool/perf_gate.dart --indexed
 
 # Comparative (gecko_db vs Hive CE, Sembast, SQLite, Isar, Drift)
 cd benchmark && dart run comparative.dart

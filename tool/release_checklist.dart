@@ -246,8 +246,8 @@ List<GateStep> buildSteps({
   if (perf) {
     steps.add(
       GateStep(
-        'Perf gate (strict, local)',
-        ['dart', 'run', 'tool/perf_gate.dart'],
+        'Perf gate (strict, local, incl. indexed)',
+        ['dart', 'run', 'tool/perf_gate.dart', '--indexed'],
         workingDirectory: root,
       ),
     );

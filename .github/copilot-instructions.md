@@ -79,5 +79,5 @@ The release gate requires ≥95% line / 100% branch on a **fresh** collection.
 | Coverage gate | `dart run tool/coverage_gate.dart <lcov>` |
 | Traceability | `dart run tool/traceability_check.dart` |
 | API snapshot | `dart run tool/api_contract_gate.dart --update` |
-| Native perf gate | `dart run tool/perf_gate.dart` |
+| Native perf gate | `dart run tool/perf_gate.dart --indexed` |
 | Comparative bench | `cd benchmark && dart run comparative.dart` |

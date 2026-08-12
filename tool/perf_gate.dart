@@ -7,20 +7,22 @@
 // or, when both the run and the baseline pin it, on p95 (p95MsPerOp).
 //
 // Usage (from the repo root):
-//   dart run tool/perf_gate.dart                    # native file, 30% tolerance
+//   dart run tool/perf_gate.dart --indexed         # strict: base + indexed workloads
+//   dart run tool/perf_gate.dart --indexed --update # refresh baseline.json (incl. indexed)
+//   dart run tool/perf_gate.dart                    # base workloads only (must match a base-only baseline)
 //   dart run tool/perf_gate.dart --native           # accepted (only backend)
-//   dart run tool/perf_gate.dart --indexed          # also gate indexed workloads
+//   dart run tool/perf_gate.dart --indexedRows=50000 # gate a non-default indexed scale
 //   dart run tool/perf_gate.dart --rows=100000      # gate a non-default scale
 //   dart run tool/perf_gate.dart --shape=wide       # non-default row shape
 //   dart run tool/perf_gate.dart --tolerance=0.50   # relax the noise budget
-//   dart run tool/perf_gate.dart --update           # refresh baseline.json
 //
 // Notes:
 //   * Requires the release native artifact (cd rust && cargo build --release).
 //   * Bench numbers are hardware/JIT dependent; the gate is a rough
 //     regression check, not a precision instrument. The release checklist
-//     runs the strict gate locally; --update is for intentional, reviewed
-//     performance changes.
+//     runs the strict gate (--indexed, gating indexedEq/indexedRange/
+//     indexedPrefix alongside the base workloads) locally; --update is for
+//     intentional, reviewed performance changes.
 //   * The in-memory backend is no longer produced by the harness; `--mem`
 //     fails loudly instead of silently running a different configuration.
 //   * The baseline is schema-versioned and records the dataset configuration

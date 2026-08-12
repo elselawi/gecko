@@ -3,10 +3,10 @@
   "schemaVersion": 2,
   "platform": "windows",
   "dart": "3.10.8",
-  "generatedAt": "2026-08-11T08:57:26.451365Z",
+  "generatedAt": "2026-08-12T06:09:56.913859Z",
   "tolerance": 0.3,
   "metadata": {
-    "commit": "57a4057",
+    "commit": "d12eb34",
     "dirty": true,
     "os": "windows",
     "osVersion": "\"Windows 11 Home Single Language\" 10.0 (Build 26200)",
@@ -14,15 +14,15 @@
     "rustCrateVersion": "0.0.1",
     "nativeLibrary": {
       "path": "C:\\Users\\alias\\Coding\\gecko\\rust\\target\\release\\gecko_db_rust.dll",
-      "sha256": "f1dbc2bf15a3122238cd7e93d0618b4aeb2f80086067a3bc4359515351564d5d"
+      "sha256": "eb9f58b22abe95aa8b1183969825464f61cdc003406943254263325836482e75"
     },
     "dataset": {
       "seedRows": 1000,
       "shape": "narrow",
       "batch": 500,
       "distinctGroups": 100,
-      "indexed": false,
-      "indexedRows": 0,
+      "indexed": true,
+      "indexedRows": 100000,
       "changeLogMaxEntries": 0
     },
     "durability": "redb default (Immediate fsync)",
@@ -34,50 +34,68 @@
     {
       "backend": "native file",
       "workload": "insert",
-      "msPerOp": 1.747542,
-      "p95MsPerOp": 2.443
+      "msPerOp": 1.500256,
+      "p95MsPerOp": 2.008
     },
     {
       "backend": "native file",
       "workload": "bulkInsert",
-      "msPerOp": 0.08653,
-      "p95MsPerOp": 0.09108799999999999
+      "msPerOp": 0.024318000000000003,
+      "p95MsPerOp": 0.025506
     },
     {
       "backend": "native file",
       "workload": "hotRead",
-      "msPerOp": 0.0021746,
+      "msPerOp": 0.0020638,
       "p95MsPerOp": 0.004
     },
     {
       "backend": "native file",
       "workload": "coldRead",
-      "msPerOp": 0.028192799999999997,
-      "p95MsPerOp": 0.145
+      "msPerOp": 0.014429399999999998,
+      "p95MsPerOp": 0.075
     },
     {
       "backend": "native file",
       "workload": "rangeScanUnindexed",
-      "msPerOp": 112.74486666666667,
-      "p95MsPerOp": 144.105
+      "msPerOp": 79.19256666666666,
+      "p95MsPerOp": 100.87
     },
     {
       "backend": "native file",
       "workload": "filteredQuery",
-      "msPerOp": 11.6742,
-      "p95MsPerOp": 17.817
+      "msPerOp": 7.647166666666667,
+      "p95MsPerOp": 6.309
     },
     {
       "backend": "native file",
       "workload": "watch",
-      "msPerOp": 1.71524,
-      "p95MsPerOp": 2.512
+      "msPerOp": 1.48284,
+      "p95MsPerOp": 2.065
     },
     {
       "backend": "native file",
       "workload": "txnCommit",
-      "msPerOp": 1.708545,
-      "p95MsPerOp": 2.511
+      "msPerOp": 1.5640699999999998,
+      "p95MsPerOp": 2.146
+    },
+    {
+      "backend": "native file",
+      "workload": "indexedEq",
+      "msPerOp": 2.7714000000000003,
+      "p95MsPerOp": 3.056
+    },
+    {
+      "backend": "native file",
+      "workload": "indexedRange",
+      "msPerOp": 2.5563000000000002,
+      "p95MsPerOp": 2.842
+    },
+    {
+      "backend": "native file",
+      "workload": "indexedPrefix",
+      "msPerOp": 36.2187,
+      "p95MsPerOp": 45.344
     }
   ]
 }
