@@ -230,6 +230,7 @@ class NativeWorkerClient {
       rethrow;
     }
   }
+  // coverage:ignore-end web
 
   /// Provisions the dedicated OPFS worker ([`WebWorkerClient`]) on the main
   /// thread and returns a client that proxies every request to it. [workerUrl]
@@ -304,8 +305,6 @@ class NativeWorkerClient {
     _workerAlive = false;
     if (!_workerExited.isCompleted) _workerExited.complete();
   }
-
-  // coverage:ignore-end web
 
   /// Whether the worker isolate completed its startup handshake and has not
   /// yet reported termination. Test/qualification surface.
