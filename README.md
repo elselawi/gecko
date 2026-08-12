@@ -103,6 +103,26 @@ final adults = await users
 
 Indexed equality, range, prefix, and multi-equality queries route through the
 Rust durable index; filtering, sorting, and windowing always execute in Rust.
+A query whose filters are all on indexed fields skips the per-row predicate
+recheck (the exact bounds prove them), and descending sorts stream the index
+in reverse. Multi-field indexes can be declared too:
+
+```dart
+final orders = db.collection<Order>(
+  'orders',
+  toRow: _toRow,
+  fromRow: _fromRow,
+  id: (o) => o.id,
+  compositeIndexes: const [
+    ['customer', 'status'],
+  ],
+);
+// One ordered index scan for customer eq + status range:
+final open = await orders
+    .where({'customer': 'u1'})
+    .range('status', min: 'pending', max: 'paid')
+    .findAll();
+```
 
 ### Reactivity
 
