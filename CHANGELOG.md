@@ -18,6 +18,18 @@ All notable changes to gecko_db are documented here. The format follows
 
 ### Changed
 
+- **Diff-first watch delivery**: `watchAllDiff()` now computes its deltas from
+  the committed post-batch values in the engine and emits an incremental
+  `CollectionDiff` (added/updated/removed) without building a full-table
+  snapshot per emission; the incremental `snapshot` is reconstructed on the
+  Dart side in byte-key order.
+- **Bounded negative read cache**: repeated reads of missing keys no longer
+  cross the worker boundary, and writes invalidate only the keys they touch
+  instead of clearing the whole read cache.
+- **Per-subscriber watch backpressure**: a paused subscriber that falls too
+  far behind drops its whole pending window and receives a single
+  `ChangeBusOverflowError` carrying the event sequence, rather than silently
+  dropping individual events.
 - **Covered-filter skip**: when every predicate filter's field is in the
   durable index's declared fields, the exact eq/range/prefix bounds prove the
   whole predicate and Rust skips the per-row recheck (counted via
