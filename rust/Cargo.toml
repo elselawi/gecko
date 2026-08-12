@@ -64,4 +64,13 @@ flutter_rust_bridge = { path = "vendor/flutter_rust_bridge" }
 # Coverage gate (Rust side): `cargo llvm-cov` is configured in CI. This keeps
 # the crate buildable without extra toolchain for local `cargo test`.
 [profile.release]
+# `lto = true` plus `codegen-units = 1` enable cross-crate inlining on the
+# codec/predicate hot paths (the merged perf plan's release-profile item).
+# `opt-level = 3` is Cargo's release default but pinned explicitly so a
+# profile reshuffle cannot silently downgrade it. `panic = "abort"` is
+# deliberately NOT set: redb's `Drop`-based transaction rollback relies on
+# unwinding. `strip`/`target-cpu` stay unset (AVX2 `x86-64-v3` is not safe
+# for unknown consumer hardware without a compatibility decision).
 lto = true
+codegen-units = 1
+opt-level = 3
