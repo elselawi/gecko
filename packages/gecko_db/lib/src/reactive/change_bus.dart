@@ -36,11 +36,14 @@ class _KeyPair {
 class ChangeBus {
   ChangeBus({this.maxBuffered = 1024});
 
-  /// Upper bound on buffered-but-undelivered events per slow subscriber.
+  /// Upper bound on events buffered for one paused subscriber.
   ///
-  /// A subscriber that opts into bounded delivery receives a
-  /// [`ChangeBusOverflowError`] when it cannot keep up; it can re-subscribe and
-  /// replay missed events via the sequence number.
+  /// Overflow policy (explicit): a subscriber that PAUSES and falls more than
+  /// [maxBuffered] events behind receives a single [`ChangeBusOverflowError`]
+  /// and every buffered event for that subscriber is dropped. The subscriber
+  /// must re-subscribe and may replay the missed window via the sequence
+  /// number. A subscriber that keeps up (never pauses) receives every event
+  /// synchronously with no artificial throttling.
   final int maxBuffered;
 
   final StreamController<ChangeSet> _controller =
@@ -96,16 +99,48 @@ class ChangeBus {
   /// Broadcast stream of coalesced per-batch [`ChangeSet`]s. Every active
   /// subscription is counted for diagnostics ([activeSubscriberCount]); each
   /// listener receives every batch in publish order.
+  ///
+  /// Backpressure: while a subscriber is paused, events are buffered in an
+  /// explicit per-subscriber queue; exceeding [maxBuffered] delivers a single
+  /// [`ChangeBusOverflowError`] and drops the buffered window (see
+  /// [maxBuffered]).
   Stream<ChangeSet> get stream {
     return Stream<ChangeSet>.multi((controller) {
       _activeSubscribers++;
+      // Explicit bounded queue: events arriving while this subscriber is
+      // paused are counted here (stream controllers do not expose their own
+      // buffer depth), so the overflow bound is observable and testable.
+      final pending = <ChangeSet>[];
+      var paused = false;
+      var overflowed = false;
       late final StreamSubscription<ChangeSet> sub;
       sub = _controller.stream.listen(
-        controller.add,
+        (event) {
+          if (overflowed) return;
+          if (paused) {
+            pending.add(event);
+            if (pending.length > maxBuffered) {
+              overflowed = true;
+              controller.addError(ChangeBusOverflowError(event.sequence ?? 0));
+              pending.clear();
+            }
+            return;
+          }
+          controller.add(event);
+        },
         onError: controller.addError,
         onDone: controller.close,
         cancelOnError: true,
       );
+      controller.onPause = () {
+        paused = true;
+      };
+      controller.onResume = () {
+        paused = false;
+        while (pending.isNotEmpty) {
+          controller.add(pending.removeAt(0));
+        }
+      };
       controller.onCancel = () {
         _activeSubscribers--;
         return sub.cancel();

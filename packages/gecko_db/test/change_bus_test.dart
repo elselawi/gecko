@@ -98,4 +98,67 @@ void main() {
     bus.notifySequence(5); // must not throw
     expect(bus.isClosed, isTrue);
   });
+
+  test('a paused subscriber overflows after maxBuffered and drops the window',
+      () async {
+    final bus = ChangeBus(maxBuffered: 3);
+    final events = <Object>[];
+    final sub = bus.stream.listen(events.add, onError: (Object e) => events.add(e));
+    await Future<void>.delayed(Duration.zero); // let the subscription attach
+    sub.pause();
+    for (var i = 0; i < 10; i++) {
+      bus.publish([Change(table: 'a', key: i, kind: ChangeKind.put)]);
+    }
+    await Future<void>.delayed(Duration.zero);
+    sub.resume();
+    await Future<void>.delayed(Duration.zero);
+    // Exactly one overflow error; the buffered window is dropped entirely.
+    expect(events.whereType<ChangeBusOverflowError>(), hasLength(1));
+    expect(
+      events.whereType<ChangeBusOverflowError>().single.sequence,
+      greaterThanOrEqualTo(4),
+    );
+    expect(events.whereType<ChangeSet>(), isEmpty);
+    await sub.cancel();
+    await bus.close();
+  });
+
+  test('a paused subscriber under the bound flushes buffered events on resume',
+      () async {
+    final bus = ChangeBus(maxBuffered: 10);
+    final events = <ChangeSet>[];
+    final sub = bus.stream.listen(events.add);
+    await Future<void>.delayed(Duration.zero);
+    sub.pause();
+    for (var i = 0; i < 3; i++) {
+      bus.publish([Change(table: 'a', key: i, kind: ChangeKind.put)]);
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(events, isEmpty, reason: 'paused events are buffered, not delivered');
+    sub.resume();
+    await Future<void>.delayed(Duration.zero);
+    expect(events, hasLength(3), reason: 'buffered events flush in order');
+    expect(
+      [for (final set in events) set.sequence],
+      [1, 2, 3],
+      reason: 'publish order is preserved through the pause',
+    );
+    await sub.cancel();
+    await bus.close();
+  });
+
+  test('a subscriber that keeps up receives every event without throttling',
+      () async {
+    final bus = ChangeBus(maxBuffered: 2);
+    final events = <ChangeSet>[];
+    final sub = bus.stream.listen(events.add);
+    await Future<void>.delayed(Duration.zero);
+    for (var i = 0; i < 5; i++) {
+      bus.publish([Change(table: 'a', key: i, kind: ChangeKind.put)]);
+    }
+    await Future<void>.delayed(Duration.zero);
+    expect(events, hasLength(5));
+    await sub.cancel();
+    await bus.close();
+  });
 }
