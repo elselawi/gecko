@@ -1099,6 +1099,123 @@ impl RedbWorker {
         self.registry.len()
     }
 
+    /// Filters the sync-state table to the records matching [matchers] in
+    /// Rust: only the matching `(key, record)` pairs cross the boundary,
+    /// instead of a full-table scan + decode in Dart. Each matcher is
+    /// `0x00 | u32_be(rid_len) | recordId_bytes` (match on recordId alone) or
+    /// `0x01 | u32_be(col_len) | collection_bytes | u32_be(rid_len) |
+    /// recordId_bytes` (match on collection AND recordId — a `RecordRef`).
+    /// Comparison is byte-exact against the encoded fields, mirroring Dart's
+    /// `_matches` semantics (an id and a recordId must be the same wire value).
+    /// A missing table yields an empty result, never an error.
+    pub fn sync_state_matching(
+        &self,
+        matchers: &[Vec<u8>]
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        if matchers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let transaction = self.begin_read()?;
+        let state = match transaction.open_table(table_definition("__gecko_sync_state")) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut result = Vec::new();
+        for entry in state.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row = entry.1.value();
+            if sync_state_matches(row, matchers) {
+                result.push((entry.0.value().to_vec(), row.to_vec()));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Range-filtered `changesSince(lastSeq)`: scans the change log in Rust
+    /// and returns only the `(key, record)` pairs whose `localMutationId`
+    /// exceeds [seq]. Dart previously scanned the whole log, decoded every
+    /// record, and filtered; now only the required records cross the
+    /// boundary. A missing table yields an empty result.
+    pub fn changes_since(&self, seq: u64) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        let log = match transaction.open_table(table_definition("__gecko_change_log")) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut result = Vec::new();
+        for entry in log.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row = entry.1.value();
+            if change_record_mutation_id(row) > seq {
+                result.push((entry.0.value().to_vec(), row.to_vec()));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Scans the attachment catalog and returns the metadata entries whose
+    /// parent row no longer exists — the `orphaned()` scan + one-parent-lookup
+    /// per attachment now runs inside one Rust read transaction instead of a
+    /// Dart full scan plus N point reads. Returns `(attachmentKey, meta)`
+    /// pairs for orphans. A missing table yields an empty result.
+    pub fn orphaned_attachments(&self) -> Result<Vec<ByteEntry>, WorkerError> {
+        let transaction = self.begin_read()?;
+        let catalog = match transaction.open_table(table_definition("__gecko_attachments")) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut result = Vec::new();
+        for entry in catalog.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let meta = entry.1.value();
+            let parent_collection = match crate::value_codec::find_field_bytes(meta, "parentCollection") {
+                Ok(Some(bytes)) => bytes.to_vec(),
+                _ => continue,
+            };
+            let parent_id = match crate::value_codec::find_field_bytes(meta, "parentId") {
+                Ok(Some(bytes)) => bytes.to_vec(),
+                _ => continue,
+            };
+            let Some(parent_table_name) = decode_string_value(&parent_collection) else {
+                continue;
+            };
+            let parent_table = match transaction.open_table(table_definition(&parent_table_name)) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => {
+                    // Parent table absent → the parent cannot exist → orphan.
+                    result.push((entry.0.value().to_vec(), meta.to_vec()));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(WorkerError::Storage(error.to_string()));
+                }
+            };
+            let exists = parent_table
+                .get(parent_id.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .is_some();
+            if !exists {
+                result.push((entry.0.value().to_vec(), meta.to_vec()));
+            }
+        }
+        Ok(result)
+    }
+
     /// Reads one key using a consistent read transaction.
     pub fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, WorkerError> {
         let transaction = self.begin_read()?;
@@ -1236,7 +1353,19 @@ impl RedbWorker {
     /// Creates a point-in-time MVCC snapshot: a held redb read transaction
     /// that observes exactly the committed state at creation time, even after
     /// later write transactions commit. Returns an opaque id for the caller.
+    ///
+    /// A hard cap bounds how many open snapshots can pin MVCC versions at
+    /// once; a leaked snapshot (a caller that never disposes) can no longer
+    /// block compaction indefinitely — beyond the cap, creation fails with a
+    /// typed error instead of silently pinning more versions.
     pub fn create_snapshot(&mut self) -> Result<u64, WorkerError> {
+        if self.snapshots.len() >= MAX_OPEN_SNAPSHOTS {
+            return Err(
+                WorkerError::InvalidOperation(format!(
+                    "too many open snapshots (max {MAX_OPEN_SNAPSHOTS}); a caller is leaking snapshot handles"
+                ))
+            );
+        }
         let transaction = self.begin_read()?;
         let id = self.next_snapshot_id;
         self.next_snapshot_id += 1;
@@ -3515,6 +3644,69 @@ fn change_record_mutation_id(row_bytes: &[u8]) -> u64 {
     }
 }
 
+/// Parses a `u32_be` length-prefixed slice, returning `(payload, rest)`.
+fn take_u32_prefixed(mut m: &[u8]) -> Result<(&[u8], &[u8]), ()> {
+    if m.len() < 4 {
+        return Err(());
+    }
+    let len = u32::from_be_bytes([m[0], m[1], m[2], m[3]]) as usize;
+    m = &m[4..];
+    if m.len() < len {
+        return Err(());
+    }
+    Ok((&m[..len], &m[len..]))
+}
+
+/// Decodes a wire-encoded string field value (e.g. `parentCollection`).
+fn decode_string_value(bytes: &[u8]) -> Option<String> {
+    use crate::value_codec::{RowValue, ValueReader};
+    let mut reader = ValueReader::new(bytes);
+    match reader.read_value() {
+        Ok(RowValue::String(s)) => Some(s),
+        _ => None,
+    }
+}
+
+/// Whether [row] (an encoded change record) matches any of the encoded
+/// [matchers] (see [`RedbWorker::sync_state_matching`] for the layout).
+/// Compares the encoded `recordId` (and `collection` for a `RecordRef`
+/// matcher) byte-exactly, mirroring Dart's `_matches` semantics.
+fn sync_state_matches(row: &[u8], matchers: &[Vec<u8>]) -> bool {
+    use crate::value_codec::find_field_bytes;
+    let record_id = match find_field_bytes(row, "recordId") {
+        Ok(Some(b)) => b,
+        _ => return false,
+    };
+    let collection = match find_field_bytes(row, "collection") {
+        Ok(Some(b)) => Some(b),
+        _ => None,
+    };
+    matchers.iter().any(|m| {
+        let m = &m[..];
+        if m.is_empty() {
+            return false;
+        }
+        match m[0] {
+            0x00 => {
+                let Ok((rid, rest)) = take_u32_prefixed(&m[1..]) else {
+                    return false;
+                };
+                rest.is_empty() && rid == record_id
+            }
+            0x01 => {
+                let Ok((col, m2)) = take_u32_prefixed(&m[1..]) else {
+                    return false;
+                };
+                let Ok((rid, rest)) = take_u32_prefixed(m2) else {
+                    return false;
+                };
+                rest.is_empty() && rid == record_id && collection == Some(col)
+            }
+            _ => false,
+        }
+    })
+}
+
 /// Encodes the persisted sync watermark key (DefaultWireCodec string
 /// "watermark" stored in `__gecko_sync_meta`).
 fn encode_watermark_key() -> Vec<u8> {
@@ -3662,6 +3854,13 @@ fn prune_change_log(
 /// delete cannot allocate without limit; a delete that exceeds it fails
 /// without committing, leaving the whole transaction unchanged (rollback).
 const MAX_DELETE_RANGE_KEYS: u64 = 1_000_000;
+
+/// Hard cap on concurrently open MVCC snapshots. Each held snapshot pins
+/// every newer MVCC version in the file, so an unbounded leak would block
+/// compaction and grow the database indefinitely. The Dart layer always
+/// disposes snapshots in `try/finally`; this cap turns a hypothetical leak
+/// into a typed error instead of unbounded pinning.
+const MAX_OPEN_SNAPSHOTS: usize = 256;
 
 fn enforce_delete_memory_policy(keys: &[Vec<u8>]) -> Result<(), WorkerError> {
     if keys.len() as u64 > MAX_DELETE_RANGE_KEYS {
@@ -4500,6 +4699,31 @@ mod tests {
         assert!(worker.snapshot_range_scan(snapshot, "absent", None, None).unwrap().is_empty());
         assert_eq!(worker.snapshot_get(snapshot, "absent", &[1]).unwrap(), None);
         worker.drop_snapshot(snapshot);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn create_snapshot_enforces_the_open_snapshot_cap() {
+        let path = temp_path("snapshot-cap");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut held = Vec::new();
+        for _ in 0..MAX_OPEN_SNAPSHOTS {
+            held.push(worker.create_snapshot().unwrap());
+        }
+        // One more must fail with a typed error instead of pinning forever.
+        assert!(
+            matches!(
+                worker.create_snapshot(),
+                Err(WorkerError::InvalidOperation(_))
+            ),
+            "creating beyond the cap must fail with a typed error"
+        );
+        // Releasing one frees a slot.
+        worker.drop_snapshot(held.remove(0));
+        assert!(worker.create_snapshot().is_ok());
+        for id in held {
+            worker.drop_snapshot(id);
+        }
         let _ = std::fs::remove_file(path);
     }
 
@@ -7037,6 +7261,55 @@ mod tests {
         )
     }
 
+    /// A change record with the sync-matching fields (`collection`,
+    /// `recordId`) plus the local-mutation fields.
+    fn encode_sync_record(
+        lsn: u64,
+        collection: &str,
+        record_id: &str
+    ) -> Vec<u8> {
+        let mut id_bytes = vec![crate::value_codec::TAG_INT64];
+        id_bytes.extend_from_slice(&(lsn as i64).to_be_bytes());
+        encode_test_row(
+            &[
+                ("localMutationId", id_bytes),
+                ("collection", encode_test_string(collection)),
+                ("recordId", encode_test_string(record_id)),
+            ]
+        )
+    }
+
+    /// A matcher for a plain id (match on recordId only).
+    fn plain_id_matcher(record_id: &str) -> Vec<u8> {
+        let mut out = vec![0x00];
+        let rid = encode_test_string(record_id);
+        out.extend_from_slice(&(rid.len() as u32).to_be_bytes());
+        out.extend_from_slice(&rid);
+        out
+    }
+
+    /// A matcher for a (collection, recordId) RecordRef.
+    fn record_ref_matcher(collection: &str, record_id: &str) -> Vec<u8> {
+        let mut out = vec![0x01];
+        let col = encode_test_string(collection);
+        out.extend_from_slice(&(col.len() as u32).to_be_bytes());
+        out.extend_from_slice(&col);
+        let rid = encode_test_string(record_id);
+        out.extend_from_slice(&(rid.len() as u32).to_be_bytes());
+        out.extend_from_slice(&rid);
+        out
+    }
+
+    /// An attachment metadata row with a parent reference.
+    fn encode_attachment_meta(parent_collection: &str, parent_id: &str) -> Vec<u8> {
+        encode_test_row(
+            &[
+                ("parentCollection", encode_test_string(parent_collection)),
+                ("parentId", encode_test_string(parent_id)),
+            ]
+        )
+    }
+
     #[test]
     fn pending_changes_aggregates_dirty_local_records_sorted() {
         let path = temp_path("pending-sync");
@@ -7070,6 +7343,109 @@ mod tests {
         // A missing sync-state table yields an empty result, never an error.
         assert!(worker.pending_changes().is_ok());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sync_state_matching_filters_by_plain_id_and_record_ref() {
+        let path = temp_path("sync-matching");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // Sync-state rows: items/a1, items/b2, users/u1.
+        for (key, lsn, collection, record_id) in [
+            (b"k1".to_vec(), 1, "items", "a1"),
+            (b"k2".to_vec(), 2, "items", "b2"),
+            (b"k3".to_vec(), 3, "users", "u1"),
+        ] {
+            worker
+                .apply_batch(&[op_with_table(
+                    OpKind::Put,
+                    "__gecko_sync_state",
+                    Some(key),
+                    Some(encode_sync_record(lsn, collection, record_id)),
+                )])
+                .unwrap();
+        }
+        // Match plain id "a1" + RecordRef (users, u1); "b2" must not match.
+        let matchers = vec![plain_id_matcher("a1"), record_ref_matcher("users", "u1")];
+        let got = worker.sync_state_matching(&matchers).unwrap();
+        let mut keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        keys.sort();
+        assert_eq!(keys, vec![&b"k1"[..], &b"k3"[..]]);
+        for (key, _) in &got {
+            let row = worker
+                .get("__gecko_sync_state", key)
+                .unwrap()
+                .unwrap();
+            let matches = sync_state_matches(&row, &matchers);
+            assert!(matches, "returned row {key:?} must match");
+        }
+        // Empty matchers → no boundary work.
+        assert!(worker.sync_state_matching(&[]).unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn changes_since_filters_records_by_sequence() {
+        let path = temp_path("changes-since");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        for (key, lsn) in [(b"c1".to_vec(), 1), (b"c2".to_vec(), 2), (b"c5".to_vec(), 5), (b"c10".to_vec(), 10)] {
+            worker
+                .apply_batch(&[op_with_table(
+                    OpKind::Put,
+                    "__gecko_change_log",
+                    Some(key),
+                    Some(encode_sync_record(lsn, "items", "ignored")),
+                )])
+                .unwrap();
+        }
+        let got = worker.changes_since(3).unwrap();
+        let mut keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        keys.sort();
+        assert_eq!(keys, vec![&b"c10"[..], &b"c5"[..]]);
+        // A missing change-log table yields an empty result.
+        let empty = RedbWorker::open(temp_path("changes-since-empty"), false).unwrap();
+        assert!(empty.changes_since(0).unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(temp_path("changes-since-empty"));
+    }
+
+    #[test]
+    fn orphaned_attachments_returns_rows_with_missing_parents() {
+        let path = temp_path("orphans");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // A live parent row in "items".
+        worker
+            .apply_batch(&[op_with_table(
+                OpKind::Put,
+                "items",
+                Some(encode_test_string("p1")),
+                Some(encode_test_row(&[])),
+            )])
+            .unwrap();
+        // Attachment catalog: one with a live parent, two orphans (missing
+        // parent id, and missing parent table).
+        for (key, collection, pid) in [
+            (b"att1".to_vec(), "items", "p1"),
+            (b"att2".to_vec(), "items", "gone"),
+            (b"att3".to_vec(), "absent_table", "p1"),
+        ] {
+            worker
+                .apply_batch(&[op_with_table(
+                    OpKind::Put,
+                    "__gecko_attachments",
+                    Some(key),
+                    Some(encode_attachment_meta(collection, pid)),
+                )])
+                .unwrap();
+        }
+        let orphans = worker.orphaned_attachments().unwrap();
+        let mut keys: Vec<&[u8]> = orphans.iter().map(|e| e.0.as_slice()).collect();
+        keys.sort();
+        assert_eq!(keys, vec![&b"att2"[..], &b"att3"[..]]);
+        // A missing attachment table yields an empty result.
+        let empty = RedbWorker::open(temp_path("orphans-empty"), false).unwrap();
+        assert!(empty.orphaned_attachments().unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(temp_path("orphans-empty"));
     }
 
     // ── TopK + slice_offset_limit unit edges ──────────────────────────────

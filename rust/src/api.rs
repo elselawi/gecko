@@ -272,6 +272,34 @@ impl NativeWorker {
         self.worker.pending_changes().map_err(encode_worker_error)
     }
 
+    /// Filters the sync-state table to the records matching the encoded
+    /// matchers (plain recordIds and `(collection, recordId)` RecordRefs) in
+    /// Rust. See [`RedbWorker::sync_state_matching`] for the matcher layout.
+    /// Used by sync transitions and remote-deletion candidate selection so a
+    /// large sync-state table is never scanned + decoded in Dart.
+    pub async fn sync_state_matching(
+        &self,
+        matchers: Vec<Vec<u8>>
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .sync_state_matching(&matchers)
+            .map_err(encode_worker_error)
+    }
+
+    /// Range-filtered `changesSince(lastSeq)`: scans the change log in Rust
+    /// and returns only the records whose `localMutationId` exceeds [seq].
+    /// Only the required records cross the boundary.
+    pub async fn changes_since(&self, seq: u64) -> Result<Vec<ByteEntry>, String> {
+        self.worker.changes_since(seq).map_err(encode_worker_error)
+    }
+
+    /// Returns the attachment metadata entries whose parent row no longer
+    /// exists — the `orphaned()` scan + parent-existence checks run inside one
+    /// Rust read transaction.
+    pub async fn orphaned_attachments(&self) -> Result<Vec<ByteEntry>, String> {
+        self.worker.orphaned_attachments().map_err(encode_worker_error)
+    }
+
     /// Number of active live-query registrations (diagnostics).
     pub async fn live_query_count(&self) -> Result<u64, String> {
         Ok(self.worker.live_query_count() as u64)

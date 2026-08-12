@@ -28,6 +28,11 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<PreparedChange> changes,
   });
 
+  /// Range-filtered `changesSince(lastSeq)`: scans the change log in Rust
+  /// and returns only the records whose `localMutationId` exceeds [seq].
+  /// Only the required records cross the boundary.
+  Future<List<(Uint8List, Uint8List)>> changesSince({required BigInt seq});
+
   /// Explicitly releases the redb file handle before the Dart object is
   /// dropped. This is required for deterministic reopen on Windows.
   Future<void> close();
@@ -94,6 +99,11 @@ abstract class NativeWorker implements RustOpaqueInterface {
     key: key,
     keyGen: keyGen,
   );
+
+  /// Returns the attachment metadata entries whose parent row no longer
+  /// exists — the `orphaned()` scan + parent-existence checks run inside one
+  /// Rust read transaction.
+  Future<List<(Uint8List, Uint8List)>> orphanedAttachments();
 
   /// Aggregates the pending local changes from the
   /// sync-state table (dirty, non-remote, ordered by localMutationId) in
@@ -440,6 +450,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
 
   /// Reports physical/logical size and health counters
   Future<StorageStats> storageStats();
+
+  /// Filters the sync-state table to the records matching the encoded
+  /// matchers (plain recordIds and `(collection, recordId)` RecordRefs) in
+  /// Rust. See [`RedbWorker::sync_state_matching`] for the matcher layout.
+  /// Used by sync transitions and remote-deletion candidate selection so a
+  /// large sync-state table is never scanned + decoded in Dart.
+  Future<List<(Uint8List, Uint8List)>> syncStateMatching({
+    required List<Uint8List> matchers,
+  });
 
   Future<List<String>> tables();
 
