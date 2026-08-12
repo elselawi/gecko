@@ -30,6 +30,32 @@ import '../native/external_library_loader.dart' show resolveExternalLibrary;
 import '../native/opfs.dart' show registerOpfsHandle;
 import 'native_dispatch.dart' show dispatchNativeWorker;
 
+/// Worker-contention measurement over the native isolate request/response
+/// protocol. The worker processes commands serially, so a request enqueued
+/// behind a large scan waits for it; this summary quantifies that contention
+/// (queue depth high-water + in-flight service latency) before any
+/// priority/read-only worker split is considered.
+class WorkerContention {
+  const WorkerContention({
+    required this.requestCount,
+    required this.queueDepthHighWater,
+    required this.avgServiceMicros,
+    required this.maxServiceMicros,
+  });
+
+  /// Requests completed over the measured window.
+  final int requestCount;
+
+  /// Most requests seen waiting in the serial queue at once.
+  final int queueDepthHighWater;
+
+  /// Average in-flight (round-trip) service time in µs.
+  final int avgServiceMicros;
+
+  /// Slowest in-flight service time in µs.
+  final int maxServiceMicros;
+}
+
 class NativeWorkerClient {
   NativeWorkerClient._(this._isolate, this._receivePort)
     : _subscription = _receivePort!.listen(null) {
@@ -58,6 +84,14 @@ class NativeWorkerClient {
   bool _closed = false;
   bool _workerAlive = false;
   String? _workerIsolateName;
+
+  // Worker-contention measurement (see [workerContention]). The isolate
+  // worker processes commands serially, so the queue depth observed when a
+  // request is enqueued plus its in-flight service time quantify contention.
+  int _queueDepthHighWater = 0;
+  int _serviceMicros = 0;
+  int _maxServiceMicros = 0;
+  int _requestCount = 0;
   final Completer<void> _workerExited = Completer<void>();
 
   /// The FRB worker handle. On native this lives inside the spawned isolate;
@@ -318,16 +352,11 @@ class NativeWorkerClient {
         sequence: int.parse(result['sequence'] as String),
         previousValues: [
           for (final value in result['previousValues'] as List)
-            value == null
-                ? null
-                : Uint8List.fromList(List<int>.from(value as List)),
+            value == null ? null : _copyBytes(value),
         ],
         removedKeys: [
           for (final entry in result['removedKeys'] as List)
-            (
-              (entry as List)[0] as String,
-              ByteKey(List<int>.from(entry[1] as List)),
-            ),
+            ((entry as List)[0] as String, ByteKey(_copyBytes(entry[1]))),
         ],
         deltas: [
           for (final delta in result['deltas'] as List)
@@ -382,6 +411,30 @@ class NativeWorkerClient {
     return _decodeEntries(result);
   }
 
+  /// Filters the sync-state table in Rust to the records matching the encoded
+  /// [matchers] (plain recordIds and (collection, recordId) RecordRefs);
+  /// returns (key, record) pairs for Dart to transform.
+  Future<List<RawEntry>> syncStateMatching(List<List<int>> matchers) async {
+    final result = await _request('syncStateMatching', <Object?>[
+      [for (final m in matchers) m],
+    ]);
+    return _decodeEntries(result);
+  }
+
+  /// Range-filtered `changesSince(lastSeq)`: the change-log scan + sequence
+  /// filter run in Rust; only the required (key, record) pairs cross.
+  Future<List<RawEntry>> changesSince(int seq) async {
+    final result = await _request('changesSince', <Object?>[seq]);
+    return _decodeEntries(result);
+  }
+
+  /// Returns attachment metadata entries whose parent row is missing —
+  /// the orphan scan + parent-existence checks run in one Rust read txn.
+  Future<List<RawEntry>> orphanedAttachments() async {
+    final result = await _request('orphanedAttachments', const <Object?>[]);
+    return _decodeEntries(result);
+  }
+
   /// Decodes a wire `[[keyBytes, valueBytes], ...]` list into [RawEntry]s.
   List<RawEntry> _decodeEntries(Object? raw) => [
     for (final pair in (raw as List))
@@ -404,7 +457,7 @@ class NativeWorkerClient {
     required List<int> key,
   }) async {
     final result = await _request('get', <Object?>[table, key]);
-    return result == null ? null : List<int>.from(result as List);
+    return result == null ? null : _copyBytes(result);
   }
 
   /// batched point-read, snapshot-bound — fetches N keys in ONE read
@@ -423,7 +476,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -438,7 +491,7 @@ class NativeWorkerClient {
     final result = await _request('getMany', <Object?>[table, keys]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -640,7 +693,7 @@ class NativeWorkerClient {
       table,
       key,
     ]);
-    return result == null ? null : List<int>.from(result as List);
+    return result == null ? null : _copyBytes(result);
   }
 
   /// Scans a range through [snapshot] (a point-in-time MVCC view).
@@ -658,7 +711,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -682,7 +735,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -704,7 +757,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -724,7 +777,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -742,7 +795,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -781,7 +834,7 @@ class NativeWorkerClient {
       predicateBytes,
       field,
     ]);
-    return [for (final b in (result as List)) List<int>.from(b as List)];
+    return [for (final b in (result as List)) _copyBytes(b)];
   }
 
   /// snapshot-bound parent lookup with Rust-side FK extraction.
@@ -801,7 +854,7 @@ class NativeWorkerClient {
     ]);
     if (result == null) return null;
     final pair = result as List;
-    return (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List));
+    return (_copyBytes(pair[0]), _copyBytes(pair[1]));
   }
 
   /// /snapshot-bound child retrieval with Rust-side FK matching and
@@ -831,13 +884,10 @@ class NativeWorkerClient {
     return [
       for (final group in (result as List))
         (
-          List<int>.from((group as List)[0] as List),
+          _copyBytes((group as List)[0]),
           [
             for (final pair in (group[1] as List))
-              (
-                List<int>.from((pair as List)[0] as List),
-                List<int>.from(pair[1] as List),
-              ),
+              (_copyBytes((pair as List)[0]), _copyBytes(pair[1])),
           ],
         ),
     ];
@@ -857,7 +907,7 @@ class NativeWorkerClient {
       wantedId,
     ]);
     return [
-      for (final bytes in (result as List)) List<int>.from(bytes as List),
+      for (final bytes in (result as List)) _copyBytes(bytes),
     ];
   }
 
@@ -880,7 +930,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -910,7 +960,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -973,7 +1023,7 @@ class NativeWorkerClient {
       covered,
     ]);
     return [
-      for (final bytes in (result as List)) List<int>.from(bytes as List),
+      for (final bytes in (result as List)) _copyBytes(bytes),
     ];
   }
 
@@ -1002,7 +1052,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -1026,7 +1076,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -1063,7 +1113,7 @@ class NativeWorkerClient {
     ]);
     return [
       for (final pair in (result as List))
-        (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
     ];
   }
 
@@ -1228,9 +1278,41 @@ class NativeWorkerClient {
     final id = ++_nextRequest;
     final completer = Completer<Object?>();
     _pending[id] = completer;
+    final depth = _pending.length;
+    if (depth > _queueDepthHighWater) _queueDepthHighWater = depth;
+    final sw = Stopwatch()..start();
+    // Record service time without leaking the (possibly error) outcome as an
+    // unhandled async error: both success and error paths are consumed here.
+    completer.future.then<void>(
+      (_) {
+        sw.stop();
+        _recordService(sw.elapsedMicroseconds);
+      },
+      onError: (Object _) {
+        sw.stop();
+        _recordService(sw.elapsedMicroseconds);
+      },
+    );
     commandPort.send(<Object?>['request', id, operation, arguments]);
     return completer.future;
   }
+
+  void _recordService(int micros) {
+    _requestCount++;
+    _serviceMicros += micros;
+    if (micros > _maxServiceMicros) _maxServiceMicros = micros;
+  }
+
+  /// Worker-contention summary: how many requests waited in the serial queue
+  /// behind others, and the in-flight (service) latency distribution. On the
+  /// web the worker runs in the same isolate, so no queue exists — the
+  /// summary is only meaningful for the native isolate worker.
+  WorkerContention get workerContention => WorkerContention(
+    requestCount: _requestCount,
+    queueDepthHighWater: _queueDepthHighWater,
+    avgServiceMicros: _requestCount == 0 ? 0 : _serviceMicros ~/ _requestCount,
+    maxServiceMicros: _maxServiceMicros,
+  );
 
   void _handleMessage(Object? message) {
     if (message is! List || message.isEmpty) return;

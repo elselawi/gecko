@@ -67,15 +67,14 @@ Future<Object?> dispatchNativeWorker(
     case 'registerLiveQuery':
       final result = await worker.registerLiveQuery(
         table: arguments[0] as String,
-        predicateBytes: List<int>.from(arguments[1] as List),
-        sortBytes: List<int>.from(arguments[2] as List),
+        predicateBytes: _bytes(arguments[1]),
+        sortBytes: _bytes(arguments[2]),
         kind: arguments[3] as int,
       );
       return <String, Object?>{
         'id': result.id.toString(),
         'initial': [
-          for (final pair in result.initial)
-            <Object?>[pair.$1.toList(), pair.$2.toList()],
+          for (final pair in result.initial) <Object?>[pair.$1, pair.$2],
         ],
       };
     case 'unregisterLiveQuery':
@@ -86,7 +85,26 @@ Future<Object?> dispatchNativeWorker(
     case 'pendingChanges':
       final pairs = await worker.pendingChanges();
       return [
-        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
+      ];
+    case 'syncStateMatching':
+      final pairs = await worker.syncStateMatching(
+        matchers: [
+          for (final m in (arguments[0] as List)) _bytes(m),
+        ],
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
+      ];
+    case 'changesSince':
+      final pairs = await worker.changesSince(seq: _asBigInt(arguments[0]));
+      return [
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
+      ];
+    case 'orphanedAttachments':
+      final pairs = await worker.orphanedAttachments();
+      return [
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
       ];
     case 'repairIndex':
       await worker.repairIndex(
@@ -273,40 +291,29 @@ Future<Object?> dispatchNativeWorker(
       final pair = await worker.snapshotRelationshipParent(
         snapshot: _asBigInt(arguments[0]),
         childTable: arguments[1] as String,
-        childKey: Uint8List.fromList(List<int>.from(arguments[2] as List)),
+        childKey: _bytes(arguments[2]),
         parentTable: arguments[3] as String,
         foreignKeyField: arguments[4] as String,
       );
-      return pair == null
-          ? null
-          : <Object?>[pair.$1.toList(), pair.$2.toList()];
+      return pair == null ? null : <Object?>[pair.$1, pair.$2];
     case 'snapshotRelationshipChildren':
       final groups = await worker.snapshotRelationshipChildren(
         snapshot: _asBigInt(arguments[0]),
         childTable: arguments[1] as String,
         foreignKeyField: arguments[2] as String,
-        parentIds: [
-          for (final id in (arguments[3] as List))
-            Uint8List.fromList(List<int>.from(id as List)),
-        ],
+        parentIds: [for (final id in (arguments[3] as List)) _bytes(id)],
         indexTable: arguments[4] as String,
         indexRanges: [
           for (final range in (arguments[5] as List))
-            (
-              Uint8List.fromList(List<int>.from((range as List)[0] as List)),
-              Uint8List.fromList(List<int>.from(range[1] as List)),
-            ),
+            (_bytes((range as List)[0]), _bytes(range[1])),
         ],
         predicateBytes: _bytes(arguments[6]),
       );
       return [
         for (final group in groups)
           <Object?>[
-            group.parentId.toList(),
-            [
-              for (final pair in group.entries)
-                <Object?>[pair.$1.toList(), pair.$2.toList()],
-            ],
+            group.parentId,
+            [for (final pair in group.entries) <Object?>[pair.$1, pair.$2]],
           ],
       ];
     case 'snapshotRelationshipJoinIds':
@@ -314,9 +321,9 @@ Future<Object?> dispatchNativeWorker(
         snapshot: _asBigInt(arguments[0]),
         joinTable: arguments[1] as String,
         field: arguments[2] as String,
-        wantedId: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+        wantedId: _bytes(arguments[3]),
       );
-      return [for (final id in ids) id.toList()];
+      return [for (final id in ids) id];
     case 'snapshotQueryFilteredLimited':
       final pairs = await worker.snapshotQueryFilteredLimited(
         snapshot: _asBigInt(arguments[0]),
@@ -372,25 +379,20 @@ Future<Object?> dispatchNativeWorker(
     case 'snapshotQueryIndexedMulti':
       final ranges = [
         for (final range in (arguments[3] as List))
-          (
-            Uint8List.fromList(List<int>.from((range as List)[0] as List)),
-            Uint8List.fromList(List<int>.from(range[1] as List)),
-          ),
+          (_bytes((range as List)[0]), _bytes(range[1])),
       ];
       final pairs = await worker.snapshotQueryIndexedMulti(
         snapshot: _asBigInt(arguments[0]),
         table: arguments[1] as String,
         indexTable: arguments[2] as String,
         ranges: ranges,
-        predicateBytes: Uint8List.fromList(
-          List<int>.from(arguments[4] as List),
-        ),
+        predicateBytes: _bytes(arguments[4]),
         covered: arguments[5] as bool,
         limit: arguments[6] == null ? null : _asBigInt(arguments[6]),
         offset: _asBigInt(arguments[7]),
       );
       return [
-        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
       ];
     case 'snapshotQueryIndexedCount':
       final count = await worker.snapshotQueryIndexedCount(
@@ -399,14 +401,9 @@ Future<Object?> dispatchNativeWorker(
         indexTable: arguments[2] as String,
         ranges: [
           for (final range in (arguments[3] as List))
-            (
-              Uint8List.fromList(List<int>.from((range as List)[0] as List)),
-              Uint8List.fromList(List<int>.from(range[1] as List)),
-            ),
+            (_bytes((range as List)[0]), _bytes(range[1])),
         ],
-        predicateBytes: Uint8List.fromList(
-          List<int>.from(arguments[4] as List),
-        ),
+        predicateBytes: _bytes(arguments[4]),
         covered: arguments[5] as bool,
       );
       return count.toString();
@@ -417,59 +414,48 @@ Future<Object?> dispatchNativeWorker(
         indexTable: arguments[2] as String,
         ranges: [
           for (final range in (arguments[3] as List))
-            (
-              Uint8List.fromList(List<int>.from((range as List)[0] as List)),
-              Uint8List.fromList(List<int>.from(range[1] as List)),
-            ),
+            (_bytes((range as List)[0]), _bytes(range[1])),
         ],
-        predicateBytes: Uint8List.fromList(
-          List<int>.from(arguments[4] as List),
-        ),
+        predicateBytes: _bytes(arguments[4]),
         field: arguments[5] as String,
         covered: arguments[6] as bool,
       );
-      return [for (final bytes in fields) bytes.toList()];
+      return [for (final bytes in fields) bytes];
     case 'snapshotQueryIndexedLimited':
       final pairs = await worker.snapshotQueryIndexedLimited(
         snapshot: _asBigInt(arguments[0]),
         table: arguments[1] as String,
         indexTable: arguments[2] as String,
-        start: Uint8List.fromList(List<int>.from(arguments[3] as List)),
-        end: Uint8List.fromList(List<int>.from(arguments[4] as List)),
-        predicateBytes: Uint8List.fromList(
-          List<int>.from(arguments[5] as List),
-        ),
+        start: _bytes(arguments[3]),
+        end: _bytes(arguments[4]),
+        predicateBytes: _bytes(arguments[5]),
         covered: arguments[6] as bool,
         limit: arguments[7] == null ? null : _asBigInt(arguments[7]),
         offset: _asBigInt(arguments[8]),
       );
       return [
-        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
       ];
     case 'snapshotQuerySorted':
       final pairs = await worker.snapshotQuerySorted(
         snapshot: _asBigInt(arguments[0]),
         table: arguments[1] as String,
-        predicateBytes: Uint8List.fromList(
-          List<int>.from(arguments[2] as List),
-        ),
-        sortSpecBytes: Uint8List.fromList(List<int>.from(arguments[3] as List)),
+        predicateBytes: _bytes(arguments[2]),
+        sortSpecBytes: _bytes(arguments[3]),
         limit: arguments[4] == null ? null : _asBigInt(arguments[4]),
         offset: _asBigInt(arguments[5]),
       );
       return [
-        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
       ];
     case 'snapshotQueryIndexedOrdered':
       final pairs = await worker.snapshotQueryIndexedOrdered(
         snapshot: _asBigInt(arguments[0]),
         table: arguments[1] as String,
         indexTable: arguments[2] as String,
-        start: Uint8List.fromList(List<int>.from(arguments[3] as List)),
-        end: Uint8List.fromList(List<int>.from(arguments[4] as List)),
-        predicateBytes: Uint8List.fromList(
-          List<int>.from(arguments[5] as List),
-        ),
+        start: _bytes(arguments[3]),
+        end: _bytes(arguments[4]),
+        predicateBytes: _bytes(arguments[5]),
         sortField: arguments[6] as String,
         eqBounded: arguments[7] as bool,
         descending: arguments[8] as bool,
@@ -478,7 +464,7 @@ Future<Object?> dispatchNativeWorker(
         offset: _asBigInt(arguments[11]),
       );
       return [
-        for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
       ];
     case 'setCompositeIndexes':
       await worker.setCompositeIndexes(
@@ -549,11 +535,10 @@ Map<String, Object?> _encodeApplyBatchResult(
 ) => <String, Object?>{
   'sequence': result.sequence.toString(),
   'previousValues': [
-    for (final value in result.previousValues) value?.toList(),
+    for (final value in result.previousValues) value,
   ],
   'removedKeys': [
-    for (final (table, key) in result.removedKeys)
-      <Object?>[table, key.toList()],
+    for (final (table, key) in result.removedKeys) <Object?>[table, key],
   ],
   'deltas': [for (final delta in result.deltas) _encodeDelta(delta)],
 };
@@ -562,20 +547,16 @@ Map<String, Object?> _encodeDelta(generated.QueryDelta delta) =>
     <String, Object?>{
       'id': delta.id.toString(),
       'added': [
-        for (final pair in delta.added)
-          <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in delta.added) <Object?>[pair.$1, pair.$2],
       ],
       'updated': [
-        for (final pair in delta.updated)
-          <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in delta.updated) <Object?>[pair.$1, pair.$2],
       ],
       'removed': [
-        for (final pair in delta.removed)
-          <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in delta.removed) <Object?>[pair.$1, pair.$2],
       ],
       'snapshot': [
-        for (final pair in delta.snapshot)
-          <Object?>[pair.$1.toList(), pair.$2.toList()],
+        for (final pair in delta.snapshot) <Object?>[pair.$1, pair.$2],
       ],
       'unchanged': delta.unchanged,
     };

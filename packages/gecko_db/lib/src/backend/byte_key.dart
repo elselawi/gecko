@@ -19,7 +19,11 @@ class ByteKey implements Comparable<ByteKey> {
 
   static Uint8List _copy(List<int> bytes) => Uint8List.fromList(bytes);
 
-  /// The underlying bytes (a fresh copy — do not mutate in place).
+  /// The underlying bytes (a fresh copy — do not mutate in place). The copy
+  /// preserves the public immutability contract: `ByteKey` is exported, and a
+  /// caller mutating the returned list must never corrupt the key's
+  /// equality/ordering. (The boundary-side second copy is removed in the
+  /// transport layer, not here.)
   Uint8List get bytes => Uint8List.fromList(_bytes);
 
   int get length => _bytes.length;
