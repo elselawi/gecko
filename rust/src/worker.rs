@@ -881,7 +881,7 @@ impl RedbWorker {
                         &transaction,
                         &mut index_table,
                         &mut index_meta_deltas,
-                        &index_plan,
+                        index_plan,
                         &operation.table,
                         key,
                         previous.as_deref(),
@@ -946,7 +946,7 @@ impl RedbWorker {
                         &transaction,
                         &mut index_table,
                         &mut index_meta_deltas,
-                        &index_plan,
+                        index_plan,
                         &operation.table,
                         key,
                         previous.as_deref(),
@@ -1003,7 +1003,7 @@ impl RedbWorker {
                                 &transaction,
                                 &mut index_table,
                                 &mut index_meta_deltas,
-                                &index_plan,
+                                index_plan,
                                 &operation.table,
                                 key.value(),
                                 Some(value.value()),
@@ -1070,7 +1070,7 @@ impl RedbWorker {
                                 &transaction,
                                 &mut index_table,
                                 &mut index_meta_deltas,
-                                &index_plan,
+                                index_plan,
                                 &operation.table,
                                 key.value(),
                                 Some(value.value()),
@@ -4724,8 +4724,8 @@ fn union_entry_values<'a>(
 /// Keyed by the entry's encoded prefix; rows with a zero net count are
 /// removed. Used to prove a sort field is complete across the whole table,
 /// which lets the index-ordered path skip its missing-field fallback scan.
-fn apply_index_meta_deltas<'txn>(
-    transaction: &'txn WriteTransaction,
+fn apply_index_meta_deltas(
+    transaction: &WriteTransaction,
     deltas: &HashMap<Vec<u8>, i64>,
     counters: &AtomicCounters
 ) -> Result<(), WorkerError> {
@@ -5158,8 +5158,8 @@ mod tests {
         // second kept its embedded template previous.
         assert_eq!(decode_change_record_previous(&log[0].1), Some(value.clone()));
         assert_eq!(decode_change_record_previous(&log[1].1), Some(value.clone()));
-        assert_eq!(worker.get("__gecko_sync_state", b"state-a").unwrap().is_some(), true);
-        assert_eq!(worker.get("__gecko_sync_state", b"state-b").unwrap().is_some(), true);
+        assert!(worker.get("__gecko_sync_state", b"state-a").unwrap().is_some());
+        assert!(worker.get("__gecko_sync_state", b"state-b").unwrap().is_some());
         let _ = std::fs::remove_file(path);
     }
 

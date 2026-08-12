@@ -526,9 +526,9 @@ impl LiveRegistry {
                 let old = query.rows.remove(&key_bytes).expect("was_present row exists");
                 removed.push((key_bytes.clone(), old));
                 counters.bump(&counters.registry_rows_removed, 1);
-                if query.sorted.is_some() {
+                if let Some(tree) = query.sorted.as_mut() {
                     remove_sorted(
-                        query.sorted.as_mut().expect("sorted tree present"),
+                        tree,
                         &mut query.sorted_keys,
                         &key_bytes,
                     );
