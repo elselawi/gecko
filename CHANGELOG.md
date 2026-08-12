@@ -53,9 +53,14 @@ All notable changes to gecko_db are documented here. The format follows
   collection/id set, a range-based `changesSince(lastSeq)`, orphaned
   attachment detection, and remote-deletion candidate selection now run in
   Rust; Dart only authors the matcher/ID sets and maps results.
-- **Bounded, resumable record migrations**: large record rewrites apply in
-  durable chunks with idempotent resume from a progress marker, instead of
-  building one unbounded op list.
+- **Bounded, resumable record migrations**: large record rewrites now page
+  BOTH the reads and the writes — durable progress is the last processed raw
+  key, and each atomic chunk reads one bounded key-range page strictly after
+  that key (never materializing the table), applies the upgrade transform,
+  and records the new last key, so an interrupted migration resumes exactly
+  where it left off. `RawSnapshot.scan` / `NativeRawSnapshot.scan` gained an
+  optional `limit` argument, and the native range scan stops early at that
+  limit, so callers can page a large table in O(page) memory.
 - **Batched remote-change dedupe**: `applyRemoteTransactional` resolves
   duplicates with one batched snapshot read rather than one point read per
   record.
