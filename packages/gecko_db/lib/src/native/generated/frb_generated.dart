@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -123792924;
+  int get rustContentHash => -2043823353;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -195,6 +195,7 @@ abstract class RustLibApi extends BaseApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   });
 
   Future<List<Uint8List>> crateApiNativeWorkerQueryIndexedDistinct({
@@ -204,6 +205,7 @@ abstract class RustLibApi extends BaseApi {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   });
 
   Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerQueryIndexedLimited({
@@ -213,6 +215,7 @@ abstract class RustLibApi extends BaseApi {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
@@ -223,6 +226,9 @@ abstract class RustLibApi extends BaseApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   });
 
   Future<List<(Uint8List, Uint8List)>> crateApiNativeWorkerQueryIndexedOrdered({
@@ -234,6 +240,8 @@ abstract class RustLibApi extends BaseApi {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
@@ -273,6 +281,12 @@ abstract class RustLibApi extends BaseApi {
     required NativeWorker that,
     required String table,
     required List<String> fields,
+  });
+
+  Future<void> crateApiNativeWorkerSetCompositeIndexes({
+    required NativeWorker that,
+    required String table,
+    required List<List<String>> indexes,
   });
 
   Future<Uint8List?> crateApiNativeWorkerSnapshotGet({
@@ -339,6 +353,7 @@ abstract class RustLibApi extends BaseApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   });
 
   Future<List<Uint8List>> crateApiNativeWorkerSnapshotQueryIndexedDistinct({
@@ -349,6 +364,7 @@ abstract class RustLibApi extends BaseApi {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   });
 
   Future<List<(Uint8List, Uint8List)>>
@@ -360,6 +376,7 @@ abstract class RustLibApi extends BaseApi {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
@@ -372,6 +389,9 @@ abstract class RustLibApi extends BaseApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   });
 
   Future<List<(Uint8List, Uint8List)>>
@@ -385,6 +405,8 @@ abstract class RustLibApi extends BaseApi {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
@@ -1316,6 +1338,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1332,6 +1355,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_bool(covered, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1344,7 +1368,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerQueryIndexedCountConstMeta,
-        argValues: [that, table, indexTable, ranges, predicateBytes],
+        argValues: [that, table, indexTable, ranges, predicateBytes, covered],
         apiImpl: this,
       ),
     );
@@ -1353,7 +1377,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiNativeWorkerQueryIndexedCountConstMeta =>
       const TaskConstMeta(
         debugName: "NativeWorker_query_indexed_count",
-        argNames: ["that", "table", "indexTable", "ranges", "predicateBytes"],
+        argNames: [
+          "that",
+          "table",
+          "indexTable",
+          "ranges",
+          "predicateBytes",
+          "covered",
+        ],
       );
 
   @override
@@ -1364,6 +1395,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1381,6 +1413,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
           sse_encode_String(field, serializer);
+          sse_encode_bool(covered, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1393,7 +1426,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerQueryIndexedDistinctConstMeta,
-        argValues: [that, table, indexTable, ranges, predicateBytes, field],
+        argValues: [
+          that,
+          table,
+          indexTable,
+          ranges,
+          predicateBytes,
+          field,
+          covered,
+        ],
         apiImpl: this,
       ),
     );
@@ -1409,6 +1450,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "ranges",
           "predicateBytes",
           "field",
+          "covered",
         ],
       );
 
@@ -1420,6 +1462,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) {
@@ -1436,6 +1479,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(start, serializer);
           sse_encode_list_prim_u_8_loose(end, serializer);
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_bool(covered, serializer);
           sse_encode_opt_box_autoadd_u_64(limit, serializer);
           sse_encode_u_64(offset, serializer);
           pdeCallFfi(
@@ -1458,6 +1502,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           start,
           end,
           predicateBytes,
+          covered,
           limit,
           offset,
         ],
@@ -1476,6 +1521,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "start",
           "end",
           "predicateBytes",
+          "covered",
           "limit",
           "offset",
         ],
@@ -1488,6 +1534,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1504,6 +1553,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_bool(covered, serializer);
+          sse_encode_opt_box_autoadd_u_64(limit, serializer);
+          sse_encode_u_64(offset, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1517,7 +1569,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerQueryIndexedMultiConstMeta,
-        argValues: [that, table, indexTable, ranges, predicateBytes],
+        argValues: [
+          that,
+          table,
+          indexTable,
+          ranges,
+          predicateBytes,
+          covered,
+          limit,
+          offset,
+        ],
         apiImpl: this,
       ),
     );
@@ -1526,7 +1587,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiNativeWorkerQueryIndexedMultiConstMeta =>
       const TaskConstMeta(
         debugName: "NativeWorker_query_indexed_multi",
-        argNames: ["that", "table", "indexTable", "ranges", "predicateBytes"],
+        argNames: [
+          "that",
+          "table",
+          "indexTable",
+          "ranges",
+          "predicateBytes",
+          "covered",
+          "limit",
+          "offset",
+        ],
       );
 
   @override
@@ -1539,6 +1609,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) {
@@ -1557,6 +1629,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
           sse_encode_String(sortField, serializer);
           sse_encode_bool(eqBounded, serializer);
+          sse_encode_bool(descending, serializer);
+          sse_encode_bool(covered, serializer);
           sse_encode_opt_box_autoadd_u_64(limit, serializer);
           sse_encode_u_64(offset, serializer);
           pdeCallFfi(
@@ -1581,6 +1655,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           predicateBytes,
           sortField,
           eqBounded,
+          descending,
+          covered,
           limit,
           offset,
         ],
@@ -1601,6 +1677,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "predicateBytes",
           "sortField",
           "eqBounded",
+          "descending",
+          "covered",
           "limit",
           "offset",
         ],
@@ -1827,6 +1905,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiNativeWorkerSetCompositeIndexes({
+    required NativeWorker that,
+    required String table,
+    required List<List<String>> indexes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeWorker(
+            that,
+            serializer,
+          );
+          sse_encode_String(table, serializer);
+          sse_encode_list_list_String(indexes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 32,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiNativeWorkerSetCompositeIndexesConstMeta,
+        argValues: [that, table, indexes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNativeWorkerSetCompositeIndexesConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeWorker_set_composite_indexes",
+        argNames: ["that", "table", "indexes"],
+      );
+
+  @override
   Future<Uint8List?> crateApiNativeWorkerSnapshotGet({
     required NativeWorker that,
     required BigInt snapshot,
@@ -1847,7 +1965,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1889,7 +2007,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1933,7 +2051,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1976,7 +2094,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -2020,7 +2138,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 37,
             port: port_,
           );
         },
@@ -2068,7 +2186,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 38,
             port: port_,
           );
         },
@@ -2124,7 +2242,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 39,
             port: port_,
           );
         },
@@ -2154,6 +2272,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2171,10 +2290,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_bool(covered, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2183,7 +2303,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerSnapshotQueryIndexedCountConstMeta,
-        argValues: [that, snapshot, table, indexTable, ranges, predicateBytes],
+        argValues: [
+          that,
+          snapshot,
+          table,
+          indexTable,
+          ranges,
+          predicateBytes,
+          covered,
+        ],
         apiImpl: this,
       ),
     );
@@ -2199,6 +2327,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "indexTable",
           "ranges",
           "predicateBytes",
+          "covered",
         ],
       );
 
@@ -2211,6 +2340,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2229,10 +2359,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
           sse_encode_String(field, serializer);
+          sse_encode_bool(covered, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 41,
             port: port_,
           );
         },
@@ -2249,6 +2380,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           ranges,
           predicateBytes,
           field,
+          covered,
         ],
         apiImpl: this,
       ),
@@ -2267,6 +2399,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "ranges",
           "predicateBytes",
           "field",
+          "covered",
         ],
       );
 
@@ -2280,6 +2413,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) {
@@ -2297,12 +2431,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(start, serializer);
           sse_encode_list_prim_u_8_loose(end, serializer);
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_bool(covered, serializer);
           sse_encode_opt_box_autoadd_u_64(limit, serializer);
           sse_encode_u_64(offset, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 42,
             port: port_,
           );
         },
@@ -2320,6 +2455,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           start,
           end,
           predicateBytes,
+          covered,
           limit,
           offset,
         ],
@@ -2339,6 +2475,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "start",
           "end",
           "predicateBytes",
+          "covered",
           "limit",
           "offset",
         ],
@@ -2353,6 +2490,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -2370,10 +2510,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
+          sse_encode_bool(covered, serializer);
+          sse_encode_opt_box_autoadd_u_64(limit, serializer);
+          sse_encode_u_64(offset, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 43,
             port: port_,
           );
         },
@@ -2383,7 +2526,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiNativeWorkerSnapshotQueryIndexedMultiConstMeta,
-        argValues: [that, snapshot, table, indexTable, ranges, predicateBytes],
+        argValues: [
+          that,
+          snapshot,
+          table,
+          indexTable,
+          ranges,
+          predicateBytes,
+          covered,
+          limit,
+          offset,
+        ],
         apiImpl: this,
       ),
     );
@@ -2399,6 +2552,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "indexTable",
           "ranges",
           "predicateBytes",
+          "covered",
+          "limit",
+          "offset",
         ],
       );
 
@@ -2414,6 +2570,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) {
@@ -2433,12 +2591,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(predicateBytes, serializer);
           sse_encode_String(sortField, serializer);
           sse_encode_bool(eqBounded, serializer);
+          sse_encode_bool(descending, serializer);
+          sse_encode_bool(covered, serializer);
           sse_encode_opt_box_autoadd_u_64(limit, serializer);
           sse_encode_u_64(offset, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 44,
             port: port_,
           );
         },
@@ -2458,6 +2618,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           predicateBytes,
           sortField,
           eqBounded,
+          descending,
+          covered,
           limit,
           offset,
         ],
@@ -2479,6 +2641,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "predicateBytes",
           "sortField",
           "eqBounded",
+          "descending",
+          "covered",
           "limit",
           "offset",
         ],
@@ -2511,7 +2675,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 45,
             port: port_,
           );
         },
@@ -2572,7 +2736,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 46,
             port: port_,
           );
         },
@@ -2627,7 +2791,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 47,
             port: port_,
           );
         },
@@ -2690,7 +2854,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 48,
             port: port_,
           );
         },
@@ -2737,7 +2901,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 49,
             port: port_,
           );
         },
@@ -2788,7 +2952,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2824,7 +2988,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2857,7 +3021,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2895,7 +3059,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 53,
             port: port_,
           );
         },
@@ -3027,6 +3191,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return (raw as List<dynamic>)
         .map(dco_decode_grouped_child_entries)
         .toList();
+  }
+
+  @protected
+  List<List<String>> dco_decode_list_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_list_String).toList();
   }
 
   @protected
@@ -3430,6 +3600,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <GroupedChildEntries>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_grouped_child_entries(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<List<String>> sse_decode_list_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <List<String>>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_list_String(deserializer));
     }
     return ans_;
   }
@@ -3922,6 +4104,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_grouped_child_entries(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_list_String(
+    List<List<String>> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_list_String(item, serializer);
     }
   }
 
@@ -4431,12 +4625,14 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   }) => RustLib.instance.api.crateApiNativeWorkerQueryIndexedCount(
     that: this,
     table: table,
     indexTable: indexTable,
     ranges: ranges,
     predicateBytes: predicateBytes,
+    covered: covered,
   );
 
   /// Direct indexed distinct extraction using one worker-owned read
@@ -4447,6 +4643,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   }) => RustLib.instance.api.crateApiNativeWorkerQueryIndexedDistinct(
     that: this,
     table: table,
@@ -4454,15 +4651,18 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     ranges: ranges,
     predicateBytes: predicateBytes,
     field: field,
+    covered: covered,
   );
 
-  /// direct indexed query with an early LIMIT/OFFSET.
+  /// direct indexed query with an early LIMIT/OFFSET. [covered] skips the
+  /// per-row predicate recheck (Priority 5).
   Future<List<(Uint8List, Uint8List)>> queryIndexedLimited({
     required String table,
     required String indexTable,
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) => RustLib.instance.api.crateApiNativeWorkerQueryIndexedLimited(
@@ -4472,6 +4672,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     start: start,
     end: end,
     predicateBytes: predicateBytes,
+    covered: covered,
     limit: limit,
     offset: offset,
   );
@@ -4482,15 +4683,22 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   }) => RustLib.instance.api.crateApiNativeWorkerQueryIndexedMulti(
     that: this,
     table: table,
     indexTable: indexTable,
     ranges: ranges,
     predicateBytes: predicateBytes,
+    covered: covered,
+    limit: limit,
+    offset: offset,
   );
 
-  /// direct index-ordered sorted query.
+  /// direct index-ordered sorted query. [descending] streams the index in
+  /// reverse (Priority 5); [covered] skips the per-row predicate recheck.
   Future<List<(Uint8List, Uint8List)>> queryIndexedOrdered({
     required String table,
     required String indexTable,
@@ -4499,6 +4707,8 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) => RustLib.instance.api.crateApiNativeWorkerQueryIndexedOrdered(
@@ -4510,6 +4720,8 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     predicateBytes: predicateBytes,
     sortField: sortField,
     eqBounded: eqBounded,
+    descending: descending,
+    covered: covered,
     limit: limit,
     offset: offset,
   );
@@ -4571,6 +4783,17 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     that: this,
     table: table,
     fields: fields,
+  );
+
+  /// Session-scoped composite durable-index declaration: [indexes] is the
+  /// ordered field list of each composite index on [table].
+  Future<void> setCompositeIndexes({
+    required String table,
+    required List<List<String>> indexes,
+  }) => RustLib.instance.api.crateApiNativeWorkerSetCompositeIndexes(
+    that: this,
+    table: table,
+    indexes: indexes,
   );
 
   Future<Uint8List?> snapshotGet({
@@ -4670,14 +4893,15 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     end: end,
   );
 
-  /// snapshot-bound count over durable-index candidates. The complete
-  /// predicate is rechecked in Rust and only the scalar count crosses FRB.
+  /// snapshot-bound count over durable-index candidates. [covered] skips
+  /// the per-row predicate recheck (Priority 5).
   Future<BigInt> snapshotQueryIndexedCount({
     required BigInt snapshot,
     required String table,
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryIndexedCount(
     that: this,
     snapshot: snapshot,
@@ -4685,6 +4909,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     indexTable: indexTable,
     ranges: ranges,
     predicateBytes: predicateBytes,
+    covered: covered,
   );
 
   /// snapshot-bound distinct extraction over durable-index
@@ -4696,6 +4921,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryIndexedDistinct(
     that: this,
     snapshot: snapshot,
@@ -4704,6 +4930,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     ranges: ranges,
     predicateBytes: predicateBytes,
     field: field,
+    covered: covered,
   );
 
   /// Snapshot-bound variant of [Self::query_indexed_limited].
@@ -4714,6 +4941,7 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryIndexedLimited(
@@ -4724,18 +4952,23 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     start: start,
     end: end,
     predicateBytes: predicateBytes,
+    covered: covered,
     limit: limit,
     offset: offset,
   );
 
   /// intersects multiple durable-index candidate ranges in one
-  /// snapshot-bound operation and rechecks the complete predicate in Rust.
+  /// snapshot-bound operation. [covered] skips the per-row predicate
+  /// recheck (Priority 5); [limit]/[offset] apply an early window.
   Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedMulti({
     required BigInt snapshot,
     required String table,
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryIndexedMulti(
     that: this,
     snapshot: snapshot,
@@ -4743,6 +4976,9 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     indexTable: indexTable,
     ranges: ranges,
     predicateBytes: predicateBytes,
+    covered: covered,
+    limit: limit,
+    offset: offset,
   );
 
   /// Snapshot-bound variant of [Self::query_indexed_ordered].
@@ -4755,6 +4991,8 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   }) => RustLib.instance.api.crateApiNativeWorkerSnapshotQueryIndexedOrdered(
@@ -4767,6 +5005,8 @@ class NativeWorkerImpl extends RustOpaque implements NativeWorker {
     predicateBytes: predicateBytes,
     sortField: sortField,
     eqBounded: eqBounded,
+    descending: descending,
+    covered: covered,
     limit: limit,
     offset: offset,
   );

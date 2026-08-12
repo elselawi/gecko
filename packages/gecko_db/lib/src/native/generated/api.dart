@@ -152,6 +152,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   });
 
   /// Direct indexed distinct extraction using one worker-owned read
@@ -162,15 +163,18 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   });
 
-  /// direct indexed query with an early LIMIT/OFFSET.
+  /// direct indexed query with an early LIMIT/OFFSET. [covered] skips the
+  /// per-row predicate recheck (Priority 5).
   Future<List<(Uint8List, Uint8List)>> queryIndexedLimited({
     required String table,
     required String indexTable,
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
@@ -181,9 +185,13 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   });
 
-  /// direct index-ordered sorted query.
+  /// direct index-ordered sorted query. [descending] streams the index in
+  /// reverse (Priority 5); [covered] skips the per-row predicate recheck.
   Future<List<(Uint8List, Uint8List)>> queryIndexedOrdered({
     required String table,
     required String indexTable,
@@ -192,6 +200,8 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
@@ -247,6 +257,13 @@ abstract class NativeWorker implements RustOpaqueInterface {
   Future<void> repairIndex({
     required String table,
     required List<String> fields,
+  });
+
+  /// Session-scoped composite durable-index declaration: [indexes] is the
+  /// ordered field list of each composite index on [table].
+  Future<void> setCompositeIndexes({
+    required String table,
+    required List<List<String>> indexes,
   });
 
   Future<Uint8List?> snapshotGet({
@@ -306,14 +323,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> end,
   });
 
-  /// snapshot-bound count over durable-index candidates. The complete
-  /// predicate is rechecked in Rust and only the scalar count crosses FRB.
+  /// snapshot-bound count over durable-index candidates. [covered] skips
+  /// the per-row predicate recheck (Priority 5).
   Future<BigInt> snapshotQueryIndexedCount({
     required BigInt snapshot,
     required String table,
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
   });
 
   /// snapshot-bound distinct extraction over durable-index
@@ -325,6 +343,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
     required String field,
+    required bool covered,
   });
 
   /// Snapshot-bound variant of [Self::query_indexed_limited].
@@ -335,18 +354,23 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
 
   /// intersects multiple durable-index candidate ranges in one
-  /// snapshot-bound operation and rechecks the complete predicate in Rust.
+  /// snapshot-bound operation. [covered] skips the per-row predicate
+  /// recheck (Priority 5); [limit]/[offset] apply an early window.
   Future<List<(Uint8List, Uint8List)>> snapshotQueryIndexedMulti({
     required BigInt snapshot,
     required String table,
     required String indexTable,
     required List<(Uint8List, Uint8List)> ranges,
     required List<int> predicateBytes,
+    required bool covered,
+    BigInt? limit,
+    required BigInt offset,
   });
 
   /// Snapshot-bound variant of [Self::query_indexed_ordered].
@@ -359,6 +383,8 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    required bool descending,
+    required bool covered,
     BigInt? limit,
     required BigInt offset,
   });
