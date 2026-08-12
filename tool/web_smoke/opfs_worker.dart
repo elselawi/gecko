@@ -80,10 +80,6 @@ Future<void> main() async {
 
     NativeWorker? worker;
     try {
-      // 3. Acquire + register the OPFS handle, then open over it.
-      final opfsError = await registerOpfsHandle(kDbPath);
-      if (opfsError != null) throw StateError(opfsError);
-
       worker = await NativeWorker.open(path: kDbPath, readOnly: false);
 
       // 4. Round-trip a record through the OPFS-backed engine.
@@ -95,7 +91,11 @@ Future<void> main() async {
           value: Uint8List.fromList(<int>[42]),
         ),
       ]);
-      final seq = await worker.applyBatch(encodedOps: Uint8List.fromList(ops));
+      final seq = (await worker.applyBatch(
+        encodedOps: Uint8List.fromList(ops),
+        indexDefinitions: const <(String, List<String>)>[],
+        changeLogMaxEntries: BigInt.zero,
+      )).sequence;
       final value = await worker.get_(
         table: 'smoke',
         key: Uint8List.fromList(<int>[1]),

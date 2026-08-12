@@ -35,7 +35,7 @@ Future<void> main() async {
         value: Uint8List.fromList(<int>[42]),
       ),
     ]);
-    final seq = await client.applyBatch(ops);
+    final seq = (await client.applyBatch(ops)).sequence;
     final readBack = await client.get(table: 'smoke', key: <int>[1]);
     final tables = await client.tables();
     if (seq < 1 ||
