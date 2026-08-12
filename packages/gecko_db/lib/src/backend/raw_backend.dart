@@ -147,13 +147,16 @@ abstract class RawSnapshot {
   Future<List<RawEntry>> getMany(String table, List<ByteKey> keys);
 
   /// Scans keys in [[start], [end]] (inclusive both ends), in ascending
-  /// byte-wise order. Returns key/value pairs.
+  /// byte-wise order. Returns key/value pairs. [limit] bounds the number of
+  /// returned entries; callers can page a large table without materializing
+  /// the full tail in memory.
   Future<List<RawEntry>> scan(
     String table, {
     ByteKey? start,
     ByteKey? end,
     bool startInclusive = true,
     bool endInclusive = true,
+    int? limit,
   });
 
   /// All keys in [table] in ascending order.

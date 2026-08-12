@@ -428,6 +428,23 @@ class NativeWorkerClient {
     return _decodeEntries(result);
   }
 
+  /// Applies mark-synchronizing / mark-synced / mark-failed transitions in
+  /// ONE Rust write transaction (sync state, plus the matching change-log
+  /// records when [updateLog]). Each update is
+  /// `(encodedCollection, encodedRecordId, localMutationId, newStateBytes)`.
+  Future<void> syncTransition(
+    List<(List<int>, List<int>, int, List<int>)> updates, {
+    bool updateLog = false,
+  }) async {
+    await _request('syncTransition', <Object?>[
+      [
+        for (final (collection, recordId, lsn, newState) in updates)
+          <Object?>[collection, recordId, lsn, newState],
+      ],
+      updateLog,
+    ]);
+  }
+
   /// Returns attachment metadata entries whose parent row is missing —
   /// the orphan scan + parent-existence checks run in one Rust read txn.
   Future<List<RawEntry>> orphanedAttachments() async {
@@ -499,8 +516,9 @@ class NativeWorkerClient {
     required String table,
     List<int>? start,
     List<int>? end,
+    int? limit,
   }) async {
-    final result = await _request('rangeScan', <Object?>[table, start, end]);
+    final result = await _request('rangeScan', <Object?>[table, start, end, limit]);
     return [
       for (final pair in (result as List))
         (_copyBytes(pair[0]), _copyBytes(pair[1])),
@@ -697,17 +715,21 @@ class NativeWorkerClient {
   }
 
   /// Scans a range through [snapshot] (a point-in-time MVCC view).
+  /// [limit] bounds the number of returned entries so callers can page a
+  /// large table without materializing the whole tail in memory.
   Future<List<(List<int>, List<int>)>> snapshotRangeScan({
     required int snapshot,
     required String table,
     List<int>? start,
     List<int>? end,
+    int? limit,
   }) async {
     final result = await _request('snapshotRangeScan', <Object?>[
       snapshot,
       table,
       start,
       end,
+      limit,
     ]);
     return [
       for (final pair in (result as List))
@@ -1161,6 +1183,11 @@ class NativeWorkerClient {
   /// Reports physical/logical size and health counters
   Future<StorageStats> storageStats() async =>
       await _request('storageStats', const <Object?>[]) as StorageStats;
+
+  /// The on-disk file length, O(1) — for compaction reporting where the
+  /// logical-size scan is never needed.
+  Future<int> physicalSize() async =>
+      _asInt(await _request('physicalSize', const <Object?>[]));
 
   /// Starts recording physical-work counters in the worker (zero-cost when
   /// off by default). Drain with [takeCounters].

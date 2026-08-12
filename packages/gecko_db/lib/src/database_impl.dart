@@ -248,15 +248,21 @@ class DatabaseImpl implements Database {
       for (final entry in (compositeIndexes ?? const <List<String>>[]))
         List<String>.unmodifiable(entry),
     ];
-    final index = indexFields == null && prefixFields == null && composites.isEmpty
-        ? null
-        : _indexes.putIfAbsent(
-            name,
-            () => CollectionIndex(
-              fields: indexFields ?? const [],
-              prefixFields: prefixFields ?? const [],
-            ),
-          );
+    final declared = indexFields != null || prefixFields != null || composites.isNotEmpty;
+    var index = declared ? _indexes[name] : null;
+    if (declared) {
+      final newFields = indexFields ?? const <String>[];
+      final newPrefixes = [...(prefixFields ?? const <String>[])];
+      if (index == null) {
+        index = CollectionIndex(fields: newFields, prefixFields: newPrefixes);
+        _indexes[name] = index;
+      } else if (!_sameDeclaration(index, newFields, newPrefixes)) {
+        // A later declaration changes the plan: update the declared fields so
+        // the (re)preparation rebuilds with the new definition. Incompatible
+        // declarations are never silently treated as equivalent.
+        index.replaceFields(newFields, newPrefixes);
+      }
+    }
     if (index != null) {
       final registrar = _engine.backend;
       if (registrar case final DurableIndexRegistrar nativeRegistrar) {
@@ -290,50 +296,86 @@ class DatabaseImpl implements Database {
   /// Prepares [index] for queries (native-only). Rust repairs the
   /// durable index from the primary rows in one atomic worker transaction;
   /// no Dart index is built. Coalesced: only the first `collection()` call
-  /// per table runs the repair; later calls observe [CollectionIndex.isReady]
-  /// and skip it. A failed repair never blocks queries — the next
-  /// `collection()` call retries.
+  /// per declaration runs the repair; concurrent calls await the same
+  /// in-flight future. A failed repair leaves the index in the failed state
+  /// (queries fall back to the full-scan path) and the next `collection()`
+  /// call retries.
   Future<void> _prepareIndex(String name, CollectionIndex index) async {
-    if (index.isReady) return;
-    try {
-      final backend = _engine.backend;
-      if (backend is NativeRawBackend) {
-        await backend.repairIndex(
-          table: name,
-          fields: [...index.fields, ...index.prefixFields],
-        );
-      }
-    } catch (_) {
-      // Best-effort drift correction; never block a query on repair failure.
-    } finally {
-      index.markReady();
-    }
+    await index.prepare(
+      fingerprint: _indexFingerprint(name, index),
+      work: () async {
+        final backend = _engine.backend;
+        if (backend is NativeRawBackend) {
+          await backend.repairIndex(
+            table: name,
+            fields: [...index.fields, ...index.prefixFields],
+          );
+        }
+      },
+    );
   }
 
   /// Registers [composites] with the worker, then runs the one-time repair
   /// so composite durable keys are rebuilt from primary rows (Rust derives
   /// expected composite entries from its plan). Coalesced like
-  /// [_prepareIndex]; a failed registration never blocks queries.
+  /// [_prepareIndex]; a failed registration leaves the index failed and the
+  /// next declaration retries.
   Future<void> _prepareCompositesAndIndex(
     String name,
     CollectionIndex index,
     List<List<String>> composites,
   ) async {
-    if (index.isReady) return;
-    try {
-      final backend = _engine.backend;
-      if (backend is NativeRawBackend) {
-        await backend.registerCompositeIndexes(name, composites);
-        await backend.repairIndex(
-          table: name,
-          fields: [...index.fields, ...index.prefixFields],
-        );
-      }
-    } catch (_) {
-      // Best-effort; never block a query on composite setup failure.
-    } finally {
-      index.markReady();
+    await index.prepare(
+      fingerprint: _indexFingerprint(name, index),
+      work: () async {
+        final backend = _engine.backend;
+        if (backend is NativeRawBackend) {
+          await backend.registerCompositeIndexes(name, composites);
+          await backend.repairIndex(
+            table: name,
+            fields: [...index.fields, ...index.prefixFields],
+          );
+        }
+      },
+    );
+  }
+
+  /// Stable fingerprint of the declared single-field, prefix, and composite
+  /// indexes for [name]. Field order is included because composite index
+  /// order is semantic. Used to coalesce preparations (same fingerprint =
+  /// one repair) and to detect incompatible re-declarations.
+  String _indexFingerprint(String name, CollectionIndex index) {
+    final composites = _compositeIndexes[name] ?? const <List<String>>[];
+    final buffer = StringBuffer()
+      ..write('f:')
+      ..write(index.fields.join('\u0001'))
+      ..write('|p:')
+      ..write(index.prefixFields.join('\u0001'));
+    for (final composite in composites) {
+      buffer
+        ..write('|c:')
+        ..write(composite.join('\u0001'));
     }
+    return buffer.toString();
+  }
+
+  /// Whether a (re)declaration of [name] matches the currently stored index
+  /// fields. A mismatch means the plan changed and must be re-prepared, never
+  /// silently treated as equivalent.
+  bool _sameDeclaration(
+    CollectionIndex index,
+    List<String> fields,
+    List<String> prefixFields,
+  ) {
+    if (fields.length != index.fields.length) return false;
+    for (var i = 0; i < fields.length; i++) {
+      if (fields[i] != index.fields[i]) return false;
+    }
+    if (prefixFields.length != index.prefixFields.length) return false;
+    for (var i = 0; i < prefixFields.length; i++) {
+      if (prefixFields[i] != index.prefixFields[i]) return false;
+    }
+    return true;
   }
 
   final Map<String, int> _autoIdCounters = <String, int>{};
@@ -381,7 +423,10 @@ class DatabaseImpl implements Database {
                 )
               : RawDelete(mutation.table, ByteKey(codec.encode(mutation.key))),
       ],
-      previousOperationIndexes: [for (var i = 0; i < mutations.length; i++) i],
+      // No previousOperationIndexes: the bulk caller consumes only
+      // `result.sequence`. The Rust worker still reads each old row for
+      // index maintenance and for the fillPreviousVersion templates below,
+      // but nothing is carried back over the boundary.
       changeTemplates: [
         for (var ordinal = 0; ordinal < mutations.length; ordinal++)
           RawChangeTemplate(
@@ -911,17 +956,18 @@ class _TxnImpl implements Transaction {
       for (final entry in (compositeIndexes ?? const <List<String>>[]))
         List<String>.unmodifiable(entry),
     ];
-    final index = indexFields == null &&
-            prefixFields == null &&
-            composites.isEmpty
-        ? _db._indexes[name]
-        : _db._indexes.putIfAbsent(
-            name,
-            () => CollectionIndex(
-              fields: indexFields ?? const [],
-              prefixFields: prefixFields ?? const [],
-            ),
-          );
+    final declared = indexFields != null || prefixFields != null || composites.isNotEmpty;
+    var index = declared ? _db._indexes[name] : null;
+    if (declared) {
+      final newFields = indexFields ?? const <String>[];
+      final newPrefixes = [...(prefixFields ?? const <String>[])];
+      if (index == null) {
+        index = CollectionIndex(fields: newFields, prefixFields: newPrefixes);
+        _db._indexes[name] = index;
+      } else if (!_db._sameDeclaration(index, newFields, newPrefixes)) {
+        index.replaceFields(newFields, newPrefixes);
+      }
+    }
     if (index != null) {
       final registrar = _db.engine.backend;
       if (registrar case final DurableIndexRegistrar nativeRegistrar) {
@@ -1421,6 +1467,26 @@ class _SyncHookImpl implements SyncHookApi {
         selected.add(record);
       }
       if (selected.isEmpty) return;
+      final backend = _db.engine.backend;
+      if (backend is NativeRawBackend) {
+        // Native transition: sync state (and, when updateLog, every matching
+        // change-log record) is rewritten in ONE Rust write transaction —
+        // the Dart full-log scan + decode + rewrite round trip is eliminated.
+        final updates = <(List<int>, List<int>, int, List<int>)>[];
+        for (final record in selected) {
+          final next = update(record);
+          updates.add((
+            _codec.encode(record.collection!),
+            _codec.encode(record.recordId),
+            record.localMutationId,
+            _codec.encode(_recordToMap(next)),
+          ));
+        }
+        await backend.syncTransition(updates, updateLog: updateLog);
+        return;
+      }
+      // Non-native backends fall back to the Dart scan + batched rewrite for
+      // parity.
       // One pass over the change log, indexed by
       // (collection, recordId, localMutationId), so a bulk transition
       // (e.g. markSynced of thousands of ids) is O(log + ids), never
@@ -1676,15 +1742,13 @@ class _SyncHookImpl implements SyncHookApi {
   @override
   Future<void> storeRemoteVersion(Object? version) async {
     await _db._txnMutex.protect(() async {
-      await _db.engine.commitBatch(
-        (_, __) async => [
-          RawPut(
-            geckoSyncMetaTable,
-            ByteKey(_codec.encode(geckoRemoteVersionKey)),
-            _codec.encode(version),
-          ),
-        ],
-      );
+      await _db.engine.commitBatchNoSnapshot((_) async => [
+        RawPut(
+          geckoSyncMetaTable,
+          ByteKey(_codec.encode(geckoRemoteVersionKey)),
+          _codec.encode(version),
+        ),
+      ]);
     });
   }
 
@@ -1769,15 +1833,13 @@ class _ConflictApiImpl implements ConflictApi {
             remote: request.remote,
             base: request.base,
           );
-          await _db.engine.commitBatch(
-            (_, __) async => [
-              RawPut(
-                geckoConflictTable,
-                ByteKey(_codec.encode(conflictId)),
-                _codec.encode(_conflictToMap(preserved)),
-              ),
-            ],
-          );
+          await _db.engine.commitBatchNoSnapshot((_) async => [
+            RawPut(
+              geckoConflictTable,
+              ByteKey(_codec.encode(conflictId)),
+              _codec.encode(_conflictToMap(preserved)),
+            ),
+          ]);
           return ConflictResolutionResult(
             record: request.record,
             local: local,
@@ -2043,7 +2105,7 @@ class _AttachmentApiImpl implements AttachmentApi {
         final existing = await _readMeta(snapshot, id);
         if (existing != null) return existing;
         await _validateParent(snapshot, parentCollection, parentId);
-        await _db.engine.commitBatch((_, __) async {
+        await _db.engine.commitBatchNoSnapshot((_) async {
           final refCount = await _currentRefCount(snapshot, contentHash);
           return [
             RawPut(
@@ -2117,15 +2179,13 @@ class _AttachmentApiImpl implements AttachmentApi {
           );
         }
         final next = update(existing);
-        await _db.engine.commitBatch(
-          (_, __) async => [
-            RawPut(
-              geckoAttachmentTable,
-              ByteKey(_codec.encode(id)),
-              _codec.encode(_attachmentToMap(next)),
-            ),
-          ],
-        );
+        await _db.engine.commitBatchNoSnapshot((_) async => [
+          RawPut(
+            geckoAttachmentTable,
+            ByteKey(_codec.encode(id)),
+            _codec.encode(_attachmentToMap(next)),
+          ),
+        ]);
         return next;
       } finally {
         await snapshot.dispose();
@@ -2266,7 +2326,7 @@ class _AttachmentApiImpl implements AttachmentApi {
         if (existing == null) return;
         final refCount = await _currentRefCount(snapshot, existing.contentHash);
         final nextHash = refCount > 1 ? refCount - 1 : 0;
-        await _db.engine.commitBatch((_, __) async {
+        await _db.engine.commitBatchNoSnapshot((_) async {
           final ops = <RawOp>[
             RawDelete(geckoAttachmentTable, ByteKey(_codec.encode(id))),
           ];
@@ -2399,15 +2459,13 @@ class _SchemaApiImpl implements SchemaApi {
       try {
         final current = await readFrom(snapshot);
         if (current == version) return;
-        await _db.engine.commitBatch(
-          (_, __) async => [
-            RawPut(
-              geckoSchemaTable,
-              ByteKey(_codec.encode(geckoSchemaVersionKey)),
-              _codec.encode(version),
-            ),
-          ],
-        );
+        await _db.engine.commitBatchNoSnapshot((_) async => [
+          RawPut(
+            geckoSchemaTable,
+            ByteKey(_codec.encode(geckoSchemaVersionKey)),
+            _codec.encode(version),
+          ),
+        ]);
       } finally {
         await snapshot.dispose();
       }
@@ -2453,7 +2511,7 @@ class _SchemaApiImpl implements SchemaApi {
           // Additive fast path: bump the version only; rows are interpreted
           // lazily via 's missing/null/default semantics, so no
           // full-table rewrite is needed.
-          await _stampFrom(snapshot, step.toVersion);
+          await _stampFrom(step.toVersion);
         }
       } catch (error) {
         throw GeckoError(
@@ -2488,8 +2546,8 @@ class _SchemaApiImpl implements SchemaApi {
     return raw == null ? 0 : ((_codec.decode(raw) as num?)?.toInt() ?? 0);
   }
 
-  Future<void> _stampFrom(RawSnapshot snapshot, int version) async {
-    await _db.engine.commitBatch((_, __) async {
+  Future<void> _stampFrom(int version) async {
+    await _db.engine.commitBatchNoSnapshot((_) async {
       return [
         RawPut(
           geckoSchemaTable,
@@ -2502,48 +2560,49 @@ class _SchemaApiImpl implements SchemaApi {
 
   /// Migrates every row of [step]'s rewritten collection in bounded chunks.
   ///
-  /// Each chunk is one atomic batch that (a) rewrites the chunk's records via
-  /// the step's `upgrade` transform and (b) records durable progress for the
-  /// step (its `fromVersion` + the number of rows committed so far) in the
-  /// schema table. The schema version is stamped only after the final chunk.
-  /// A crash mid-migration therefore leaves the version unstamped (the step
-  /// is retried) but resumes from the last committed chunk instead of
-  /// re-rewriting already-upgraded rows — the rewrite is idempotent and
-  /// bounded by [`_migrationChunkSize`] rows per transaction.
+  /// Reads are bounded as well as writes: durable progress is the LAST
+  /// processed raw key (not just a row count), and each chunk is one atomic
+  /// batch that (a) reads one page of at most [_migrationChunkSize] rows via
+  /// a key-range scan starting strictly after that key, (b) rewrites them via
+  /// the step's `upgrade` transform, and (c) records the page's new last key
+  /// as progress in the schema table. Memory stays O(chunk size) — the
+  /// table is never materialized in full. The schema version is stamped only
+  /// after the final page. A crash mid-migration leaves the version
+  /// unstamped (the step is retried) but resumes from the last committed
+  /// page's key instead of re-reading the whole table — the rewrite is
+  /// idempotent and strictly after the recorded key. Rows are key-ordered and
+  /// the transaction mutex prevents concurrent mutation, so the page set is
+  /// stable across chunked commits.
   Future<void> _rewriteRecords(MigrationStep step) async {
     final table = step.collection ?? 'items';
     final progressKey = ByteKey(_codec.encode('migration:${step.name}'));
-    // Snapshot the full sorted entry list once: the write gate + txn mutex
-    // guarantee no concurrent mutation during the migration, so the list is
-    // stable across the chunked commits.
+    // Durable progress is one small point read, never a full-table scan.
     final snapshot = await _db.engine.backend.snapshot();
-    late final List<RawEntry> entries;
-    Map<String, Object?> progress;
+    final Map<String, Object?> progress;
     try {
-      entries = await snapshot.scanAll(table);
       final progressRaw = await snapshot.read(geckoSchemaTable, progressKey);
       progress = progressRaw == null
           ? const <String, Object?>{}
-          : Map<String, Object?>.from(
-              _codec.decode(progressRaw) as Map,
-            );
+          : Map<String, Object?>.from(_codec.decode(progressRaw) as Map);
     } finally {
       await snapshot.dispose();
     }
-    final progressedFrom = progress['from'] as num?;
-    var done = (progress['rows'] as num?)?.toInt() ?? 0;
-    if (progressedFrom == step.fromVersion && done >= entries.length) {
-      // Already fully rewritten by an earlier (possibly interrupted) run.
-      done = entries.length;
-    }
-    while (done < entries.length) {
-      final end = done + _migrationChunkSize > entries.length
-          ? entries.length
-          : done + _migrationChunkSize;
-      final chunk = entries.sublist(done, end);
-      await _db.engine.commitBatch((lsn, _) async {
+    // Progress from an older step generation (different fromVersion) is
+    // ignored: the rewrite restarts from the beginning and overwrites it.
+    final fromMatches = (progress['from'] as num?) == step.fromVersion;
+    var done = fromMatches ? (progress['rows'] as num?)?.toInt() ?? 0 : 0;
+    final lastRaw = fromMatches ? progress['lastKey'] : null;
+    var lastKey = lastRaw is List ? List<int>.from(lastRaw) : null;
+
+    while (true) {
+      final page = await _readMigrationPage(table, lastKey);
+      if (page.isEmpty) break; // No rows remain — the table is fully migrated.
+      // [key.bytes] is already the raw table key — never re-encode it, or
+      // the recorded resume key would not match any real key.
+      final pageLastKey = page.last.key.bytes;
+      await _db.engine.commitBatchNoSnapshot((_) async {
         final ops = <RawOp>[];
-        for (final entry in chunk) {
+        for (final entry in page) {
           final row = _codec.decode(entry.value ?? const []);
           final Object? upgraded;
           try {
@@ -2564,30 +2623,64 @@ class _SchemaApiImpl implements SchemaApi {
             ops.add(RawPut(table, entry.key, _codec.encode(upgraded)));
           }
         }
-        // Durable progress: this chunk is committed and resumable from here.
+        // Durable progress: this page is committed and a restart resumes
+        // strictly after [pageLastKey].
         ops.add(
           RawPut(
             geckoSchemaTable,
             progressKey,
             _codec.encode(<String, Object?>{
               'from': step.fromVersion,
-              'rows': end,
+              'rows': done + page.length,
+              'lastKey': pageLastKey,
             }),
           ),
         );
         return ops;
       });
-      done = end;
+      done += page.length;
+      lastKey = pageLastKey;
     }
-    if (progressedFrom != step.fromVersion || progress['rows'] != entries.length) {
-      // Stamp the schema version only after every chunk is durable.
-      await _db.engine.commitBatch((_, __) async => [
-        RawPut(
-          geckoSchemaTable,
-          ByteKey(_codec.encode(geckoSchemaVersionKey)),
-          _codec.encode(step.toVersion),
-        ),
-      ]);
+
+    // Stamp the schema version only after every page is durable. Reaching
+    // _rewriteRecords means the version was still at fromVersion (migrateStep
+    // rejects any other state), so the stamp is always required — whether
+    // rows were processed this session, by a prior interrupted run, or the
+    // table is empty. The stamp is idempotent.
+    await _db.engine.commitBatchNoSnapshot((_) async => [
+      RawPut(
+        geckoSchemaTable,
+        ByteKey(_codec.encode(geckoSchemaVersionKey)),
+        _codec.encode(step.toVersion),
+      ),
+    ]);
+  }
+
+  /// Reads one bounded migration page: at most [_migrationChunkSize] entries
+  /// from [table] starting at [afterKey] (inclusive). When a prior run
+  /// committed [afterKey] as its last key, that row was already transformed,
+  /// so it is skipped — each row is transformed exactly once.
+  Future<List<RawEntry>> _readMigrationPage(
+    String table,
+    List<int>? afterKey,
+  ) async {
+    final snapshot = await _db.engine.backend.snapshot();
+    try {
+      if (afterKey == null) {
+        return snapshot.scan(table, limit: _migrationChunkSize);
+      }
+      final resumeExists = await snapshot.read(table, ByteKey(afterKey)) != null;
+      final page = await snapshot.scan(
+        table,
+        start: ByteKey(afterKey),
+        limit: _migrationChunkSize + (resumeExists ? 1 : 0),
+      );
+      if (resumeExists && page.isNotEmpty) {
+        return page.sublist(1);
+      }
+      return page;
+    } finally {
+      await snapshot.dispose();
     }
   }
 
@@ -2730,17 +2823,19 @@ class _MaintenanceApiImpl implements MaintenanceApi {
     _state = MaintenanceState.compacting;
     _compactionInFlight = true;
     final stopwatch = Stopwatch()..start();
-    final before = await storageStats();
+    // Compaction reporting needs only the physical file length to compute
+    // reclaimed bytes — the O(1) read, never the full logical-size scan.
+    final before = await backend.physicalSize();
     try {
       // Durable marker: an interruption leaves `compacting`, detected on the
       // next open as `recovering`.
       await _writeMarker(geckoMaintenanceCompacting);
       final madeProgress = await _compactWhenDrained(backend);
-      final after = await storageStats();
+      final after = await backend.physicalSize();
       _compactionCount++;
       _lastCompactionDurationMicros = stopwatch.elapsedMicroseconds;
       _lastCompactionBytesReclaimed =
-          (before.physicalBytes - after.physicalBytes).clamp(0, 1 << 62);
+          (before - after).clamp(0, 1 << 62);
       await _writeMarker(
         madeProgress ? geckoMaintenanceCommitted : geckoMaintenanceIdle,
       );

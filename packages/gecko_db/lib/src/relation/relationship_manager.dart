@@ -255,8 +255,8 @@ class RelationshipManager {
     // Join rows live in a reserved table that the public change feed filters
     // out, so the coordinator publishes an event on the parent collection to
     // keep reactive N:M queries live.
-    await _engine.commitBatch(
-      (lsn, snapshot) async => [
+    await _engine.commitBatchNoSnapshot(
+      (_) async => [
         RawPut(
           table,
           joinKey,
@@ -282,8 +282,8 @@ class RelationshipManager {
     _checkJoinable(relationship);
     final table = _joinTable(relationship);
     final joinKey = _byteOf([leftId, rightId]);
-    await _engine.commitBatch(
-      (lsn, snapshot) async => [RawDelete(table, joinKey)],
+    await _engine.commitBatchNoSnapshot(
+      (_) async => [RawDelete(table, joinKey)],
       buildChanges: (lsn) => [
         Change(
           table: relationship.parentCollection,

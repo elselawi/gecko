@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import '../errors/errors.dart';
 import '../native/generated/api.dart' as generated;
+import '../native/generated/worker.dart' as generated_worker;
 
 /// Dispatches a single [operation] to [worker]. Returns a plain, sendable
 /// value; throws a [GeckoError] (or a raw FRB error) on failure.
@@ -101,6 +102,20 @@ Future<Object?> dispatchNativeWorker(
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
       ];
+    case 'syncTransition':
+      await worker.syncTransition(
+        updates: [
+          for (final u in (arguments[0] as List))
+            generated_worker.SyncTransitionUpdate(
+              collection: _bytes(u[0]),
+              recordId: _bytes(u[1]),
+              localMutationId: _asBigInt(u[2]),
+              newState: _bytes(u[3]),
+            ),
+        ],
+        updateLog: arguments[1] as bool,
+      );
+      return null;
     case 'orphanedAttachments':
       final pairs = await worker.orphanedAttachments();
       return [
@@ -141,6 +156,7 @@ Future<Object?> dispatchNativeWorker(
         table: arguments[0] as String,
         start: arguments[1] == null ? null : _bytes(arguments[1]),
         end: arguments[2] == null ? null : _bytes(arguments[2]),
+        limit: arguments[3] == null ? null : _asBigInt(arguments[3]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -162,6 +178,7 @@ Future<Object?> dispatchNativeWorker(
         table: arguments[1] as String,
         start: arguments[2] == null ? null : _bytes(arguments[2]),
         end: arguments[3] == null ? null : _bytes(arguments[3]),
+        limit: arguments[4] == null ? null : _asBigInt(arguments[4]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -481,6 +498,8 @@ Future<Object?> dispatchNativeWorker(
       return await worker.compact();
     case 'storageStats':
       return await worker.storageStats();
+    case 'physicalSize':
+      return (await worker.physicalSize()).toString();
     case 'enableCounters':
       await worker.enableCounters();
       return null;

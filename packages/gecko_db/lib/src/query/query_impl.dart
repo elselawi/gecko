@@ -30,12 +30,19 @@ class _Decoded {
   final Map<Object?, Object?> row;
 }
 
+/// Lifecycle of a declared durable index within one session.
+enum CollectionIndexState { idle, preparing, ready, failed }
+
 /// Metadata for the declared durable indexes of a collection.
 ///
 /// The declared fields are registered with the native worker so Rust owns
-/// durable index maintenance. [ready] resolves once the one-time per-session
-/// Rust repair has run (so rows written before the index was declared are
-/// covered); queries await it before routing through the durable index.
+/// durable index maintenance. Preparation runs one coalesced Rust repair per
+/// declaration fingerprint: concurrent `collection()` calls for the same
+/// table share one in-flight repair instead of queueing several full repairs.
+/// Queries await [ready] (which settles on success AND failure) and then
+/// consult [state]: only `ready` indexes may route through the durable index;
+/// a `failed` or `preparing` index falls back to the pushed-predicate
+/// full-scan path, never a potentially incomplete durable index.
 class CollectionIndex {
   CollectionIndex({
     required List<String> fields,
@@ -43,20 +50,74 @@ class CollectionIndex {
   }) : fields = List<String>.unmodifiable(fields),
        prefixFields = List<String>.unmodifiable(prefixFields ?? const []);
 
-  final List<String> fields;
-  final List<String> prefixFields;
-  final Completer<void> _ready = Completer<void>();
+  List<String> fields;
+  List<String> prefixFields;
 
-  /// Completes once the durable index has been repaired ( Rust is the
-  /// sole authority; there is no Dart index to build).
-  Future<void> get ready => _ready.future;
+  CollectionIndexState _state = CollectionIndexState.idle;
+  Future<void>? _inflight;
+  String? _fingerprint;
+  Object? _lastError;
 
-  /// Whether the one-time repair for this session has completed.
-  bool get isReady => _ready.isCompleted;
+  CollectionIndexState get state => _state;
+  bool get isReady => _state == CollectionIndexState.ready;
+  bool get isFailed => _state == CollectionIndexState.failed;
 
-  /// Marks the index prepared for queries. Idempotent.
-  void markReady() {
-    if (!_ready.isCompleted) _ready.complete();
+  /// The last preparation error, when [isFailed]. Used by tests to prove a
+  /// failed repair leaves the index unusable (never silently ready).
+  Object? get lastError => _lastError;
+
+  /// Resolves when the current preparation settles. Queries await this before
+  /// deciding whether to use the durable index; the decision is made from
+  /// [state], never from whether this future threw (it never throws).
+  Future<void> get ready => _inflight ?? Future<void>.value();
+
+  /// Replaces the declared fields (single + prefix) when a later declaration
+  /// for the same table changes the plan. Incompatible declarations are never
+  /// silently treated as equivalent; the next [prepare] rebuilds with the new
+  /// definition.
+  void replaceFields(List<String> newFields, List<String> newPrefixFields) {
+    fields = List<String>.unmodifiable(newFields);
+    prefixFields = List<String>.unmodifiable(newPrefixFields);
+  }
+
+  /// Starts (or joins) the coalesced preparation for [fingerprint].
+  ///
+  /// The first declaration starts the repair and stores the in-flight future;
+  /// concurrent declarations with the same fingerprint await the same future
+  /// (one repair, never N). A declaration with a different fingerprint
+  /// replaces the plan: a new preparation begins with the new definition.
+  /// A failed preparation completes waiters but leaves [state] as
+  /// [CollectionIndexState.failed] so queries fall back to the full-scan path
+  /// and a later declaration may retry.
+  Future<void> prepare({
+    required String fingerprint,
+    required Future<void> Function() work,
+  }) {
+    final existing = _inflight;
+    if (_state == CollectionIndexState.preparing && _fingerprint == fingerprint) {
+      return existing!;
+    }
+    if (_state == CollectionIndexState.ready && _fingerprint == fingerprint) {
+      return existing!;
+    }
+    // idle, failed, or a different fingerprint: start a new preparation.
+    _state = CollectionIndexState.preparing;
+    _fingerprint = fingerprint;
+    _lastError = null;
+    final completer = Completer<void>();
+    _inflight = completer.future;
+    Future<void>.sync(work)
+        .then((_) {
+          _state = CollectionIndexState.ready;
+        })
+        .catchError((Object error) {
+          _state = CollectionIndexState.failed;
+          _lastError = error;
+        })
+        .whenComplete(() {
+          if (!completer.isCompleted) completer.complete();
+        });
+    return completer.future;
   }
 }
 
@@ -272,7 +333,10 @@ class QueryImpl<T> implements Query<T> {
   /// covered by the durable declaration, returns `(field, value)` for the
   /// exact Rust index range scan.
   (String, Object?)? _nativeEqProbe(CollectionIndex? idx) {
-    if (idx == null) return null;
+    // Only a `ready` index may route through the durable index: a failed or
+    // still-preparing index must fall back to the pushed-predicate full scan
+    // rather than using a potentially incomplete durable index.
+    if (idx == null || !idx.isReady) return null;
     final eqs = <String, Object?>{
       for (final f in _filters)
         if (f.isIndexUsable) f.field: f.value,
@@ -295,7 +359,7 @@ class QueryImpl<T> implements Query<T> {
   /// only rows that can match. Rust always rechecks the complete predicate,
   /// so even these tight bounds remain correct.
   List<(List<int>, List<int>)>? _nativeIndexedRanges(CollectionIndex? idx) {
-    if (idx == null) return null;
+    if (idx == null || !idx.isReady) return null;
     final ranges = <(List<int>, List<int>)>[];
     for (final f in _filters) {
       if (f.isIndexUsable && idx.fields.contains(f.field)) {
@@ -317,7 +381,7 @@ class QueryImpl<T> implements Query<T> {
   /// bounds prove the whole predicate and Rust may skip the per-row recheck
   /// (Priority 5). Mirrors `Predicate::covers` in Rust.
   bool _indexCoversFilters(CollectionIndex? idx) {
-    if (idx == null || _filters.isEmpty) return false;
+    if (idx == null || !idx.isReady || _filters.isEmpty) return false;
     return _filters.every((f) => idx.fields.contains(f.field));
   }
 
@@ -330,6 +394,11 @@ class QueryImpl<T> implements Query<T> {
   /// trailing range/prefix). Otherwise Rust rechecks the complete predicate.
   (List<String>, (List<int>, List<int>), bool)? _compositeRoute() {
     if (_compositeIndexes.isEmpty || _filters.isEmpty) return null;
+    // Composite durable entries are built by the same one-time repair as the
+    // single-field entries: a failed/preparing index must not serve a
+    // composite route with a possibly incomplete durable index.
+    final secondary = _secondary;
+    if (secondary == null || !secondary.isReady) return null;
     final eqs = <String, Object?>{
       for (final f in _filters)
         if (f.isIndexUsable) f.field: f.value,

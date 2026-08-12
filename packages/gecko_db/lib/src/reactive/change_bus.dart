@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 
 import '../api/change.dart';
 
@@ -109,8 +110,10 @@ class ChangeBus {
       _activeSubscribers++;
       // Explicit bounded queue: events arriving while this subscriber is
       // paused are counted here (stream controllers do not expose their own
-      // buffer depth), so the overflow bound is observable and testable.
-      final pending = <ChangeSet>[];
+      // buffer depth), so the overflow bound is observable and testable. A
+      // ListQueue replays in FIFO order without shifting the list on every
+      // event (the historical `removeAt(0)` was O(n) per replayed event).
+      final pending = ListQueue<ChangeSet>();
       var paused = false;
       var overflowed = false;
       late final StreamSubscription<ChangeSet> sub;
@@ -138,7 +141,7 @@ class ChangeBus {
       controller.onResume = () {
         paused = false;
         while (pending.isNotEmpty) {
-          controller.add(pending.removeAt(0));
+          controller.add(pending.removeFirst());
         }
       };
       controller.onCancel = () {

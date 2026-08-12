@@ -111,6 +111,18 @@ class NativeRawBackend
     }
   }
 
+  /// The on-disk file length, O(1) — for compaction reporting where the
+  /// logical-size scan is never needed.
+  Future<int> physicalSize() async {
+    try {
+      return await _worker.physicalSize();
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
   /// Starts recording physical-work counters in the worker (zero-cost when
   /// off by default). Drain with [takeCounters].
   Future<void> enableCounters() async {
@@ -393,6 +405,23 @@ class NativeRawBackend
   Future<List<RawEntry>> changesSince(int seq) async {
     try {
       return await _worker.changesSince(seq);
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Applies mark-synchronizing / mark-synced / mark-failed transitions in
+  /// ONE Rust write transaction: sync state plus (when [updateLog]) the
+  /// matching change-log records. Each update is
+  /// `(encodedCollection, encodedRecordId, localMutationId, newStateBytes)`.
+  Future<void> syncTransition(
+    List<(List<int>, List<int>, int, List<int>)> updates, {
+    bool updateLog = false,
+  }) async {
+    try {
+      await _worker.syncTransition(updates, updateLog: updateLog);
     } catch (error) {
       throw mapNativeError(
         error,
@@ -840,6 +869,7 @@ class NativeRawSnapshot implements RawSnapshot {
     ByteKey? end,
     bool startInclusive = true,
     bool endInclusive = true,
+    int? limit,
   }) async {
     if (!startInclusive || !endInclusive) {
       final entries = await scanAll(table);
@@ -853,7 +883,7 @@ class NativeRawSnapshot implements RawSnapshot {
             entry.key.compareTo(end) < 0 ||
             (endInclusive && entry.key == end);
         return afterStart && beforeEnd;
-      }).toList();
+      }).take(limit ?? entries.length).toList();
     }
     try {
       final pairs = await _worker.snapshotRangeScan(
@@ -861,6 +891,7 @@ class NativeRawSnapshot implements RawSnapshot {
         table: table,
         start: start?.bytes,
         end: end?.bytes,
+        limit: limit,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
