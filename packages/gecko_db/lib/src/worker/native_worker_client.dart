@@ -23,12 +23,15 @@ import '../errors/native_error.dart';
 import '../native/generated/api.dart' hide ApplyBatchResult;
 import '../native/generated/counters.dart' show WorkCounters;
 import '../native/generated/worker.dart' show StorageStats;
-import '../native/native_resolver.dart' show isWeb;
+import '../native/native_resolver.dart'
+    show isWeb, bundledWebWorkerUrl;
 import '../wire/compatibility.dart';
 import '../native/generated/frb_generated.dart';
 import '../native/external_library_loader.dart' show resolveExternalLibrary;
 import '../native/opfs.dart' show registerOpfsHandle;
 import 'native_dispatch.dart' show dispatchNativeWorker;
+import 'web_worker_client.dart' show WebWorkerClient;
+import 'web_worker_protocol.dart' show WebWorkerRequestSink;
 
 /// Worker-contention measurement over the native isolate request/response
 /// protocol. The worker processes commands serially, so a request enqueued
@@ -71,6 +74,13 @@ class NativeWorkerClient {
   NativeWorkerClient._webDirect() : _isolate = null, _receivePort = null {
     _subscription = null;
   }
+
+  /// Web dedicated-worker delegate. When the public web open path runs on the
+  /// main thread (not inside a Worker — the only context with OPFS sync access
+  /// handles), this is set to a [WebWorkerClient] that proxies every request
+  /// to the in-package worker over the transferable protocol. Requests then
+  /// route through [request] instead of direct FRB dispatch.
+  WebWorkerRequestSink? _webDelegate;
 
   // coverage:ignore-end
 
@@ -164,6 +174,11 @@ class NativeWorkerClient {
   /// `NativeWorker` in the calling isolate (the wasm build is single-threaded,
   /// so a spawned isolate would add nothing). The compatibility handshake is
   /// validated exactly like the native worker path.
+  ///
+  /// On the MAIN thread (not inside a Worker — the only context where OPFS
+  /// synchronous access handles exist), the dedicated in-package worker
+  /// (`web/gecko_db_worker.js`) is provisioned instead, and every request is
+  /// proxied to it over the transferable protocol.
   // coverage:ignore-start web
   static Future<NativeWorkerClient> _openWeb({
     required String path,
@@ -172,6 +187,21 @@ class NativeWorkerClient {
     List<int>? encryptionKey,
     int encryptionKeyGeneration = 1,
   }) async {
+    if (encryptionKey != null) {
+      throw const GeckoError(
+        GeckoErrorType.invalidOperation,
+        'Physical encryption is not supported on Web',
+      );
+    }
+    // Main thread: OPFS sync access handles are worker-only, so provision the
+    // dedicated worker instead of the direct in-isolate engine.
+    if (!WebWorkerClient.isInWorkerContext) {
+      return _openWebWithDedicatedWorker(
+        path: path,
+        readOnly: readOnly,
+        workerUrl: nativeLibraryPath,
+      );
+    }
     final client = NativeWorkerClient._webDirect();
     try {
       await RustLib.init(
@@ -180,15 +210,6 @@ class NativeWorkerClient {
         ),
       );
       // File-backed web databases persist in the Origin Private File System.
-      // Sync access handles are worker-only, so outside a Worker (or in a
-      // non-secure context) this fails with a typed error before touching
-      // anything.
-      if (encryptionKey != null) {
-        throw const GeckoError(
-          GeckoErrorType.invalidOperation,
-          'Physical encryption is not supported on Web',
-        );
-      }
       final opfsError = await registerOpfsHandle(path);
       if (opfsError != null) {
         throw GeckoError(
@@ -197,13 +218,7 @@ class NativeWorkerClient {
           details: <String, Object?>{'path': path},
         );
       }
-      final worker = encryptionKey == null
-          ? await NativeWorker.open(path: path, readOnly: readOnly)
-          : await NativeWorker.openEncrypted(
-              path: path,
-              key: encryptionKey,
-              keyGen: encryptionKeyGeneration,
-            );
+      final worker = await NativeWorker.open(path: path, readOnly: readOnly);
       final handshake = CompatibilityHandshake.decode(
         await worker.compatibilityHandshake(),
       );
@@ -215,6 +230,45 @@ class NativeWorkerClient {
       rethrow;
     }
   }
+
+  /// Provisions the dedicated OPFS worker ([`WebWorkerClient`]) on the main
+  /// thread and returns a client that proxies every request to it. [workerUrl]
+  /// overrides the resolved in-package worker URL (on the web,
+  /// `nativeLibraryPath` doubles as this override).
+  // coverage:ignore-start web
+  static Future<NativeWorkerClient> _openWebWithDedicatedWorker({
+    required String path,
+    required bool readOnly,
+    String? workerUrl,
+  }) async {
+    final client = NativeWorkerClient._webDirect();
+    try {
+      final resolvedUrl = workerUrl ?? await bundledWebWorkerUrl();
+      if (resolvedUrl == null) {
+        throw const GeckoError(
+          GeckoErrorType.invalidOperation,
+          'Could not resolve the gecko_db web worker URL; pass '
+          'DatabaseConfig.nativeLibraryPath to point at it',
+        );
+      }
+      final delegate = await WebWorkerClient.open(
+        workerUrl: resolvedUrl,
+        path: path,
+        readOnly: readOnly,
+      );
+      final handshake = CompatibilityHandshake.decode(delegate.handshake);
+      handshake.validateCompatibility();
+      client._webDelegate = delegate;
+      client._workerIsolateName = 'gecko-web-worker (dedicated)';
+      client._workerAlive = true;
+      if (!client._ready.isCompleted) client._ready.complete();
+      return client;
+    } catch (error) {
+      await client._closeWeb();
+      rethrow;
+    }
+  }
+  // coverage:ignore-end
 
   void _adoptWebWorker(NativeWorker worker) {
     _worker = worker;
@@ -231,9 +285,18 @@ class NativeWorkerClient {
     _finalizer.detach(this);
     final worker = _worker;
     _worker = null;
+    final delegate = _webDelegate;
+    _webDelegate = null;
     if (worker != null) {
       try {
         await worker.close();
+      } catch (_) {
+        // Best effort teardown.
+      }
+    }
+    if (delegate != null) {
+      try {
+        await delegate.close();
       } catch (_) {
         // Best effort teardown.
       }
@@ -302,12 +365,14 @@ class NativeWorkerClient {
     List<int> encodedOps, {
     List<(String, List<String>)> indexDefinitions = const [],
     int changeLogMaxEntries = 0,
+    bool reportRemovedKeys = true,
   }) async {
     final result =
         await _request('applyBatch', <Object?>[
               encodedOps,
               indexDefinitions,
               changeLogMaxEntries,
+              reportRemovedKeys,
             ])
             as Map;
     return _decodeApplyBatchResult(result.cast<String, Object?>());
@@ -320,6 +385,7 @@ class NativeWorkerClient {
     List<String> previousOperationIndexes = const [],
     List<(BigInt, int)> putModes = const [],
     List<PreparedChange> changes = const [],
+    bool reportRemovedKeys = true,
   }) async {
     final result =
         await _request('applyPreparedBatch', <Object?>[
@@ -341,6 +407,7 @@ class NativeWorkerClient {
                     'fillPreviousVersion': change.fillPreviousVersion,
                   },
               ],
+              reportRemovedKeys,
             ])
             as Map;
     return _decodeApplyBatchResult(result.cast<String, Object?>());
@@ -358,6 +425,9 @@ class NativeWorkerClient {
           for (final entry in result['removedKeys'] as List)
             ((entry as List)[0] as String, ByteKey(_copyBytes(entry[1]))),
         ],
+        cleared: [
+          for (final table in result['cleared'] as List) table as String,
+        ],
         deltas: [
           for (final delta in result['deltas'] as List)
             RegistryDelta(
@@ -372,12 +442,16 @@ class NativeWorkerClient {
       );
 
   /// registers a live query with the worker's reactive
-  /// registry, returning the registration id and initial result set.
+  /// registry, returning the registration id and initial result set. A windowed
+  /// query ([limit] is non-null) receives only the ordered slice
+  /// `[offset, offset + limit)`.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) async {
     final result =
         await _request('registerLiveQuery', <Object?>[
@@ -385,6 +459,8 @@ class NativeWorkerClient {
               predicateBytes,
               sortBytes,
               kind,
+              limit,
+              offset,
             ])
             as Map;
     return LiveQueryRegistration(
@@ -402,6 +478,23 @@ class NativeWorkerClient {
   Future<int> liveQueryCount() async {
     final result = await _request('liveQueryCount', const <Object?>[]);
     return int.parse(result as String);
+  }
+
+  /// Scans a metadata table and returns entries whose row matches
+  /// [predicateBytes] — filtering/ordering execute in Rust, so attachment/
+  /// conflict listing never materializes the whole catalog in Dart.
+  Future<List<(List<int>, List<int>)>> metadataQuery({
+    required String table,
+    required List<int> predicateBytes,
+  }) async {
+    final result = await _request('metadataQuery', <Object?>[
+      table,
+      predicateBytes,
+    ]);
+    return [
+      for (final pair in (result as List))
+        (_copyBytes(pair[0]), _copyBytes(pair[1])),
+    ];
   }
 
   /// aggregates pending local changes (dirty, non-remote, sorted by
@@ -517,8 +610,17 @@ class NativeWorkerClient {
     List<int>? start,
     List<int>? end,
     int? limit,
+    bool startInclusive = true,
+    bool endInclusive = true,
   }) async {
-    final result = await _request('rangeScan', <Object?>[table, start, end, limit]);
+    final result = await _request('rangeScan', <Object?>[
+      table,
+      start,
+      end,
+      limit,
+      startInclusive,
+      endInclusive,
+    ]);
     return [
       for (final pair in (result as List))
         (_copyBytes(pair[0]), _copyBytes(pair[1])),
@@ -716,13 +818,17 @@ class NativeWorkerClient {
 
   /// Scans a range through [snapshot] (a point-in-time MVCC view).
   /// [limit] bounds the number of returned entries so callers can page a
-  /// large table without materializing the whole tail in memory.
+  /// large table without materializing the whole tail in memory; the
+  /// inclusive flags map directly onto redb range bounds so exclusive raw
+  /// ranges never fall back to a full scan + Dart filtering.
   Future<List<(List<int>, List<int>)>> snapshotRangeScan({
     required int snapshot,
     required String table,
     List<int>? start,
     List<int>? end,
     int? limit,
+    bool startInclusive = true,
+    bool endInclusive = true,
   }) async {
     final result = await _request('snapshotRangeScan', <Object?>[
       snapshot,
@@ -730,6 +836,8 @@ class NativeWorkerClient {
       start,
       end,
       limit,
+      startInclusive,
+      endInclusive,
     ]);
     return [
       for (final pair in (result as List))
@@ -1151,6 +1259,15 @@ class NativeWorkerClient {
     if (_closed) return;
     // coverage:ignore-start web
     if (isWeb) {
+      final delegate = _webDelegate;
+      if (delegate != null) {
+        unawaited(
+          delegate
+              .request('dropSnapshot', <Object?>[snapshot])
+              .catchError((Object _) => null),
+        );
+        return;
+      }
       final worker = _worker;
       if (worker == null) return;
       unawaited(
@@ -1265,6 +1382,11 @@ class NativeWorkerClient {
     }
     // coverage:ignore-start web
     if (isWeb) {
+      final delegate = _webDelegate;
+      if (delegate != null) {
+        // Dedicated-worker mode: proxy to the in-package OPFS worker.
+        return delegate.request(operation, arguments);
+      }
       final worker = _worker;
       if (worker == null) {
         return Future<Object?>.error(

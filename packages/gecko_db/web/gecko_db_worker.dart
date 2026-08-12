@@ -42,14 +42,16 @@ import 'package:gecko_db/src/worker/native_dispatch.dart'
     show dispatchNativeWorker;
 import 'package:gecko_db/src/worker/web_worker_protocol.dart';
 
-/// Builds a JS `Uint8Array` from [bytes] for binary postMessage leaves.
+/// Builds a JS `Uint8Array` from [bytes] for binary postMessage leaves using a
+/// BULK copy: `Uint8List.toJS` copies the whole span into a JS `ArrayBuffer` in
+/// one C-level call, then the array is viewed as a `Uint8Array` — no per-byte
+/// Dart→JS property writes. The returned buffer is a fresh JS copy (the Dart
+/// bytes stay owned by the caller); it may be transferred via `postMessage`,
+/// which detaches the JS buffer — callers must not reuse it after posting.
 JSObject _newUint8Array(Uint8List bytes) {
   final ctor = globalContext.getProperty('Uint8Array'.toJS) as JSFunction;
-  final arr = ctor.callAsFunction(null, bytes.length.toJS) as JSObject;
-  for (var i = 0; i < bytes.length; i++) {
-    arr.setProperty(i.toString().toJS, bytes[i].toJS);
-  }
-  return arr;
+  final buffer = bytes.toJS;
+  return ctor.callAsFunction(null, buffer) as JSObject;
 }
 
 /// Converts a binary-encoded response map into a JS message with transferable

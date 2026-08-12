@@ -32,6 +32,9 @@ Future<Object?> dispatchNativeWorker(
             _decodeIndexDefinition(definition),
         ],
         changeLogMaxEntries: _asBigInt(arguments.length > 2 ? arguments[2] : 0),
+        reportRemovedKeys: arguments.length > 3
+            ? arguments[3] as bool
+            : true,
       );
       return _encodeApplyBatchResult(result);
     case 'applyPreparedBatch':
@@ -63,6 +66,9 @@ Future<Object?> dispatchNativeWorker(
               fillPreviousVersion: change['fillPreviousVersion'] as bool,
             ),
         ],
+        reportRemovedKeys: arguments.length > 6
+            ? arguments[6] as bool
+            : true,
       );
       return _encodeApplyBatchResult(result);
     case 'registerLiveQuery':
@@ -71,6 +77,8 @@ Future<Object?> dispatchNativeWorker(
         predicateBytes: _bytes(arguments[1]),
         sortBytes: _bytes(arguments[2]),
         kind: arguments[3] as int,
+        limit: arguments[4] == null ? null : _asBigInt(arguments[4]),
+        offset: _asBigInt(arguments[5]),
       );
       return <String, Object?>{
         'id': result.id.toString(),
@@ -83,6 +91,14 @@ Future<Object?> dispatchNativeWorker(
       return null;
     case 'liveQueryCount':
       return (await worker.liveQueryCount()).toString();
+    case 'metadataQuery':
+      final pairs = await worker.metadataQuery(
+        table: arguments[0] as String,
+        predicateBytes: _bytes(arguments[1]),
+      );
+      return [
+        for (final pair in pairs) <Object?>[pair.$1, pair.$2],
+      ];
     case 'pendingChanges':
       final pairs = await worker.pendingChanges();
       return [
@@ -157,6 +173,8 @@ Future<Object?> dispatchNativeWorker(
         start: arguments[1] == null ? null : _bytes(arguments[1]),
         end: arguments[2] == null ? null : _bytes(arguments[2]),
         limit: arguments[3] == null ? null : _asBigInt(arguments[3]),
+        startInclusive: arguments[4] as bool,
+        endInclusive: arguments[5] as bool,
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -179,6 +197,8 @@ Future<Object?> dispatchNativeWorker(
         start: arguments[2] == null ? null : _bytes(arguments[2]),
         end: arguments[3] == null ? null : _bytes(arguments[3]),
         limit: arguments[4] == null ? null : _asBigInt(arguments[4]),
+        startInclusive: arguments[5] as bool,
+        endInclusive: arguments[6] as bool,
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -559,6 +579,7 @@ Map<String, Object?> _encodeApplyBatchResult(
   'removedKeys': [
     for (final (table, key) in result.removedKeys) <Object?>[table, key],
   ],
+  'cleared': [for (final table in result.cleared) table],
   'deltas': [for (final delta in result.deltas) _encodeDelta(delta)],
 };
 

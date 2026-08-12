@@ -20,6 +20,14 @@ void main() {
       expect(await bundledWebGluePrefix(), isNull);
     });
 
+    test('WebWorkerClient.isInWorkerContext is false on the VM', () {
+      expect(WebWorkerClient.isInWorkerContext, isFalse);
+    });
+
+    test('bundledWebWorkerUrl is null on the VM (no web worker asset)', () async {
+      expect(await bundledWebWorkerUrl(), isNull);
+    });
+
     test('registerOpfsHandle reports OPFS as web-only on the VM', () async {
       final error = await registerOpfsHandle('vm.db');
       expect(error, isNotNull);

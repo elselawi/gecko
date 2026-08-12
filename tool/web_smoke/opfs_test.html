@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>gecko_db OPFS worker smoke</title>
+</head>
+
+<body>
+    <pre id="out">loading…</pre>
+    <script>
+        // Spawns the OPFS worker (opfs_worker.js) and mirrors its postMessage
+        // lines into #out so the CDP driver can read the markers.
+        const out = document.getElementById('out');
+        const w = new Worker('opfs_worker.js');
+        w.onmessage = (e) => {
+            out.textContent = out.textContent + '\n' + String(e.data);
+        };
+        w.onerror = (e) => {
+            out.textContent = out.textContent + '\nOPFS-SMOKE-FAIL: ' + e.message;
+        };
+    </script>
+</body>
+
+</html>

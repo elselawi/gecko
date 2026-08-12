@@ -4,6 +4,7 @@ library;
 import '../backend/raw_backend.dart';
 import '../native/generated/api.dart' show PreparedChange;
 import '../native/generated/worker.dart' show StorageStats;
+import 'web_worker_protocol.dart' show WebWorkerRequestSink;
 
 /// Throws on the VM — the web-worker client is web-only (see the web
 /// implementation in `web_worker_client_web.dart`).
@@ -16,8 +17,12 @@ Never _unsupported() => throw UnsupportedError(
 // (tool/web_smoke). On the VM every method throws _unsupported, so these
 // stubs are never exercised by `dart test` and would drag down the aggregate
 // line coverage without adding any real protection.
-class WebWorkerClient {
+class WebWorkerClient implements WebWorkerRequestSink {
   WebWorkerClient._();
+
+  /// Whether the current web execution context is a Web Worker (the only
+  /// context with OPFS sync access handles). Always false on the VM.
+  static bool get isInWorkerContext => false;
 
   static Future<WebWorkerClient> open({
     required String workerUrl,
@@ -29,10 +34,21 @@ class WebWorkerClient {
     _unsupported();
   }
 
+  @override
+  Future<Object?> request(String operation, List<Object?> arguments) async =>
+      _unsupported();
+
+  @override
+  String get handshake => _unsupported();
+
+  @override
+  Future<void> close() async => _unsupported();
+
   Future<ApplyBatchResult> applyBatch(
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
     int changeLogMaxEntries = 0,
+    bool reportRemovedKeys = true,
   }) async => _unsupported();
 
   Future<ApplyBatchResult> applyPreparedBatch(
@@ -42,12 +58,15 @@ class WebWorkerClient {
     List<String> previousOperationIndexes = const [],
     List<(BigInt, int)> putModes = const [],
     List<PreparedChange> changes = const [],
+    bool reportRemovedKeys = true,
   }) async => _unsupported();
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) async => _unsupported();
   Future<void> unregisterLiveQuery(int id) async => _unsupported();
   Future<int> liveQueryCount() async => _unsupported();
@@ -105,7 +124,6 @@ class WebWorkerClient {
   Future<bool> compact() async => _unsupported();
   Future<StorageStats> storageStats() async => _unsupported();
   Future<String> compatibilityHandshake() async => _unsupported();
-  Future<void> close() async => _unsupported();
 }
 
 // coverage:ignore-end web

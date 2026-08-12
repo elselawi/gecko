@@ -304,12 +304,16 @@ class _ThrowingBatchBackend implements RawBackend {
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) =>
       _delegate.registerLiveQuery(
         table: table,
         predicateBytes: predicateBytes,
         sortBytes: sortBytes,
         kind: kind,
+        limit: limit,
+        offset: offset,
       );
 
   @override

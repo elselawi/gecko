@@ -6,6 +6,7 @@ Live browser validation of the web target Two suites:
 |---|---|---|---|
 | OPFS worker | `opfs_worker.dart` | `OPFS-SMOKE-OK` | In a real **Web Worker**: glue loaded via `importScripts`, FRB initialized, OPFS `FileSystemSyncAccessHandle` acquired + registered, `NativeWorker.open` over OPFS, applyBatch/get round-trip, deterministic close, reopen. |
 | Reusable worker client | `web_worker_smoke.dart` + `gecko_db_worker_test.html` | `GECKO-WORKER-OK` | Main-thread `WebWorkerClient` spawns the **in-package** worker (`packages/gecko_db/web/gecko_db_worker.dart`) and drives the full protocol over OPFS: open → applyBatch → get → tables → close → reopen. |
+| Public open path | `public_open_smoke.dart` + `public_open_test.html` | `GECKO-PUBLIC-OPEN-OK` | Main-thread **public `Database.open`** provisions the dedicated worker automatically (OPFS sync handles are worker-only): open → put/get → query → watch → close → reopen → worker-startup-failure is a typed error. |
 
 > there is no in-memory or `:memory:` mode. Every supported web store is
 > an OPFS file opened from inside a Web Worker (OPFS sync access handles are
@@ -40,6 +41,7 @@ This emits `build/native/gecko_db_rust.js` + `gecko_db_rust_bg.wasm`
 ```powershell
 dart compile js tool/web_smoke/opfs_worker.dart -o build/web_smoke/opfs_worker.js
 dart compile js tool/web_smoke/web_worker_smoke.dart -o build/web_smoke/web_worker_smoke.js
+dart compile js tool/web_smoke/public_open_smoke.dart -o build/web_smoke/public_open_smoke.js
 dart compile js packages/gecko_db/web/gecko_db_worker.dart -o build/web_smoke/gecko_db_worker.js
 ```
 
@@ -72,6 +74,7 @@ Remove-Item build/cdp_profile -Recurse -ErrorAction SilentlyContinue
 # 2. Drive each suite (exit 0 on the marker):
 node tool/web_smoke/cdp_drive.mjs http://localhost:8080/opfs_test.html OPFS-SMOKE-OK OPFS-SMOKE-FAIL
 node tool/web_smoke/cdp_drive.mjs http://localhost:8080/gecko_db_worker_test.html GECKO-WORKER-OK GECKO-WORKER-FAIL
+node tool/web_smoke/cdp_drive.mjs http://localhost:8080/public_open_test.html GECKO-PUBLIC-OPEN-OK GECKO-PUBLIC-OPEN-FAIL
 ```
 
 > Note: OPFS allows only one sync-access handle per file at a time. The worker
@@ -88,3 +91,8 @@ node tool/web_smoke/cdp_drive.mjs http://localhost:8080/gecko_db_worker_test.htm
   `web.window`, so a Worker also needs `self.window = self`.
 - Initialize the module with the **string** wasm URL, not the
   `{module_or_path}` object form.
+- The public web open path runs **direct-mode** only inside a Worker (where
+  OPFS sync access handles exist). On the **main thread** it provisions the
+  dedicated worker automatically; `DatabaseConfig.nativeLibraryPath` on the
+  web overrides the resolved worker URL (`packages/gecko_db/web/
+  gecko_db_worker.js`).

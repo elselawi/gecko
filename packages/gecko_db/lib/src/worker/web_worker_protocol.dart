@@ -28,6 +28,22 @@ const String b64Tag = 'b64';
 /// The wire key used to tag a binary-transfer byte array.
 const String bytesTag = 'bytes';
 
+/// Minimal request surface the native worker client needs from a web-worker
+/// delegate (the dedicated OPFS worker provisioned by the public web open
+/// path). Platform-neutral so the VM stub and the web implementation share it.
+abstract interface class WebWorkerRequestSink {
+  /// Dispatches [operation] (one of the `dispatchNativeWorker` operation
+  /// names) with [arguments] to the worker, returning the decoded result in
+  /// the same shape `dispatchNativeWorker` produces in direct mode.
+  Future<Object?> request(String operation, List<Object?> arguments);
+
+  /// Tears the worker down.
+  Future<void> close();
+
+  /// The compatibility handshake received at open.
+  String get handshake;
+}
+
 /// Encodes [value] (as returned by `dispatchNativeWorker`) into a JSON-safe
 /// form. Byte arrays become `{"b64": ...}` maps; `StorageStats` becomes a
 /// tagged map; lists recurse; strings/ints/bools/null pass through. Big

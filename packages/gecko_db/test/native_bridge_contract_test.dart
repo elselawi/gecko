@@ -282,9 +282,9 @@ void main() {
           predicateBytes: const [1, 0],
           field: 'nick',
         );
-        // The Rust side emits one encoded value per matching row; Dart is
-        // responsible for the final decode + dedup.
-        expect(distinct, hasLength(40));
+        // Rust emits one encoded value per DISTINCT scalar (safe scalars are
+        // deduplicated natively); Dart only decodes the final values.
+        expect(distinct, hasLength(10));
         final unique = {
           for (final bytes in distinct) (_codec.decode(bytes) as String),
         };

@@ -23,14 +23,16 @@ extension type _WorkerCtor._(JSObject _) implements JSObject {
 }
 
 /// Builds a JS `Uint8Array` from [bytes] (the transport's transferable
-/// byte-leaf representation).
+/// byte-leaf representation) using a BULK copy: `Uint8List.toJS` copies the
+/// whole span into a JS `ArrayBuffer` in one C-level call, then the array is
+/// viewed as a `Uint8Array` — no per-byte Dart→JS property writes. The
+/// returned buffer is a fresh JS copy (the Dart bytes stay owned by the
+/// caller); it may be transferred via `postMessage`, which detaches the JS
+/// buffer — callers must not reuse it after posting.
 JSObject _newUint8Array(Uint8List bytes) {
   final ctor = globalContext.getProperty('Uint8Array'.toJS) as JSFunction;
-  final arr = ctor.callAsFunction(null, bytes.length.toJS) as JSObject;
-  for (var i = 0; i < bytes.length; i++) {
-    arr.setProperty(i.toString().toJS, bytes[i].toJS);
-  }
-  return arr;
+  final buffer = bytes.toJS;
+  return ctor.callAsFunction(null, buffer) as JSObject;
 }
 
 /// Converts [message] (a map whose byte leaves are `{"bytes": Uint8List}`)
@@ -74,9 +76,20 @@ JSObject _newUint8Array(Uint8List bytes) {
   return (root, transferables.toJS);
 }
 
-class WebWorkerClient {
+class WebWorkerClient implements WebWorkerRequestSink {
   WebWorkerClient._(this._worker, this._handshake) {
     _subscription = _messages.stream.listen(_handleMessage);
+  }
+
+  /// Whether the current web execution context is a Web Worker. OPFS
+  /// synchronous access handles exist only inside a Worker; on the main
+  /// thread the public open path provisions this dedicated worker instead.
+  static bool get isInWorkerContext {
+    try {
+      return globalContext.hasProperty('WorkerGlobalScope'.toJS).toDart;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// The JS `Worker` object.
@@ -232,6 +245,18 @@ class WebWorkerClient {
     throw StateError(response['error'] as String? ?? 'operation failed');
   }
 
+  /// [`WebWorkerRequestSink`] implementation: dispatches [operation] to the
+  /// worker and returns the decoded value. Used by the native worker client
+  /// when the public web open path provisions this dedicated worker.
+  @override
+  Future<Object?> request(String operation, List<Object?> arguments) =>
+      _request(operation, arguments);
+
+  /// The compatibility handshake received at open (empty if the worker did
+  /// not include one).
+  @override
+  String get handshake => _handshake;
+
   static int _asInt(Object? value) {
     if (value is int) return value;
     if (value is BigInt) return value.toInt();
@@ -245,12 +270,14 @@ class WebWorkerClient {
     List<int> encodedOps, {
     List<List<Object?>> indexDefinitions = const [],
     int changeLogMaxEntries = 0,
+    bool reportRemovedKeys = true,
   }) async {
     final result =
         await _request('applyBatch', <Object?>[
               encodedOps,
               indexDefinitions,
               changeLogMaxEntries,
+              reportRemovedKeys,
             ])
             as Map;
     return _decodeApplyBatchResult(result);
@@ -263,6 +290,7 @@ class WebWorkerClient {
     List<String> previousOperationIndexes = const [],
     List<(BigInt, int)> putModes = const [],
     List<PreparedChange> changes = const [],
+    bool reportRemovedKeys = true,
   }) async {
     final result =
         await _request('applyPreparedBatch', <Object?>[
@@ -284,6 +312,7 @@ class WebWorkerClient {
                     'fillPreviousVersion': change.fillPreviousVersion,
                   },
               ],
+              reportRemovedKeys,
             ])
             as Map;
     return _decodeApplyBatchResult(result);
@@ -304,6 +333,9 @@ class WebWorkerClient {
               ByteKey(List<int>.from(entry[1] as List)),
             ),
         ],
+        cleared: [
+          for (final table in result['cleared'] as List) table as String,
+        ],
         deltas: [
           for (final delta in result['deltas'] as List)
             RegistryDelta(
@@ -318,12 +350,16 @@ class WebWorkerClient {
       );
 
   /// registers a live query with the worker's reactive
-  /// registry, returning the registration id and initial result set.
+  /// registry, returning the registration id and initial result set. A windowed
+  /// query ([limit] is non-null) receives only the ordered slice
+  /// `[offset, offset + limit)`.
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) async {
     final result =
         await _request('registerLiveQuery', <Object?>[
@@ -331,6 +367,8 @@ class WebWorkerClient {
               predicateBytes,
               sortBytes,
               kind,
+              limit,
+              offset,
             ])
             as Map;
     return LiveQueryRegistration(
@@ -398,8 +436,18 @@ class WebWorkerClient {
     required String table,
     List<int>? start,
     List<int>? end,
+    int? limit,
+    bool startInclusive = true,
+    bool endInclusive = true,
   }) async {
-    final result = await _request('rangeScan', <Object?>[table, start, end]);
+    final result = await _request('rangeScan', <Object?>[
+      table,
+      start,
+      end,
+      limit,
+      startInclusive,
+      endInclusive,
+    ]);
     return [
       for (final pair in (result as List))
         (List<int>.from(pair[0] as List), List<int>.from(pair[1] as List)),
@@ -432,12 +480,18 @@ class WebWorkerClient {
     required String table,
     List<int>? start,
     List<int>? end,
+    int? limit,
+    bool startInclusive = true,
+    bool endInclusive = true,
   }) async {
     final result = await _request('snapshotRangeScan', <Object?>[
       snapshot,
       table,
       start,
       end,
+      limit,
+      startInclusive,
+      endInclusive,
     ]);
     return [
       for (final pair in (result as List))
@@ -529,9 +583,8 @@ class WebWorkerClient {
   Future<String> compatibilityHandshake() async =>
       await _request('compatibilityHandshake', const <Object?>[]) as String;
 
-  /// The handshake received at open (empty if the worker did not include one).
-  String get handshake => _handshake;
-
+  /// Tears the worker down. [`WebWorkerRequestSink.close`].
+  @override
   Future<void> close() async {
     if (_closed) return;
     _closed = true;

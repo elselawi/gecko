@@ -449,12 +449,16 @@ class _CountingBackend implements RawBackend, DirectReadBackend, PreparedBatchBa
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    int? limit,
+    int offset = 0,
   }) =>
       _inner.registerLiveQuery(
         table: table,
         predicateBytes: predicateBytes,
         sortBytes: sortBytes,
         kind: kind,
+        limit: limit,
+        offset: offset,
       );
 
   @override
