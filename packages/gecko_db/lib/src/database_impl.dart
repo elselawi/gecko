@@ -1409,22 +1409,26 @@ class _SyncHookImpl implements SyncHookApi {
     bool updateLog = false,
   }) async {
     await _db._txnMutex.protect(() async {
-      final snapshot = await _db.engine.backend.snapshot();
-      try {
-        final stateEntries = await snapshot.scanAll(geckoSyncStateTable);
-        final selected = <ChangeRecord>[];
-        for (final entry in stateEntries) {
-          final record = _recordFromMap(_codec.decode(entry.value ?? const []));
-          if (record.collection == null) continue;
-          if (ids.any((id) => _matches(id, record))) selected.add(record);
-        }
-        if (selected.isEmpty) return;
-        // One pass over the change log, indexed by
-        // (collection, recordId, localMutationId), so a bulk transition
-        // (e.g. markSynced of thousands of ids) is O(log + ids), never
-        // O(ids × log).
-        final logByKey = <String, List<(ByteKey, ChangeRecord)>>{};
-        if (updateLog) {
+      // The sync-state filter runs in Rust: only the matching records cross
+      // the boundary (a large sync-state table is never scanned in Dart).
+      // Non-native backends fall back to a Dart scan for parity.
+      final matchers = _encodeMatchers(ids);
+      final stateEntries = await _syncStateEntries(ids, matchers);
+      final selected = <ChangeRecord>[];
+      for (final entry in stateEntries) {
+        final record = _recordFromMap(_codec.decode(entry.value ?? const []));
+        if (record.collection == null) continue;
+        selected.add(record);
+      }
+      if (selected.isEmpty) return;
+      // One pass over the change log, indexed by
+      // (collection, recordId, localMutationId), so a bulk transition
+      // (e.g. markSynced of thousands of ids) is O(log + ids), never
+      // O(ids × log).
+      final logByKey = <String, List<(ByteKey, ChangeRecord)>>{};
+      if (updateLog) {
+        final snapshot = await _db.engine.backend.snapshot();
+        try {
           for (final entry in await snapshot.scanAll(geckoChangeLogTable)) {
             final record = _recordFromMap(
               _codec.decode(entry.value ?? const []),
@@ -1434,39 +1438,80 @@ class _SyncHookImpl implements SyncHookApi {
                 '${record.collection}|${record.recordId}|${record.localMutationId}';
             (logByKey[key] ??= []).add((entry.key, record));
           }
+        } finally {
+          await snapshot.dispose();
         }
-        await _db.engine.commitBatchNoSnapshot((lsn) async {
-          final ops = <RawOp>[];
-          for (final record in selected) {
-            final next = update(record);
-            ops.add(
-              RawPut(
-                geckoSyncStateTable,
-                _refKey(record.collection!, record.recordId),
-                _codec.encode(_recordToMap(next)),
-              ),
-            );
-            if (updateLog) {
-              final key =
-                  '${record.collection}|${record.recordId}|${record.localMutationId}';
-              for (final (logKey, _)
-                  in logByKey[key] ?? const <(ByteKey, ChangeRecord)>[]) {
-                ops.add(
-                  RawPut(
-                    geckoChangeLogTable,
-                    logKey,
-                    _codec.encode(_recordToMap(next)),
-                  ),
-                );
-              }
+      }
+      await _db.engine.commitBatchNoSnapshot((lsn) async {
+        final ops = <RawOp>[];
+        for (final record in selected) {
+          final next = update(record);
+          ops.add(
+            RawPut(
+              geckoSyncStateTable,
+              _refKey(record.collection!, record.recordId),
+              _codec.encode(_recordToMap(next)),
+            ),
+          );
+          if (updateLog) {
+            final key =
+                '${record.collection}|${record.recordId}|${record.localMutationId}';
+            for (final (logKey, _)
+                in logByKey[key] ?? const <(ByteKey, ChangeRecord)>[]) {
+              ops.add(
+                RawPut(
+                  geckoChangeLogTable,
+                  logKey,
+                  _codec.encode(_recordToMap(next)),
+                ),
+              );
             }
           }
-          return ops;
-        });
-      } finally {
-        await snapshot.dispose();
-      }
+        }
+        return ops;
+      });
     });
+  }
+
+  /// Resolves the sync-state entries matching [ids]. On the native backend
+  /// the filter runs in Rust ([syncStateMatching] with [matchers]); otherwise
+  /// a Dart full scan + [_matches] filter is used for parity.
+  Future<List<RawEntry>> _syncStateEntries(
+    List<Object?> ids,
+    List<List<int>> matchers,
+  ) async {
+    final backend = _db.engine.backend;
+    if (backend is NativeRawBackend) {
+      return backend.syncStateMatching(matchers);
+    }
+    final entries = await _db.engine.rawScanAll(geckoSyncStateTable);
+    return [
+      for (final entry in entries)
+        if (ids.any((id) => _matches(id, _recordFromMap(_codec.decode(entry.value ?? const [])))))
+          entry,
+    ];
+  }
+
+  /// Encodes [ids] as sync-state matchers for the Rust
+  /// `syncStateMatching` primitive: `0x00 | len | recordIdBytes` for a plain
+  /// id, `0x01 | len | collectionBytes | len | recordIdBytes` for a
+  /// `RecordRef`. Matches are byte-exact against the encoded record fields.
+  List<List<int>> _encodeMatchers(List<Object?> ids) {
+    List<int> u32Prefixed(List<int> bytes) => [
+      (bytes.length >> 24) & 0xFF,
+      (bytes.length >> 16) & 0xFF,
+      (bytes.length >> 8) & 0xFF,
+      bytes.length & 0xFF,
+      ...bytes,
+    ];
+
+    return [
+      for (final id in ids)
+        if (id is RecordRef)
+          <int>[0x01, ...u32Prefixed(_codec.encode(id.collection)), ...u32Prefixed(_codec.encode(id.id))]
+        else
+          <int>[0x00, ...u32Prefixed(_codec.encode(id))],
+    ];
   }
 
   @override
@@ -1478,28 +1523,43 @@ class _SyncHookImpl implements SyncHookApi {
     await _db._txnMutex.protect(() async {
       final snapshot = await _db.engine.backend.snapshot();
       try {
+        // Dedupe lookup is batched: one getMany over the unique
+        // idempotencyKeys instead of one point read per record. Within-batch
+        // duplicates are still dropped (only the first occurrence of a key is
+        // a candidate), preserving the original per-record semantics.
         final accepted = <ChangeRecord>[];
+        final firstOccurrence = <String>{};
         final seenInBatch = <String>{};
         for (final record in records) {
           final key = record.idempotencyKey;
-          if (key == null ||
-              seenInBatch.add(key) &&
-                  await snapshot.read(
-                        geckoSyncDedupeTable,
-                        ByteKey(_codec.encode(key)),
-                      ) ==
-                      null) {
+          if (key == null) {
+            accepted.add(record);
+          } else if (seenInBatch.add(key)) {
+            firstOccurrence.add(key);
             accepted.add(record);
           }
         }
+        final present = <Object?>{};
+        if (firstOccurrence.isNotEmpty) {
+          final hits = await snapshot.getMany(
+            geckoSyncDedupeTable,
+            [
+              for (final key in firstOccurrence)
+                ByteKey(_codec.encode(key)),
+            ],
+          );
+          for (final hit in hits) {
+            present.add(_codec.decode(hit.key.bytes));
+          }
+        }
+        // Drop accepted records whose key is already in the dedupe table.
+        accepted.removeWhere((record) {
+          final key = record.idempotencyKey;
+          return key != null && present.contains(key);
+        });
         for (final record in accepted) {
           final key = record.idempotencyKey;
-          if (key == null ||
-              await snapshot.read(
-                    geckoSyncDedupeTable,
-                    ByteKey(_codec.encode(key)),
-                  ) ==
-                  null) {
+          if (key == null || !present.contains(key)) {
             affected.add(record.recordId);
           }
         }
@@ -1578,7 +1638,12 @@ class _SyncHookImpl implements SyncHookApi {
     if (ids.any((id) => id is RecordRef)) {
       refs.addAll(ids.whereType<RecordRef>());
     } else {
-      final entries = await _db.engine.rawScanAll(geckoSyncStateTable);
+      // Candidate selection runs in Rust: only the sync-state records whose
+      // recordId is in [ids] cross the boundary.
+      final backend = _db.engine.backend;
+      final entries = backend is NativeRawBackend
+          ? await backend.syncStateMatching(_encodeMatchers(ids))
+          : await _db.engine.rawScanAll(geckoSyncStateTable);
       for (final entry in entries) {
         final record = _recordFromMap(_codec.decode(entry.value ?? const []));
         if (record.collection != null && ids.contains(record.recordId)) {
@@ -1626,7 +1691,12 @@ class _SyncHookImpl implements SyncHookApi {
   @override
   Future<List<ChangeRecord>> changesSince(SyncSnapshot snapshot) async {
     _db._assertOpen();
-    final entries = await _db.engine.rawScanAll(geckoChangeLogTable);
+    // The change-log scan + sequence filter run in Rust: only the required
+    // records cross the boundary.
+    final backend = _db.engine.backend;
+    final entries = backend is NativeRawBackend
+        ? await backend.changesSince(snapshot.lastSeq)
+        : await _db.engine.rawScanAll(geckoChangeLogTable);
     final records = <ChangeRecord>[];
     for (final entry in entries) {
       final record = _recordFromMap(_codec.decode(entry.value ?? const []));
@@ -2126,23 +2196,36 @@ class _AttachmentApiImpl implements AttachmentApi {
   @override
   Future<List<AttachmentMetadata>> orphaned() async {
     _db._assertOpen();
-    final scan = await _db.engine.rawScanAll(geckoAttachmentTable);
-    final snapshot = await _db.engine.backend.snapshot();
-    try {
-      final orphans = <AttachmentMetadata>[];
+    // The catalog scan + parent-existence checks run in one Rust read
+    // transaction on the native backend; Dart decodes only the orphans.
+    final backend = _db.engine.backend;
+    final scan = backend is NativeRawBackend
+        ? await backend.orphanedAttachments()
+        : await _db.engine.rawScanAll(geckoAttachmentTable);
+    final orphans = <AttachmentMetadata>[];
+    if (backend is NativeRawBackend) {
       for (final entry in scan) {
-        final meta = _attachmentFromMap(_codec.decode(entry.value ?? const []));
-        final raw = await snapshot.read(
-          meta.parentCollection,
-          ByteKey(_codec.encode(meta.parentId)),
-        );
-        if (raw == null) orphans.add(meta);
+        orphans.add(_attachmentFromMap(_codec.decode(entry.value ?? const [])));
       }
-      orphans.sort((a, b) => a.id.compareTo(b.id));
-      return orphans;
-    } finally {
-      await snapshot.dispose();
+    } else {
+      final snapshot = await _db.engine.backend.snapshot();
+      try {
+        for (final entry in scan) {
+          final meta = _attachmentFromMap(
+            _codec.decode(entry.value ?? const []),
+          );
+          final raw = await snapshot.read(
+            meta.parentCollection,
+            ByteKey(_codec.encode(meta.parentId)),
+          );
+          if (raw == null) orphans.add(meta);
+        }
+      } finally {
+        await snapshot.dispose();
+      }
     }
+    orphans.sort((a, b) => a.id.compareTo(b.id));
+    return orphans;
   }
 
   @override
@@ -2420,49 +2503,97 @@ class _SchemaApiImpl implements SchemaApi {
   /// Migrates every row of [step]'s rewritten collection in bounded chunks.
   ///
   /// Each chunk is one atomic batch that (a) rewrites the chunk's records via
-  /// the step's `upgrade` transform and (b) records that the chunk is done. A
-  /// failure aborts the step and rolls back the current chunk; prior chunks
-  /// stay committed (the step's name/version is recorded per chunk, so an
-  /// interrupted rewrite is resumable and idempotent).
+  /// the step's `upgrade` transform and (b) records durable progress for the
+  /// step (its `fromVersion` + the number of rows committed so far) in the
+  /// schema table. The schema version is stamped only after the final chunk.
+  /// A crash mid-migration therefore leaves the version unstamped (the step
+  /// is retried) but resumes from the last committed chunk instead of
+  /// re-rewriting already-upgraded rows — the rewrite is idempotent and
+  /// bounded by [`_migrationChunkSize`] rows per transaction.
   Future<void> _rewriteRecords(MigrationStep step) async {
     final table = step.collection ?? 'items';
-    await _db.engine.commitBatch((lsn, snapshot) async {
-      final entries = await snapshot.scanAll(table);
-      // The plan's contract is "stream in bounded chunks"; we process entry
-      // by entry inside the metadata transaction, only materializing one
-      // decoded row at a time.
-      final ops = <RawOp>[];
-      for (final entry in entries) {
-        final row = _codec.decode(entry.value ?? const []);
-        final Object? upgraded;
-        try {
-          upgraded = step.upgrade?.call(row);
-        } catch (error) {
-          throw GeckoError(
-            GeckoErrorType.migration,
-            'Migration step "${step.name}" failed on record '
-            '${_db._decodedId(table, entry.key)}: $error',
-            details: <String, Object?>{
-              'step': step.name,
-              'record': _db._decodedId(table, entry.key),
-              'error': '$error',
-            },
-          );
+    final progressKey = ByteKey(_codec.encode('migration:${step.name}'));
+    // Snapshot the full sorted entry list once: the write gate + txn mutex
+    // guarantee no concurrent mutation during the migration, so the list is
+    // stable across the chunked commits.
+    final snapshot = await _db.engine.backend.snapshot();
+    late final List<RawEntry> entries;
+    Map<String, Object?> progress;
+    try {
+      entries = await snapshot.scanAll(table);
+      final progressRaw = await snapshot.read(geckoSchemaTable, progressKey);
+      progress = progressRaw == null
+          ? const <String, Object?>{}
+          : Map<String, Object?>.from(
+              _codec.decode(progressRaw) as Map,
+            );
+    } finally {
+      await snapshot.dispose();
+    }
+    final progressedFrom = progress['from'] as num?;
+    var done = (progress['rows'] as num?)?.toInt() ?? 0;
+    if (progressedFrom == step.fromVersion && done >= entries.length) {
+      // Already fully rewritten by an earlier (possibly interrupted) run.
+      done = entries.length;
+    }
+    while (done < entries.length) {
+      final end = done + _migrationChunkSize > entries.length
+          ? entries.length
+          : done + _migrationChunkSize;
+      final chunk = entries.sublist(done, end);
+      await _db.engine.commitBatch((lsn, _) async {
+        final ops = <RawOp>[];
+        for (final entry in chunk) {
+          final row = _codec.decode(entry.value ?? const []);
+          final Object? upgraded;
+          try {
+            upgraded = step.upgrade?.call(row);
+          } catch (error) {
+            throw GeckoError(
+              GeckoErrorType.migration,
+              'Migration step "${step.name}" failed on record '
+              '${_db._decodedId(table, entry.key)}: $error',
+              details: <String, Object?>{
+                'step': step.name,
+                'record': _db._decodedId(table, entry.key),
+                'error': '$error',
+              },
+            );
+          }
+          if (upgraded != null) {
+            ops.add(RawPut(table, entry.key, _codec.encode(upgraded)));
+          }
         }
-        if (upgraded != null) {
-          ops.add(RawPut(table, entry.key, _codec.encode(upgraded)));
-        }
-      }
-      ops.add(
+        // Durable progress: this chunk is committed and resumable from here.
+        ops.add(
+          RawPut(
+            geckoSchemaTable,
+            progressKey,
+            _codec.encode(<String, Object?>{
+              'from': step.fromVersion,
+              'rows': end,
+            }),
+          ),
+        );
+        return ops;
+      });
+      done = end;
+    }
+    if (progressedFrom != step.fromVersion || progress['rows'] != entries.length) {
+      // Stamp the schema version only after every chunk is durable.
+      await _db.engine.commitBatch((_, __) async => [
         RawPut(
           geckoSchemaTable,
           ByteKey(_codec.encode(geckoSchemaVersionKey)),
           _codec.encode(step.toVersion),
         ),
-      );
-      return ops;
-    });
+      ]);
+    }
   }
+
+  /// Rows per migration rewrite chunk. Bounds transaction size and the
+  /// progress-granularity of an interrupted migration.
+  static const int _migrationChunkSize = 200;
 }
 
 class _DiagnosticsApiImpl implements DiagnosticsApi {
@@ -2507,6 +2638,7 @@ class _DiagnosticsApiImpl implements DiagnosticsApi {
     lastCompactionDurationMicros: _db.maintenance.lastCompactionDurationMicros,
     lastCompactionBytesReclaimed: _db.maintenance.lastCompactionBytesReclaimed,
     maintenanceState: _db.maintenance.state.name,
+    workerContention: _db.engine.workerContention,
   );
 }
 

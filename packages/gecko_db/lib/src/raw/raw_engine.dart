@@ -8,6 +8,7 @@ library;
 
 import 'dart:async';
 import '../backend/byte_key.dart';
+import '../backend/native_raw_backend.dart' show NativeRawBackend;
 import '../backend/raw_backend.dart';
 import '../cache/lru_cache.dart';
 import '../errors/errors.dart';
@@ -15,6 +16,7 @@ import '../reactive/change_bus.dart';
 import '../api/change.dart';
 import '../api/maintenance.dart';
 import '../wire/wire_codec.dart';
+import '../worker/native_worker_client.dart' show WorkerContention;
 
 /// Strategy for a put when a key already exists.
 enum RawWriteMode {
@@ -126,6 +128,60 @@ class RawEngine {
   Future<List<RawEntry>> pendingChanges() {
     _assertUsable();
     return _backend.pendingChanges();
+  }
+
+  /// Worker-contention measurement (serial-queue depth + service latency);
+  /// empty/default when the backend does not expose a serial worker queue.
+  WorkerContention get workerContention {
+    final backend = _backend;
+    return backend is NativeRawBackend
+        ? backend.workerContention
+        : const WorkerContention(
+            requestCount: 0,
+            queueDepthHighWater: 0,
+            avgServiceMicros: 0,
+            maxServiceMicros: 0,
+          );
+  }
+
+  /// Filters the sync-state table in Rust to the records matching [matchers];
+  /// Dart transforms only the matching records.
+  Future<List<RawEntry>> syncStateMatching(List<List<int>> matchers) {
+    _assertUsable();
+    final backend = _backend;
+    if (backend is NativeRawBackend) {
+      return backend.syncStateMatching(matchers);
+    }
+    throw const GeckoError(
+      GeckoErrorType.invalidOperation,
+      'syncStateMatching requires the native backend',
+    );
+  }
+
+  /// Range-filtered `changesSince(lastSeq)` in Rust.
+  Future<List<RawEntry>> changesSince(int seq) {
+    _assertUsable();
+    final backend = _backend;
+    if (backend is NativeRawBackend) {
+      return backend.changesSince(seq);
+    }
+    throw const GeckoError(
+      GeckoErrorType.invalidOperation,
+      'changesSince requires the native backend',
+    );
+  }
+
+  /// Attachment metadata whose parent row is missing (Rust-side scan).
+  Future<List<RawEntry>> orphanedAttachments() {
+    _assertUsable();
+    final backend = _backend;
+    if (backend is NativeRawBackend) {
+      return backend.orphanedAttachments();
+    }
+    throw const GeckoError(
+      GeckoErrorType.invalidOperation,
+      'orphanedAttachments requires the native backend',
+    );
   }
 
   /// Applies [ops] atomically and forwards any reactive-registry deltas the

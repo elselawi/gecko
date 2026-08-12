@@ -20,7 +20,8 @@ export 'src/api/maintenance.dart'
         QueryStageTimings;
 export 'src/api/transaction.dart' show Transaction;
 export 'src/api/bulk.dart' show BulkMutation, BulkWriteResult;
-export 'src/api/diagnostics.dart' show DiagnosticsApi, DiagnosticsSnapshot;
+export 'src/api/diagnostics.dart'
+    show DiagnosticsApi, DiagnosticsSnapshot, WorkerContention;
 export 'src/api/attachment.dart'
     show
         AttachmentApi,

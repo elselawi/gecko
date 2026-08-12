@@ -303,7 +303,7 @@ void main() {
     });
 
     test(
-      'a large record rewrite applies every row in one bounded batch',
+      'a large record rewrite applies every row in bounded chunks',
       () async {
         final db = await openNativeTestDatabase('mig-large');
         final c = coll(db, 'items');
@@ -331,6 +331,100 @@ void main() {
         );
         expect((await c.get('k0'))!['v2'], isTrue);
         expect((await c.get('k1999'))!['v2'], isTrue);
+        await db.close();
+      },
+    );
+
+    test(
+      'an interrupted record rewrite resumes idempotently from progress',
+      () async {
+        final db = await openNativeTestDatabase('mig-resume');
+        final c = coll(db, 'items');
+        for (var i = 0; i < 500; i++) {
+          await c.put({'id': 'k$i', 'n': i});
+        }
+        // First attempt: chunk 1 (rows 0-200) commits, chunk 2 fails on k250.
+        await expectLater(
+          db.schema.migrateStep(
+            MigrationStep(
+              name: 'resume',
+              fromVersion: 0,
+              toVersion: 1,
+              rewritesRecords: true,
+              collection: 'items',
+              upgrade: (row) {
+                final id = (row as Map)['id'];
+                if (id == 'k250') {
+                  throw StateError('simulated chunk failure');
+                }
+                return {...row, 'v2': true};
+              },
+            ),
+          ),
+          throwsA(
+            isA<GeckoError>().having(
+              (e) => e.type,
+              'type',
+              GeckoErrorType.migration,
+            ),
+          ),
+        );
+        // The failed step must not have stamped the version (still 0), so
+        // migrateStep can be retried.
+        expect(await db.schema.readVersion(), 0);
+        // Retry: only the rows after the committed chunk boundary (200) may
+        // pass through the upgrade again — no re-rewriting of done rows.
+        var retryCalls = 0;
+        await db.schema.migrateStep(
+          MigrationStep(
+            name: 'resume',
+            fromVersion: 0,
+            toVersion: 1,
+            rewritesRecords: true,
+            collection: 'items',
+            upgrade: (row) {
+              retryCalls++;
+              return {...(row as Map), 'v2': true};
+            },
+          ),
+        );
+        expect(
+          retryCalls,
+          lessThanOrEqualTo(500 - 200),
+          reason: 'rows already committed by the failed run must not be '
+              're-rewritten (durable progress resume)',
+        );
+        expect(await db.schema.readVersion(), 1);
+        for (var i = 0; i < 500; i++) {
+          expect(
+            (await c.get('k$i'))!['v2'],
+            isTrue,
+            reason: 'every row must end upgraded',
+          );
+        }
+        // A `migrate()` over the already-completed plan is a no-op: the step
+        // is skipped (version is already 1), so no upgrade calls occur.
+        var thirdCalls = 0;
+        final (applied, version) = await db.schema.migrate(
+          MigrationPlan(
+            targetVersion: 1,
+            steps: [
+            MigrationStep(
+              name: 'resume',
+              fromVersion: 0,
+              toVersion: 1,
+              rewritesRecords: true,
+              collection: 'items',
+              upgrade: (row) {
+                thirdCalls++;
+                return row;
+              },
+            ),
+          ]),
+        );
+        expect(applied, 0, reason: 'completed step is skipped');
+        expect(version, 1);
+        expect(thirdCalls, 0, reason: 'completed step is skipped');
         await db.close();
       },
     );

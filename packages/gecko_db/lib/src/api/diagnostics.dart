@@ -1,6 +1,9 @@
 /// opt-in diagnostics contracts.
 library;
 
+import '../worker/native_worker_client.dart' show WorkerContention;
+export '../worker/native_worker_client.dart' show WorkerContention;
+
 /// A point-in-time diagnostics snapshot. Counters are zero-cost when
 /// diagnostics are disabled because the engine only updates them when enabled.
 class DiagnosticsSnapshot {
@@ -25,6 +28,12 @@ class DiagnosticsSnapshot {
     this.lastCompactionDurationMicros = 0,
     this.lastCompactionBytesReclaimed = 0,
     this.maintenanceState = 'idle',
+    this.workerContention = const WorkerContention(
+      requestCount: 0,
+      queueDepthHighWater: 0,
+      avgServiceMicros: 0,
+      maxServiceMicros: 0,
+    ),
   });
 
   final bool enabled;
@@ -59,6 +68,10 @@ class DiagnosticsSnapshot {
 
   /// Current maintenance state name (`idle|compacting|committed|failed|recovering`).
   final String maintenanceState;
+
+  /// Serial worker queue depth high-water + service latency (native isolate
+  /// worker). Zero when the backend runs in the caller isolate (web).
+  final WorkerContention workerContention;
 
   @override
   String toString() =>

@@ -34,6 +34,9 @@ class NativeRawBackend
   final NativeWorkerClient _worker;
   final bool _readOnly;
 
+  /// Worker-contention measurement (serial-queue depth + service latency).
+  WorkerContention get workerContention => _worker.workerContention;
+
   /// pending-sync change-log retention (0 = disabled); pruned in the
   /// Rust commit path when a batch grows the log beyond this bound.
   final int _changeLogMaxEntries;
@@ -366,6 +369,41 @@ class NativeRawBackend
   Future<List<RawEntry>> pendingChanges() async {
     try {
       return await _worker.pendingChanges();
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// filters the sync-state table in Rust to the records matching [matchers] (plain recordIds and RecordRefs). Dart transforms only the
+  /// matching records — a large sync-state table is never scanned in Dart.
+  Future<List<RawEntry>> syncStateMatching(List<List<int>> matchers) async {
+    try {
+      return await _worker.syncStateMatching(matchers);
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Range-filtered `changesSince(lastSeq)` in Rust; only the required
+  /// change-log records cross the boundary.
+  Future<List<RawEntry>> changesSince(int seq) async {
+    try {
+      return await _worker.changesSince(seq);
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  /// Attachment metadata whose parent row is missing (Rust-side scan).
+  Future<List<RawEntry>> orphanedAttachments() async {
+    try {
+      return await _worker.orphanedAttachments();
     } catch (error) {
       throw mapNativeError(
         error,
