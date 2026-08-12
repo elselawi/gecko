@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -123792924;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2043823353;
 
 // Section: executor
 
@@ -1285,6 +1285,7 @@ fn wire__crate__api__NativeWorker_query_indexed_count_impl(
             let api_index_table = <String>::sse_decode(&mut deserializer);
             let api_ranges = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -1312,6 +1313,7 @@ fn wire__crate__api__NativeWorker_query_indexed_count_impl(
                             api_index_table,
                             api_ranges,
                             api_predicate_bytes,
+                            api_covered,
                         )
                         .await?;
                         Ok(output_ok)
@@ -1352,6 +1354,7 @@ fn wire__crate__api__NativeWorker_query_indexed_distinct_impl(
             let api_ranges = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_field = <String>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -1380,6 +1383,7 @@ fn wire__crate__api__NativeWorker_query_indexed_distinct_impl(
                             api_ranges,
                             api_predicate_bytes,
                             api_field,
+                            api_covered,
                         )
                         .await?;
                         Ok(output_ok)
@@ -1420,6 +1424,7 @@ fn wire__crate__api__NativeWorker_query_indexed_limited_impl(
             let api_start = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_end = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
             let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -1450,6 +1455,7 @@ fn wire__crate__api__NativeWorker_query_indexed_limited_impl(
                             api_start,
                             api_end,
                             api_predicate_bytes,
+                            api_covered,
                             api_limit,
                             api_offset,
                         )
@@ -1491,6 +1497,9 @@ fn wire__crate__api__NativeWorker_query_indexed_multi_impl(
             let api_index_table = <String>::sse_decode(&mut deserializer);
             let api_ranges = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
+            let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
+            let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -1518,6 +1527,9 @@ fn wire__crate__api__NativeWorker_query_indexed_multi_impl(
                             api_index_table,
                             api_ranges,
                             api_predicate_bytes,
+                            api_covered,
+                            api_limit,
+                            api_offset,
                         )
                         .await?;
                         Ok(output_ok)
@@ -1560,6 +1572,8 @@ fn wire__crate__api__NativeWorker_query_indexed_ordered_impl(
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_sort_field = <String>::sse_decode(&mut deserializer);
             let api_eq_bounded = <bool>::sse_decode(&mut deserializer);
+            let api_descending = <bool>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
             let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -1592,6 +1606,8 @@ fn wire__crate__api__NativeWorker_query_indexed_ordered_impl(
                             api_predicate_bytes,
                             api_sort_field,
                             api_eq_bounded,
+                            api_descending,
+                            api_covered,
                             api_limit,
                             api_offset,
                         )
@@ -1901,6 +1917,70 @@ fn wire__crate__api__NativeWorker_repair_index_impl(
                             api_fields,
                         )
                         .await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__NativeWorker_set_composite_indexes_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "NativeWorker_set_composite_indexes",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>,
+            >>::sse_decode(&mut deserializer);
+            let api_table = <String>::sse_decode(&mut deserializer);
+            let api_indexes = <Vec<Vec<String>>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, ()>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, true,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref_mut().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let mut api_that_guard = api_that_guard.unwrap();
+                        let output_ok = Result::<_, ()>::Ok({
+                            crate::api::NativeWorker::set_composite_indexes(
+                                &mut *api_that_guard,
+                                api_table,
+                                api_indexes,
+                            )
+                            .await;
+                        })?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -2397,6 +2477,7 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
             let api_index_table = <String>::sse_decode(&mut deserializer);
             let api_ranges = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -2425,6 +2506,7 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
                             api_index_table,
                             api_ranges,
                             api_predicate_bytes,
+                            api_covered,
                         )
                         .await?;
                         Ok(output_ok)
@@ -2466,6 +2548,7 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
             let api_ranges = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_field = <String>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -2495,6 +2578,7 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
                             api_ranges,
                             api_predicate_bytes,
                             api_field,
+                            api_covered,
                         )
                         .await?;
                         Ok(output_ok)
@@ -2536,6 +2620,7 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
             let api_start = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_end = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
             let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -2567,6 +2652,7 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
                             api_start,
                             api_end,
                             api_predicate_bytes,
+                            api_covered,
                             api_limit,
                             api_offset,
                         )
@@ -2609,6 +2695,9 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
             let api_index_table = <String>::sse_decode(&mut deserializer);
             let api_ranges = <Vec<(Vec<u8>, Vec<u8>)>>::sse_decode(&mut deserializer);
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
+            let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
+            let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -2637,6 +2726,9 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
                             api_index_table,
                             api_ranges,
                             api_predicate_bytes,
+                            api_covered,
+                            api_limit,
+                            api_offset,
                         )
                         .await?;
                         Ok(output_ok)
@@ -2680,6 +2772,8 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_sort_field = <String>::sse_decode(&mut deserializer);
             let api_eq_bounded = <bool>::sse_decode(&mut deserializer);
+            let api_descending = <bool>::sse_decode(&mut deserializer);
+            let api_covered = <bool>::sse_decode(&mut deserializer);
             let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
             let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -2713,6 +2807,8 @@ fn wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
                             api_predicate_bytes,
                             api_sort_field,
                             api_eq_bounded,
+                            api_descending,
+                            api_covered,
                             api_limit,
                             api_offset,
                         )
@@ -3393,6 +3489,18 @@ impl SseDecode for Vec<crate::worker::GroupedChildEntries> {
     }
 }
 
+impl SseDecode for Vec<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<Vec<String>>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<Vec<u8>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3827,104 +3935,110 @@ fn pde_ffi_dispatcher_primary_impl(
             data_len,
         ),
         31 => wire__crate__api__NativeWorker_repair_index_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
-        33 => {
+        32 => wire__crate__api__NativeWorker_set_composite_indexes_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        33 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
+        34 => {
             wire__crate__api__NativeWorker_snapshot_get_many_impl(port, ptr, rust_vec_len, data_len)
         }
-        34 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
+        35 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__api__NativeWorker_snapshot_query_filtered_count_impl(
+        36 => wire__crate__api__NativeWorker_snapshot_query_filtered_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        36 => wire__crate__api__NativeWorker_snapshot_query_filtered_distinct_impl(
+        37 => wire__crate__api__NativeWorker_snapshot_query_filtered_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        37 => wire__crate__api__NativeWorker_snapshot_query_filtered_limited_impl(
+        38 => wire__crate__api__NativeWorker_snapshot_query_filtered_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
+        39 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
+        40 => wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        40 => wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
+        41 => wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
+        42 => wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        42 => wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
+        43 => wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
+        44 => wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => wire__crate__api__NativeWorker_snapshot_query_sorted_impl(
+        45 => wire__crate__api__NativeWorker_snapshot_query_sorted_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        45 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
+        46 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        46 => wire__crate__api__NativeWorker_snapshot_relationship_children_impl(
+        47 => wire__crate__api__NativeWorker_snapshot_relationship_children_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__crate__api__NativeWorker_snapshot_relationship_join_ids_impl(
+        48 => wire__crate__api__NativeWorker_snapshot_relationship_join_ids_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        48 => wire__crate__api__NativeWorker_snapshot_relationship_parent_impl(
+        49 => wire__crate__api__NativeWorker_snapshot_relationship_parent_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__api__NativeWorker_take_counters_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__NativeWorker_unregister_live_query_impl(
+        50 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__NativeWorker_take_counters_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__NativeWorker_unregister_live_query_impl(
             port,
             ptr,
             rust_vec_len,
@@ -4188,6 +4302,16 @@ impl SseEncode for Vec<crate::worker::GroupedChildEntries> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::worker::GroupedChildEntries>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <Vec<String>>::sse_encode(item, serializer);
         }
     }
 }

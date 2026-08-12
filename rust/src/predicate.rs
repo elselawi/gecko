@@ -243,6 +243,22 @@ impl Predicate {
         self.test_bytes_with_scratch(row_bytes, &mut scratch)
     }
 
+    /// True iff the predicate has at least one filter and every filter
+    /// references a field the caller's index serves for this query (Priority
+    /// 5 covers-skip). When true, an index scan whose ranges exactly bound
+    /// every filter is authoritative: the index entry itself proves the
+    /// filters, so the per-row predicate recheck adds no information and can
+    /// be skipped. The durable index is maintained atomically with the rows
+    /// it indexes, so this is sound in production; drift is corrected by
+    /// `repair_index` (the index is the authority for covered predicates).
+    pub fn covers(&self, index_fields: &[String]) -> bool {
+        !self.filters.is_empty()
+            && self
+                .filters
+                .iter()
+                .all(|filter| index_fields.iter().any(|field| field == filter.field()))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.filters.is_empty()
     }

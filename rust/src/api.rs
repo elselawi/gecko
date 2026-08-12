@@ -388,8 +388,15 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
+    /// Session-scoped composite durable-index declaration: [indexes] is the
+    /// ordered field list of each composite index on [table].
+    pub async fn set_composite_indexes(&mut self, table: String, indexes: Vec<Vec<String>>) {
+        self.worker.set_composite_indexes(&table, &indexes);
+    }
+
     /// intersects multiple durable-index candidate ranges in one
-    /// snapshot-bound operation and rechecks the complete predicate in Rust.
+    /// snapshot-bound operation. [covered] skips the per-row predicate
+    /// recheck (Priority 5); [limit]/[offset] apply an early window.
     #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_query_indexed_multi(
         &self,
@@ -397,10 +404,22 @@ impl NativeWorker {
         table: String,
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
-        predicate_bytes: Vec<u8>
+        predicate_bytes: Vec<u8>,
+        covered: bool,
+        limit: Option<u64>,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
-            .snapshot_query_indexed_multi(snapshot, &table, &index_table, &ranges, &predicate_bytes)
+            .snapshot_query_indexed_multi(
+                snapshot,
+                &table,
+                &index_table,
+                &ranges,
+                &predicate_bytes,
+                covered,
+                limit,
+                offset
+            )
             .map_err(encode_worker_error)
     }
 
@@ -411,15 +430,26 @@ impl NativeWorker {
         table: String,
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
-        predicate_bytes: Vec<u8>
+        predicate_bytes: Vec<u8>,
+        covered: bool,
+        limit: Option<u64>,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
-            .query_indexed_multi(&table, &index_table, &ranges, &predicate_bytes)
+            .query_indexed_multi(
+                &table,
+                &index_table,
+                &ranges,
+                &predicate_bytes,
+                covered,
+                limit,
+                offset
+            )
             .map_err(encode_worker_error)
     }
 
-    /// snapshot-bound count over durable-index candidates. The complete
-    /// predicate is rechecked in Rust and only the scalar count crosses FRB.
+    /// snapshot-bound count over durable-index candidates. [covered] skips
+    /// the per-row predicate recheck (Priority 5).
     #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_query_indexed_count(
         &self,
@@ -427,10 +457,18 @@ impl NativeWorker {
         table: String,
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
-        predicate_bytes: Vec<u8>
+        predicate_bytes: Vec<u8>,
+        covered: bool
     ) -> Result<u64, String> {
         self.worker
-            .snapshot_query_indexed_count(snapshot, &table, &index_table, &ranges, &predicate_bytes)
+            .snapshot_query_indexed_count(
+                snapshot,
+                &table,
+                &index_table,
+                &ranges,
+                &predicate_bytes,
+                covered
+            )
             .map_err(encode_worker_error)
     }
 
@@ -441,15 +479,17 @@ impl NativeWorker {
         table: String,
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
-        predicate_bytes: Vec<u8>
+        predicate_bytes: Vec<u8>,
+        covered: bool
     ) -> Result<u64, String> {
         self.worker
-            .query_indexed_count(&table, &index_table, &ranges, &predicate_bytes)
+            .query_indexed_count(&table, &index_table, &ranges, &predicate_bytes, covered)
             .map_err(encode_worker_error)
     }
 
     /// snapshot-bound distinct extraction over durable-index
     /// candidates. Only encoded values for [field] cross FRB.
+    #[allow(clippy::too_many_arguments)]
     pub async fn snapshot_query_indexed_distinct(
         &self,
         snapshot: u64,
@@ -457,7 +497,8 @@ impl NativeWorker {
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
         predicate_bytes: Vec<u8>,
-        field: String
+        field: String,
+        covered: bool
     ) -> Result<Vec<Vec<u8>>, String> {
         self.worker
             .snapshot_query_indexed_distinct(
@@ -466,7 +507,8 @@ impl NativeWorker {
                 &index_table,
                 &ranges,
                 &predicate_bytes,
-                &field
+                &field,
+                covered
             )
             .map_err(encode_worker_error)
     }
@@ -480,10 +522,18 @@ impl NativeWorker {
         index_table: String,
         ranges: Vec<(Vec<u8>, Vec<u8>)>,
         predicate_bytes: Vec<u8>,
-        field: String
+        field: String,
+        covered: bool
     ) -> Result<Vec<Vec<u8>>, String> {
         self.worker
-            .query_indexed_distinct(&table, &index_table, &ranges, &predicate_bytes, &field)
+            .query_indexed_distinct(
+                &table,
+                &index_table,
+                &ranges,
+                &predicate_bytes,
+                &field,
+                covered
+            )
             .map_err(encode_worker_error)
     }
 
@@ -513,7 +563,8 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// direct indexed query with an early LIMIT/OFFSET.
+    /// direct indexed query with an early LIMIT/OFFSET. [covered] skips the
+    /// per-row predicate recheck (Priority 5).
     #[allow(clippy::too_many_arguments)]
     pub async fn query_indexed_limited(
         &self,
@@ -522,6 +573,7 @@ impl NativeWorker {
         start: Vec<u8>,
         end: Vec<u8>,
         predicate_bytes: Vec<u8>,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
@@ -532,6 +584,7 @@ impl NativeWorker {
                 &start,
                 &end,
                 &predicate_bytes,
+                covered,
                 limit,
                 offset
             )
@@ -552,7 +605,8 @@ impl NativeWorker {
             .map_err(encode_worker_error)
     }
 
-    /// direct index-ordered sorted query.
+    /// direct index-ordered sorted query. [descending] streams the index in
+    /// reverse (Priority 5); [covered] skips the per-row predicate recheck.
     #[allow(clippy::too_many_arguments)]
     pub async fn query_indexed_ordered(
         &self,
@@ -563,6 +617,8 @@ impl NativeWorker {
         predicate_bytes: Vec<u8>,
         sort_field: String,
         eq_bounded: bool,
+        descending: bool,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
@@ -575,6 +631,8 @@ impl NativeWorker {
                 &predicate_bytes,
                 &sort_field,
                 eq_bounded,
+                descending,
+                covered,
                 limit,
                 offset
             )
@@ -605,6 +663,7 @@ impl NativeWorker {
         start: Vec<u8>,
         end: Vec<u8>,
         predicate_bytes: Vec<u8>,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
@@ -616,6 +675,7 @@ impl NativeWorker {
                 &start,
                 &end,
                 &predicate_bytes,
+                covered,
                 limit,
                 offset
             )
@@ -656,6 +716,8 @@ impl NativeWorker {
         predicate_bytes: Vec<u8>,
         sort_field: String,
         eq_bounded: bool,
+        descending: bool,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, String> {
@@ -669,6 +731,8 @@ impl NativeWorker {
                 &predicate_bytes,
                 &sort_field,
                 eq_bounded,
+                descending,
+                covered,
                 limit,
                 offset
             )

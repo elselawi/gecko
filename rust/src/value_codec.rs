@@ -290,7 +290,10 @@ impl<'a> ValueReader<'a> {
         self.pos
     }
 
-    fn read_u8(&mut self) -> Result<u8> {
+    /// Reads a single byte. Public so the worker can parse durable-index
+    /// keys (whose trailing record-key element is raw bytes, not a codec
+    /// value — a full `read_value` would reject it).
+    pub fn read_u8(&mut self) -> Result<u8> {
         let b = *self.bytes
             .get(self.pos)
             .ok_or_else(|| DecodeError("Unexpected end of input".into()))?;
@@ -309,7 +312,8 @@ impl<'a> ValueReader<'a> {
         Ok(slice)
     }
 
-    fn read_u32_be(&mut self) -> Result<u32> {
+    /// Reads a big-endian u32. Public for the same reason as [Self::read_u8].
+    pub fn read_u32_be(&mut self) -> Result<u32> {
         let b = self.read_n(4)?;
         Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     }

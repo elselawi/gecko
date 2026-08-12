@@ -159,6 +159,11 @@ pub struct RedbWorker {
     next_snapshot_id: u64,
     /// live-query registry Non-durable; dies with the worker.
     registry: crate::registry::LiveRegistry,
+    /// Session-scoped composite durable-index declarations (table → ordered
+    /// field lists). Sent once per session by the Dart facade; `apply_batch`
+    /// merges them with the flat per-batch `index_definitions` so composite
+    /// keys are maintained atomically with the rows they index.
+    composite_index_plan: HashMap<String, Vec<Vec<String>>>,
     /// Physical-work counters; only touched while enabled (zero-cost off).
     counters: AtomicCounters,
 }
@@ -376,6 +381,7 @@ impl RedbWorker {
                 snapshots: HashMap::new(),
                 next_snapshot_id: 0,
                 registry: crate::registry::LiveRegistry::new(),
+                composite_index_plan: HashMap::new(),
                 counters: AtomicCounters::default(),
             })
         }
@@ -414,6 +420,7 @@ impl RedbWorker {
             snapshots: HashMap::new(),
             next_snapshot_id: 0,
             registry: crate::registry::LiveRegistry::new(),
+            composite_index_plan: HashMap::new(),
             counters: AtomicCounters::default(),
         })
     }
@@ -480,6 +487,7 @@ impl RedbWorker {
             snapshots: HashMap::new(),
             next_snapshot_id: 0,
             registry: crate::registry::LiveRegistry::new(),
+            composite_index_plan: HashMap::new(),
             counters: AtomicCounters::default(),
         })
     }
@@ -667,10 +675,14 @@ impl RedbWorker {
         // separate local (not in `handles`) so index maintenance can borrow it
         // mutably while a user table from `handles` is still being scanned.
         let mut index_table: Option<Table<'_, &'static [u8], &'static [u8]>> = None;
+        // Per-index-entry presence counts (`__gecko_index_meta`), opened
+        // lazily at most once per batch, same borrow discipline as the index.
+        let mut meta_table: Option<Table<'_, &'static [u8], &'static [u8]>> = None;
 
         // Pre-index index definitions by table and pre-encode the stable
-        // [table, field] key prefixes so per-op index maintenance is O(1).
-        let index_plan = IndexPlan::build(index_definitions);
+        // key prefixes (single-field AND session-scoped composite entries) so
+        // per-op index maintenance is O(1).
+        let index_plan = IndexPlan::build(index_definitions, &self.composite_index_plan);
 
         // Scratch reused for every durable-index key built in this batch.
         let mut index_scratch: Vec<u8> = Vec::new();
@@ -765,6 +777,7 @@ impl RedbWorker {
                     maintain_durable_index(
                         &transaction,
                         &mut index_table,
+                        &mut meta_table,
                         &index_plan,
                         &operation.table,
                         key,
@@ -802,6 +815,7 @@ impl RedbWorker {
                     maintain_durable_index(
                         &transaction,
                         &mut index_table,
+                        &mut meta_table,
                         &index_plan,
                         &operation.table,
                         key,
@@ -848,6 +862,7 @@ impl RedbWorker {
                             maintain_durable_index(
                                 &transaction,
                                 &mut index_table,
+                                &mut meta_table,
                                 &index_plan,
                                 &operation.table,
                                 key.value(),
@@ -901,6 +916,7 @@ impl RedbWorker {
                             maintain_durable_index(
                                 &transaction,
                                 &mut index_table,
+                                &mut meta_table,
                                 &index_plan,
                                 &operation.table,
                                 key.value(),
@@ -953,6 +969,7 @@ impl RedbWorker {
         // durability — rollback still undoes everything on error.
         drop(handles);
         drop(index_table);
+        drop(meta_table);
         if change_log_max_entries > 0 && change_log_touched {
             prune_change_log(&transaction, change_log_max_entries, &self.counters)?;
         }
@@ -1275,10 +1292,32 @@ impl RedbWorker {
         self.snapshots.remove(&id);
     }
 
+    /// Session-scoped composite durable-index declaration: [indexes] is the
+    /// ordered field list of each composite index on [table]. Composite keys
+    /// are `[table, f1, v1, f2, v2, ..., recordId]`, so a compound predicate
+    /// whose eq filters cover a composite prefix (plus a range/prefix on the
+    /// trailing field) is answered by ONE ordered index scan instead of N
+    /// single-field ranges + set intersection. The plan is merged into every
+    /// subsequent `apply_batch` (and `repair_index`) so maintenance stays
+    /// atomic with the rows it indexes.
+    pub fn set_composite_indexes(&mut self, table: &str, indexes: &[Vec<String>]) {
+        if table == "__gecko_index" {
+            return;
+        }
+        self.composite_index_plan
+            .insert(
+                table.to_string(),
+                indexes.iter().filter(|index| !index.is_empty()).cloned().collect(),
+            );
+    }
+
     /// verifies and repairs all durable-index entries for [table] in Rust.
-    /// The caller supplies the declared indexed fields; primary rows are the
-    /// source of truth and the repair is committed atomically with no Dart row
-    /// materialization. Index values are the encoded primary record keys.
+    /// The caller supplies the declared indexed fields (single-field entries);
+    /// session-scoped composite declarations are consulted in addition.
+    /// Primary rows are the source of truth and the repair is committed
+    /// atomically with no Dart row materialization. Index values are the
+    /// encoded primary record keys. Presence counts in `__gecko_index_meta`
+    /// are rebuilt for every repaired entry (single-field and composite).
     pub fn repair_index(&mut self, table: &str, fields: &[String]) -> Result<(), WorkerError> {
         if self.read_only {
             return Err(
@@ -1286,6 +1325,21 @@ impl RedbWorker {
                     "database is read-only; index repair is not allowed".into()
                 )
             );
+        }
+        let composites: Vec<Vec<String>> = self
+            .composite_index_plan
+            .get(table)
+            .cloned()
+            .unwrap_or_default();
+        // The entry prefixes this repair owns: single-field declarations plus
+        // composite declarations. Used to count presence and to clear stale
+        // meta rows for this table.
+        let mut entry_prefixes: Vec<Vec<u8>> = Vec::new();
+        for field in fields {
+            entry_prefixes.push(index_key_prefix(table, std::slice::from_ref(field)));
+        }
+        for composite in &composites {
+            entry_prefixes.push(index_key_prefix(table, composite));
         }
         let transaction = self.begin_read()?;
         let primary_def = table_definition(table);
@@ -1313,6 +1367,18 @@ impl RedbWorker {
                 };
                 expected.insert(
                     durable_index_key(table, field, &row_bytes[start..end], &record_key),
+                    record_key.clone()
+                );
+            }
+            for composite in &composites {
+                let Some(values) =
+                    extract_field_slices(Some(row_bytes), composite)?
+                else {
+                    continue;
+                };
+                let field_refs: Vec<&str> = composite.iter().map(|f| f.as_str()).collect();
+                expected.insert(
+                    durable_index_key_multi(table, &field_refs, &values, &record_key),
                     record_key.clone()
                 );
             }
@@ -1353,6 +1419,57 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
         }
         drop(index);
+        // Rebuild the presence counts for every entry this repair owns, and
+        // clear stale meta rows for the table.
+        let mut meta = transaction
+            .open_table(table_definition("__gecko_index_meta"))
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        {
+            let mut stale = Vec::new();
+            if let Ok(iter) = meta.iter() {
+                for entry in iter {
+                    let (key, _) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    if durable_index_table(key.value()).as_deref() == Some(table) {
+                        stale.push(key.value().to_vec());
+                    }
+                }
+            }
+            for key in stale {
+                meta
+                    .remove(key.as_slice())
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            }
+        }
+        let mut counts: HashMap<Vec<u8>, i64> = HashMap::new();
+        {
+            let index = transaction
+                .open_table(index_def)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            for entry in index.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+                let (key, _) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                let key_bytes = key.value();
+                if durable_index_table(key_bytes).as_deref() != Some(table) {
+                    continue;
+                }
+                for prefix in &entry_prefixes {
+                    if key_bytes.starts_with(prefix.as_slice()) {
+                        *counts.entry(prefix.clone()).or_insert(0) += 1;
+                        break;
+                    }
+                }
+            }
+        }
+        for (prefix, count) in counts {
+            if count <= 0 {
+                continue;
+            }
+            let mut value = vec![crate::value_codec::TAG_INT64];
+            value.extend_from_slice(&count.to_be_bytes());
+            meta
+                .insert(prefix.as_slice(), value.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        drop(meta);
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         Ok(())
     }
@@ -1472,59 +1589,111 @@ impl RedbWorker {
     /// codec is not generally order-preserving (notably for negative numbers
     /// and length-prefixed strings). The durable index narrows the candidate
     /// set; [predicate_bytes] remains the semantic source of truth.
+    /// intersects multiple durable-index candidate ranges, applies an early
+    /// window, and re-evaluates the complete predicate in Rust unless
+    /// [covered] (Priority 5): when [covered] is true the predicate's filters
+    /// are all proven by the index bounds, so the per-row recheck is skipped.
+    /// Candidate intersection is smaller-first and streaming, and the planner
+    /// falls back to a full filtered scan when the index cannot narrow.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_indexed_multi(
         &self,
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8]
+        predicate_bytes: &[u8],
+        covered: bool,
+        limit: Option<u64>,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
-        self.query_indexed_multi_with(&transaction, table, index_table, ranges, predicate_bytes)
+        self.query_indexed_multi_with(
+            &transaction,
+            table,
+            index_table,
+            ranges,
+            predicate_bytes,
+            covered,
+            limit,
+            offset
+        )
     }
 
     /// Snapshot-bound variant of [Self::query_indexed_multi].
+    #[allow(clippy::too_many_arguments)]
     pub fn snapshot_query_indexed_multi(
         &self,
         snapshot: u64,
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8]
+        predicate_bytes: &[u8],
+        covered: bool,
+        limit: Option<u64>,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
-        self.query_indexed_multi_with(transaction, table, index_table, ranges, predicate_bytes)
+        self.query_indexed_multi_with(
+            transaction,
+            table,
+            index_table,
+            ranges,
+            predicate_bytes,
+            covered,
+            limit,
+            offset
+        )
     }
 
     /// counts matching rows from durable-index candidates without
     /// transferring primary rows to Dart. The complete predicate is still
-    /// rechecked against each candidate row in this snapshot.
+    /// rechecked against each candidate row unless [covered] (Priority 5).
+    #[allow(clippy::too_many_arguments)]
     pub fn snapshot_query_indexed_count(
         &self,
         snapshot: u64,
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8]
+        predicate_bytes: &[u8],
+        covered: bool
     ) -> Result<u64, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
-        self.query_indexed_count_with(transaction, table, index_table, ranges, predicate_bytes)
+        self.query_indexed_count_with(
+            transaction,
+            table,
+            index_table,
+            ranges,
+            predicate_bytes,
+            covered
+        )
     }
 
     /// Direct indexed count using one worker-owned read transaction.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_indexed_count(
         &self,
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8]
+        predicate_bytes: &[u8],
+        covered: bool
     ) -> Result<u64, WorkerError> {
         let transaction = self.begin_read()?;
-        self.query_indexed_count_with(&transaction, table, index_table, ranges, predicate_bytes)
+        self.query_indexed_count_with(
+            &transaction,
+            table,
+            index_table,
+            ranges,
+            predicate_bytes,
+            covered
+        )
     }
 
     /// emits only the requested field bytes from durable-index
     /// candidates. Dart performs the final decode and insertion-order dedup.
+    /// The complete predicate is rechecked unless [covered] (Priority 5).
+    #[allow(clippy::too_many_arguments)]
     pub fn snapshot_query_indexed_distinct(
         &self,
         snapshot: u64,
@@ -1532,7 +1701,8 @@ impl RedbWorker {
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
         predicate_bytes: &[u8],
-        field: &str
+        field: &str,
+        covered: bool
     ) -> Result<Vec<Vec<u8>>, WorkerError> {
         let transaction = self.snapshot_transaction(snapshot)?;
         self.query_indexed_distinct_with(
@@ -1541,19 +1711,22 @@ impl RedbWorker {
             index_table,
             ranges,
             predicate_bytes,
-            field
+            field,
+            covered
         )
     }
 
     /// Direct indexed distinct extraction using a worker-owned read
     /// transaction.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_indexed_distinct(
         &self,
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
         predicate_bytes: &[u8],
-        field: &str
+        field: &str,
+        covered: bool
     ) -> Result<Vec<Vec<u8>>, WorkerError> {
         let transaction = self.begin_read()?;
         self.query_indexed_distinct_with(
@@ -1562,7 +1735,8 @@ impl RedbWorker {
             index_table,
             ranges,
             predicate_bytes,
-            field
+            field,
+            covered
         )
     }
 
@@ -1585,23 +1759,38 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
-        let mut candidates: Option<BTreeSet<Vec<u8>>> = None;
+        // Smaller-first streaming intersection (Priority 5): scan every range
+        // once, seed with the smallest candidate set, and membership-check the
+        // remaining ranges against it (O(total) instead of N full-set
+        // intersections). The result is sorted for deterministic iteration.
+        let mut sets: Vec<(Vec<Vec<u8>>, u64)> = Vec::with_capacity(ranges.len());
         for (start, end) in ranges {
-            let keys = index_table
+            let keys: Vec<Vec<u8>> = index_table
                 .range(start.as_slice()..=end.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
-                .collect::<BTreeSet<_>>();
-            crate::work_count!(self, index_entries_visited, keys.len() as u64);
-            candidates = Some(match candidates {
-                None => keys,
-                Some(previous) => previous.intersection(&keys).cloned().collect(),
-            });
-            if candidates.as_ref().is_some_and(BTreeSet::is_empty) {
-                return Ok(BTreeSet::new());
-            }
+                .collect();
+            let span = keys.len() as u64;
+            crate::work_count!(self, index_entries_visited, span);
+            sets.push((keys, span));
         }
-        let final_candidates = candidates.unwrap_or_default();
+        sets.sort_by_key(|(_, len)| *len);
+        let mut candidates: std::collections::HashSet<Vec<u8>> = sets[0].0.iter().cloned().collect();
+        for (keys, _) in &sets[1..] {
+            if candidates.is_empty() {
+                break;
+            }
+            let mut next = std::collections::HashSet::with_capacity(
+                candidates.len().min(keys.len())
+            );
+            for key in keys {
+                if candidates.contains(key) {
+                    next.insert(key.clone());
+                }
+            }
+            candidates = next;
+        }
+        let final_candidates: BTreeSet<Vec<u8>> = candidates.into_iter().collect();
         crate::work_count!(self, candidate_keys_allocated, final_candidates.len() as u64);
         Ok(final_candidates)
     }
@@ -1612,7 +1801,8 @@ impl RedbWorker {
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8]
+        predicate_bytes: &[u8],
+        covered: bool
     ) -> Result<u64, WorkerError> {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
@@ -1636,10 +1826,13 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
-            crate::work_count!(self, predicate_evaluations, 1);
-            if predicate.test_bytes_with_scratch(value.value(), &mut predicate_scratch) {
-                count += 1;
+            if !covered {
+                crate::work_count!(self, predicate_evaluations, 1);
+                if !predicate.test_bytes_with_scratch(value.value(), &mut predicate_scratch) {
+                    continue;
+                }
             }
+            count += 1;
         }
         Ok(count)
     }
@@ -1651,7 +1844,8 @@ impl RedbWorker {
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
         predicate_bytes: &[u8],
-        field: &str
+        field: &str,
+        covered: bool
     ) -> Result<Vec<Vec<u8>>, WorkerError> {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
@@ -1676,9 +1870,11 @@ impl RedbWorker {
                 continue;
             };
             let row_bytes = value.value();
-            crate::work_count!(self, predicate_evaluations, 1);
-            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
-                continue;
+            if !covered {
+                crate::work_count!(self, predicate_evaluations, 1);
+                if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
+                    continue;
+                }
             }
             let Some((start, end)) = crate::value_codec
                 ::find_field_range(row_bytes, field)
@@ -1898,13 +2094,17 @@ impl RedbWorker {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn query_indexed_multi_with(
         &self,
         transaction: &ReadTransaction,
         table: &str,
         index_table: &str,
         ranges: &[(Vec<u8>, Vec<u8>)],
-        predicate_bytes: &[u8]
+        predicate_bytes: &[u8],
+        covered: bool,
+        limit: Option<u64>,
+        offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         if ranges.is_empty() {
             return Ok(Vec::new());
@@ -1912,6 +2112,7 @@ impl RedbWorker {
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
         let index_def = table_definition(index_table);
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
@@ -1922,25 +2123,22 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
-
-        // A BTreeSet gives deterministic candidate order and makes each
-        // intersection independent of hash iteration order.
-        let mut candidates: Option<BTreeSet<Vec<u8>>> = None;
+        // Scan every range once, recording each candidate span (Priority 5
+        // planner observability: index entries visited vs candidates).
+        let mut sets: Vec<(Vec<Vec<u8>>, u64)> = Vec::with_capacity(ranges.len());
         for (start, end) in ranges {
-            let keys = index_table
+            let keys: Vec<Vec<u8>> = index_table
                 .range(start.as_slice()..=end.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .filter_map(|entry| entry.ok().map(|(_, value)| value.value().to_vec()))
-                .collect::<BTreeSet<_>>();
-            crate::work_count!(self, index_entries_visited, keys.len() as u64);
-            candidates = Some(match candidates {
-                None => keys,
-                Some(previous) => previous.intersection(&keys).cloned().collect(),
-            });
-            if candidates.as_ref().is_some_and(BTreeSet::is_empty) {
-                return Ok(Vec::new());
-            }
+                .collect();
+            let span = keys.len() as u64;
+            crate::work_count!(self, index_entries_visited, span);
+            sets.push((keys, span));
         }
+        // Smaller-first: seed with the smallest candidate set so every later
+        // intersection works over the smallest possible intermediate set.
+        sets.sort_by_key(|(_, len)| *len);
 
         let user_def = table_definition(table);
         let user_table = match transaction.open_table(user_def) {
@@ -1952,8 +2150,62 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
+        // Planner cost decision: if the smallest candidate span already
+        // exceeds the whole user table, the index cannot narrow — a full scan
+        // with the pushed predicate is strictly cheaper.
+        let user_len = user_table
+            .len()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        if sets[0].1 > user_len {
+            let mut entries = match limit {
+                Some(l) => self.query_filtered_limited_with(
+                    transaction,
+                    table,
+                    predicate_bytes,
+                    Some(l),
+                    offset
+                )?,
+                None => self.query_filtered_with(transaction, table, predicate_bytes)?,
+            };
+            if limit.is_none() && offset > 0 {
+                let start_idx = (offset as usize).min(entries.len());
+                return Ok(entries.split_off(start_idx));
+            }
+            return Ok(entries);
+        }
+        // Streaming intersection: membership-check every later range's keys
+        // against the current candidate set (the order no longer matters
+        // because the seed is the smallest set; each scan is independent).
+        let mut candidates: std::collections::HashSet<Vec<u8>> =
+            sets[0].0.iter().cloned().collect();
+        for (keys, _) in &sets[1..] {
+            if candidates.is_empty() {
+                break;
+            }
+            let mut next = std::collections::HashSet::with_capacity(
+                candidates.len().min(keys.len())
+            );
+            for key in keys {
+                if candidates.contains(key) {
+                    next.insert(key.clone());
+                }
+            }
+            candidates = next;
+        }
+        crate::work_count!(self, candidate_keys_allocated, candidates.len() as u64);
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let want = limit.map(|l| offset.saturating_add(l));
+        if want == Some(0) {
+            return Ok(Vec::new());
+        }
+        // Deterministic output: record-key ascending (the same order the
+        // previous BTreeSet-based implementation produced).
+        let mut sorted_keys: Vec<Vec<u8>> = candidates.into_iter().collect();
+        sorted_keys.sort();
         let mut result = Vec::new();
-        for row_key in candidates.unwrap_or_default() {
+        for row_key in sorted_keys {
             crate::work_count!(self, primary_rows_fetched, 1);
             let Some(value) = user_table
                 .get(row_key.as_slice())
@@ -1961,10 +2213,22 @@ impl RedbWorker {
                 continue;
             };
             let row_bytes = value.value();
-            crate::work_count!(self, predicate_evaluations, 1);
-            if predicate.test_bytes_single_pass(row_bytes) {
-                result.push((row_key, row_bytes.to_vec()));
+            if !covered {
+                crate::work_count!(self, predicate_evaluations, 1);
+                if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
+                    continue;
+                }
             }
+            result.push((row_key, row_bytes.to_vec()));
+            if let Some(want) = want {
+                if (result.len() as u64) >= want {
+                    break;
+                }
+            }
+        }
+        if offset > 0 {
+            let start_idx = (offset as usize).min(result.len());
+            result = result.split_off(start_idx);
         }
         crate::work_count!(self, rows_returned, result.len() as u64);
         crate::work_count!(
@@ -2274,9 +2538,9 @@ impl RedbWorker {
 
     /// index-served eq query with an early LIMIT/OFFSET. Streams the
     /// durable-index range `[start..=end]` in index-key order, joins each
-    /// entry back to its row, applies [predicate_bytes] (the full filter set,
-    /// so early-stop is correct even with additional filters), and stops once
-    /// the window is filled.
+    /// entry back to its row, applies [predicate_bytes] (unless [covered],
+    /// Priority 5 — the index bounds prove every filter, so the recheck is
+    /// skipped), and stops once the window is filled.
     #[allow(clippy::too_many_arguments)]
     pub fn query_indexed_limited(
         &self,
@@ -2285,6 +2549,7 @@ impl RedbWorker {
         start: &[u8],
         end: &[u8],
         predicate_bytes: &[u8],
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
@@ -2296,6 +2561,7 @@ impl RedbWorker {
             start,
             end,
             predicate_bytes,
+            covered,
             limit,
             offset
         )
@@ -2311,6 +2577,7 @@ impl RedbWorker {
         start: &[u8],
         end: &[u8],
         predicate_bytes: &[u8],
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
@@ -2322,6 +2589,7 @@ impl RedbWorker {
             start,
             end,
             predicate_bytes,
+            covered,
             limit,
             offset
         )
@@ -2336,6 +2604,7 @@ impl RedbWorker {
         start: &[u8],
         end: &[u8],
         predicate_bytes: &[u8],
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
@@ -2381,9 +2650,11 @@ impl RedbWorker {
                 .map(|v| v.value().to_vec()) else {
                 continue;
             };
-            crate::work_count!(self, predicate_evaluations, 1);
-            if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
-                continue;
+            if !covered {
+                crate::work_count!(self, predicate_evaluations, 1);
+                if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
+                    continue;
+                }
             }
             result.push((row_key.to_vec(), row_bytes));
             if let Some(want) = want {
@@ -2526,22 +2797,27 @@ impl RedbWorker {
     }
 
     /// index-ordered early-stop sort. When a query's sort field is covered
-    /// by a single-field durable index, the composite index keys are already
-    /// ordered by `(value, recordId)` — the same order Dart's stable sort of
-    /// that field produces. This streams the index range `[start..=end]`,
-    /// joins each entry to its row, applies [predicate_bytes], and stops once
-    /// `offset + limit` matches are collected — no full scan, no sort.
+    /// by a durable index, the composite index keys are already ordered by
+    /// `(value, recordId)` — the same order Dart's stable sort of that field
+    /// produces (ties always break by ascending record key). This streams the
+    /// index range `[start..=end]`, joins each entry to its row, applies
+    /// [predicate_bytes] (unless [covered]), and stops once the window fills
+    /// — no full scan, no sort.
     ///
-    /// Two calling modes (the Dart side routes accordingly):
+    /// Calling modes (the Dart side routes accordingly):
     /// - [eq_bounded] = true: `start..=end` is an equality bound on the sort
-    ///   field, so every matching row's sort key is equal and index-key order
-    ///   (recordId) is exactly the stable Dart order for both directions.
-    /// - [eq_bounded] = false: `start..=end` covers all values of [sort_field]
-    ///   (ascending order only). Rows missing the field sort LAST for
-    ///   ascending; if the index stream is exhausted before the window fills,
-    ///   a table scan appends the missing-field matching rows (stable order).
-    ///   Descending without an eq bound is NOT routed here (caller uses
-    ///   [Self::query_sorted], which handles missing-first correctly).
+    ///   field, so every matching row's sort key is equal and index-key
+    ///   (recordId) order is the stable order for BOTH directions (ties break
+    ///   ascending, so [descending] does not reorder).
+    /// - [eq_bounded] = false, ascending: `start..=end` covers all values;
+    ///   missing-field rows sort LAST and are appended via a table scan —
+    ///   skipped entirely when the presence count proves the field is
+    ///   complete across the whole table.
+    /// - [eq_bounded] = false, descending: missing-field rows sort FIRST and
+    ///   are emitted from a table scan (unless the field is complete), then
+    ///   the index is streamed in REVERSE (the reverse index iterator); each
+    ///   equal-value group is reversed back to ascending record keys so the
+    ///   tie-break matches the top-K path exactly.
     #[allow(clippy::too_many_arguments)]
     pub fn query_indexed_ordered(
         &self,
@@ -2552,6 +2828,8 @@ impl RedbWorker {
         predicate_bytes: &[u8],
         sort_field: &str,
         eq_bounded: bool,
+        descending: bool,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
@@ -2565,6 +2843,8 @@ impl RedbWorker {
             predicate_bytes,
             sort_field,
             eq_bounded,
+            descending,
+            covered,
             limit,
             offset
         )
@@ -2582,6 +2862,8 @@ impl RedbWorker {
         predicate_bytes: &[u8],
         sort_field: &str,
         eq_bounded: bool,
+        descending: bool,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
@@ -2595,6 +2877,8 @@ impl RedbWorker {
             predicate_bytes,
             sort_field,
             eq_bounded,
+            descending,
+            covered,
             limit,
             offset
         )
@@ -2611,6 +2895,8 @@ impl RedbWorker {
         predicate_bytes: &[u8],
         sort_field: &str,
         eq_bounded: bool,
+        descending: bool,
+        covered: bool,
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
@@ -2623,10 +2909,10 @@ impl RedbWorker {
         let index_table = match transaction.open_table(index_def) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => {
-                // No durable index yet (e.g. an empty index table): the
-                // ordered result for the non-eq mode is every matching row in
-                // recordId order (they all lack index entries). Fall back to
-                // the full top-K sort, which is correct in all cases.
+                // No durable index yet: the ordered result for the non-eq
+                // mode is every matching row in recordId order. Fall back to
+                // the full top-K sort (handles missing-field placement for
+                // both directions).
                 if eq_bounded {
                     return Ok(Vec::new());
                 }
@@ -2634,7 +2920,7 @@ impl RedbWorker {
                     &[
                         crate::sort_spec::SortSpec {
                             field: sort_field.to_string(),
-                            descending: false,
+                            descending,
                         },
                     ]
                 );
@@ -2665,72 +2951,214 @@ impl RedbWorker {
         if want == Some(0) {
             return Ok(Vec::new());
         }
+        // Field-completeness (Priority 5): when the presence count for the
+        // sort field equals the table length, no row is missing the field, so
+        // the non-eq fallback scan is unnecessary.
+        let user_len = user_table
+            .len()
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        let sort_field_owned = sort_field.to_string();
+        let sort_prefix = index_key_prefix(table, std::slice::from_ref(&sort_field_owned));
+        let field_complete = eq_bounded
+            || read_index_meta_count(transaction, &sort_prefix)? == user_len;
+
         let mut matches: Vec<ByteEntry> = Vec::new();
-        let mut matched_keys: Vec<Vec<u8>> = Vec::new();
-        for entry in index_table
-            .range(start..=end)
-            .map_err(|error| WorkerError::Storage(error.to_string()))? {
-            crate::work_count!(self, index_entries_visited, 1);
-            let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-            let row_key = entry.1.value();
-            crate::work_count!(self, primary_rows_fetched, 1);
-            let Some(row_bytes) = user_table
-                .get(row_key)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?
-                .map(|v| v.value().to_vec()) else {
-                continue;
-            };
-            crate::work_count!(self, predicate_evaluations, 1);
-            if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
-                continue;
-            }
-            matched_keys.push(row_key.to_vec());
-            matches.push((row_key.to_vec(), row_bytes));
-            if let Some(want) = want {
-                if (matches.len() as u64) >= want {
+        let mut done = false;
+
+        // Forward stream: values ascending, record keys ascending within a
+        // value. Used for eq-bounded (both directions — all values equal, so
+        // ties break ascending regardless of direction) and ascending non-eq.
+        let forward = eq_bounded || !descending;
+        if forward {
+            for entry in index_table
+                .range(start..=end)
+                .map_err(|error| WorkerError::Storage(error.to_string()))? {
+                if done {
                     break;
+                }
+                crate::work_count!(self, index_entries_visited, 1);
+                let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                let row_key = entry.1.value();
+                crate::work_count!(self, primary_rows_fetched, 1);
+                let Some(row_bytes) = user_table
+                    .get(row_key)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                    .map(|v| v.value().to_vec()) else {
+                    continue;
+                };
+                if !covered {
+                    crate::work_count!(self, predicate_evaluations, 1);
+                    if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
+                        continue;
+                    }
+                }
+                matches.push((row_key.to_vec(), row_bytes));
+                if let Some(w) = want {
+                    if (matches.len() as u64) >= w {
+                        done = true;
+                    }
                 }
             }
         }
-        // Non-eq mode: if the index stream did not fill the window (or there
-        // is no window — an unbounded sorted query), the rows missing
-        // `sort_field` (which sort LAST for ascending) must be appended. They
-        // are found with a table scan (stable recordId order, matching Dart's
-        // stable sort of ties). In eq-bounded mode every matching row carries
-        // the sort field, so no append is needed.
-        let needs_append = !eq_bounded && want.is_none_or(|w| (matches.len() as u64) < w);
-        if needs_append {
-            let mut present = std::collections::HashSet::new();
-            for k in &matched_keys {
-                present.insert(k.clone());
-            }
-            for entry in user_table
-                .iter()
-                .map_err(|error| WorkerError::Storage(error.to_string()))? {
-                let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-                let key_bytes = key.value().to_vec();
-                if present.contains(&key_bytes) {
-                    continue;
+
+        if !eq_bounded && !descending {
+            // Ascending non-eq: append missing-field rows (they sort LAST)
+            // unless the field is complete. The skip set is pre-sized and the
+            // scan is skipped entirely when the window already filled.
+            let needs_append = !done
+                && !field_complete
+                && want.is_none_or(|w| (matches.len() as u64) < w);
+            if needs_append {
+                let mut present = std::collections::HashSet::with_capacity(matches.len());
+                for m in &matches {
+                    present.insert(m.0.clone());
                 }
-                let row_bytes = value.value();
-                crate::work_count!(self, primary_rows_visited, 1);
-                crate::work_count!(self, predicate_evaluations, 1);
-                if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
-                    continue;
-                }
-                let has_field = find_field(row_bytes, sort_field)
-                    .map_err(|error| WorkerError::Storage(error.to_string()))?
-                    .is_some();
-                if has_field {
-                    // The row carries the field but has no index entry — not a
-                    // missing-field row; skip (should not happen when the
-                    // durable index is maintained atomically).
-                    continue;
-                }
-                matches.push((key_bytes, row_bytes.to_vec()));
-                if let Some(want) = want {
-                    if (matches.len() as u64) >= want {
+                for entry in user_table
+                    .iter()
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? {
+                    if done {
                         break;
+                    }
+                    let (key, value) =
+                        entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    let key_bytes = key.value().to_vec();
+                    if present.contains(&key_bytes) {
+                        continue;
+                    }
+                    let row_bytes = value.value();
+                    crate::work_count!(self, primary_rows_visited, 1);
+                    if !covered {
+                        crate::work_count!(self, predicate_evaluations, 1);
+                        if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
+                            continue;
+                        }
+                    }
+                    let has_field = find_field(row_bytes, sort_field)
+                        .map_err(|error| WorkerError::Storage(error.to_string()))?
+                        .is_some();
+                    if has_field {
+                        // Has the field but no index entry — not a
+                        // missing-field row; skip (should not happen when the
+                        // durable index is maintained atomically).
+                        continue;
+                    }
+                    matches.push((key_bytes, row_bytes.to_vec()));
+                    if let Some(w) = want {
+                        if (matches.len() as u64) >= w {
+                            done = true;
+                        }
+                    }
+                }
+            }
+        } else if !eq_bounded && descending {
+            // Descending non-eq: missing-field rows sort FIRST, then
+            // with-field rows in descending value order via the REVERSE index
+            // iterator. Within an equal value the reverse stream yields record
+            // keys descending; each contiguous equal-value group is reversed
+            // back to ascending so the tie-break matches the top-K path.
+            if !done && !field_complete {
+                for entry in user_table
+                    .iter()
+                    .map_err(|error| WorkerError::Storage(error.to_string()))? {
+                    if done {
+                        break;
+                    }
+                    let (key, value) =
+                        entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                    let key_bytes = key.value().to_vec();
+                    let row_bytes = value.value();
+                    crate::work_count!(self, primary_rows_visited, 1);
+                    if !covered {
+                        crate::work_count!(self, predicate_evaluations, 1);
+                        if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
+                            continue;
+                        }
+                    }
+                    let has_field = find_field(row_bytes, sort_field)
+                        .map_err(|error| WorkerError::Storage(error.to_string()))?
+                        .is_some();
+                    if has_field {
+                        continue;
+                    }
+                    matches.push((key_bytes, row_bytes.to_vec()));
+                    if let Some(w) = want {
+                        if (matches.len() as u64) >= w {
+                            done = true;
+                        }
+                    }
+                }
+            }
+            let mut group: Vec<Vec<u8>> = Vec::new();
+            let mut group_value: Option<Vec<crate::value_codec::RowValue>> = None;
+            for entry in index_table
+                .range(start..=end)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+                .rev() {
+                if done {
+                    break;
+                }
+                crate::work_count!(self, index_entries_visited, 1);
+                let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                let value = index_key_values(entry.0.value());
+                if group_value.as_ref() != value.as_ref() {
+                    // Flush the previous equal-value group (key-desc in the
+                    // reverse stream → reverse to key-asc).
+                    group.reverse();
+                    for row_key in group.drain(..) {
+                        if done {
+                            break;
+                        }
+                        crate::work_count!(self, primary_rows_fetched, 1);
+                        let Some(row_bytes) = user_table
+                            .get(row_key.as_slice())
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|v| v.value().to_vec()) else {
+                            continue;
+                        };
+                        if !covered {
+                            crate::work_count!(self, predicate_evaluations, 1);
+                            if !predicate.test_bytes_with_scratch(
+                                &row_bytes,
+                                &mut predicate_scratch
+                            ) {
+                                continue;
+                            }
+                        }
+                        matches.push((row_key, row_bytes));
+                        if let Some(w) = want {
+                            if (matches.len() as u64) >= w {
+                                done = true;
+                            }
+                        }
+                    }
+                    group_value = value;
+                }
+                group.push(entry.1.value().to_vec());
+            }
+            if !done {
+                group.reverse();
+                for row_key in group.drain(..) {
+                    if done {
+                        break;
+                    }
+                    crate::work_count!(self, primary_rows_fetched, 1);
+                    let Some(row_bytes) = user_table
+                        .get(row_key.as_slice())
+                        .map_err(|error| WorkerError::Storage(error.to_string()))?
+                        .map(|v| v.value().to_vec()) else {
+                        continue;
+                    };
+                    if !covered {
+                        crate::work_count!(self, predicate_evaluations, 1);
+                        if !predicate.test_bytes_with_scratch(&row_bytes, &mut predicate_scratch) {
+                            continue;
+                        }
+                    }
+                    matches.push((row_key, row_bytes));
+                    if let Some(w) = want {
+                        if (matches.len() as u64) >= w {
+                            done = true;
+                        }
                     }
                 }
             }
@@ -3211,17 +3639,46 @@ fn enforce_delete_memory_policy(keys: &[Vec<u8>]) -> Result<(), WorkerError> {
     Ok(())
 }
 
+/// One durable-index entry: an ordered field list (a single field for the
+/// classic single-field index, or a composite) plus its precomputed encoded
+/// key prefix (`[TAG_LIST, u32(2+2n), enc(table), enc(f1), enc(f2), …]` —
+/// field names only, no values, no record key).
+struct IndexPlanEntry {
+    fields: Vec<String>,
+    prefix: Vec<u8>,
+}
+
 /// Per-batch durable-index plan: O(1) field lookup per operation and the
-/// stable `[table, field]` encoded key prefix per indexed field, precomputed
-/// once so per-op index maintenance never re-scans `index_definitions` or
-/// re-encodes the prefix.
+/// stable encoded key prefix per index entry (single-field AND composite),
+/// precomputed once so per-op index maintenance never re-scans
+/// `index_definitions`/the composite plan or re-encodes prefixes.
 struct IndexPlan {
-    /// table name → [(field name, encoded [table, field] key prefix)]
-    by_table: HashMap<String, Vec<(String, Vec<u8>)>>,
+    /// table name → index entries (single-field + composite)
+    by_table: HashMap<String, Vec<IndexPlanEntry>>,
+}
+
+/// Encodes the durable-index key prefix for an index entry on [table] with
+/// the ordered field list [fields] — the shared bytes of every composite key
+/// for that entry (list header + table + field names, no values).
+fn index_key_prefix(table: &str, fields: &[String]) -> Vec<u8> {
+    use crate::value_codec::TAG_LIST;
+    let mut out = vec![TAG_LIST];
+    out.extend_from_slice(&((2 + 2 * fields.len()) as u32).to_be_bytes());
+    out.extend_from_slice(&encode_index_string(table));
+    for field in fields {
+        out.extend_from_slice(&encode_index_string(field));
+    }
+    out
 }
 
 impl IndexPlan {
-    fn build(index_definitions: &[(String, Vec<String>)]) -> Self {
+    /// Builds the plan from the flat per-batch single-field declarations
+    /// [index_definitions] plus the session-scoped composite declarations
+    /// [composite_plan].
+    fn build(
+        index_definitions: &[(String, Vec<String>)],
+        composite_plan: &HashMap<String, Vec<Vec<String>>>
+    ) -> Self {
         let mut by_table = HashMap::with_capacity(index_definitions.len());
         for (table, fields) in index_definitions {
             if fields.is_empty() || table == "__gecko_index" {
@@ -3230,36 +3687,127 @@ impl IndexPlan {
             let entries = fields
                 .iter()
                 .map(|field| {
-                    let prefix = {
-                        use crate::value_codec::TAG_LIST;
-                        let mut out = vec![TAG_LIST];
-                        out.extend_from_slice(&(4u32).to_be_bytes());
-                        out.extend_from_slice(&encode_index_string(table));
-                        out.extend_from_slice(&encode_index_string(field));
-                        out
-                    };
-                    (field.clone(), prefix)
+                    let prefix = index_key_prefix(table, std::slice::from_ref(field));
+                    IndexPlanEntry {
+                        fields: vec![field.clone()],
+                        prefix,
+                    }
                 })
-                .collect();
+                .collect::<Vec<_>>();
             by_table.insert(table.clone(), entries);
+        }
+        for (table, indexes) in composite_plan {
+            if table == "__gecko_index" {
+                continue;
+            }
+            let entries = by_table.entry(table.clone()).or_default();
+            for fields in indexes {
+                if fields.is_empty() {
+                    continue;
+                }
+                let prefix = index_key_prefix(table, fields);
+                entries.push(IndexPlanEntry {
+                    fields: fields.clone(),
+                    prefix,
+                });
+            }
         }
         Self { by_table }
     }
 }
 
-/// Maintains the durable index for one primary-row mutation. The index table
-/// is opened at most once per batch ([index_table]); old/new field values are
-/// compared as byte slices before any allocation, and index keys are built in
-/// a caller-provided scratch buffer. The exact `[table, field]` key prefixes
-/// from [plan] preserve the index-key bytes used by query and repair code.
+/// Extracts the encoded byte ranges of every [fields] field from [row],
+/// returning `Some(ranges)` only when ALL fields are present (a composite
+/// index entry requires every constituent field; a missing field means no
+/// entry for that row version, exactly like a missing single field).
+fn extract_field_slices<'a>(
+    row: Option<&'a [u8]>,
+    fields: &[String]
+) -> Result<Option<Vec<&'a [u8]>>, WorkerError> {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut ranges = vec![None; fields.len()];
+    crate::value_codec::find_fields_ranges(row, fields, &mut ranges)
+        .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    if ranges.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+    Ok(Some(
+        ranges
+            .into_iter()
+            .map(|range| {
+                let (start, end) = range.expect("all fields present");
+                &row[start..end]
+            })
+            .collect()
+    ))
+}
+
+/// Adjusts the per-index-entry presence count in `__gecko_index_meta` by
+/// [delta] (used to prove a sort field is complete across the whole table,
+/// which lets the index-ordered path skip its missing-field fallback scan).
+/// Keyed by the entry's encoded prefix; rows with a count of zero are removed.
+fn bump_index_meta<'txn>(
+    meta_table: &mut Option<Table<'txn, &'static [u8], &'static [u8]>>,
+    transaction: &'txn WriteTransaction,
+    entry: &IndexPlanEntry,
+    delta: i64,
+    counters: &AtomicCounters
+) -> Result<(), WorkerError> {
+    if meta_table.is_none() {
+        let opened = transaction
+            .open_table(table_definition("__gecko_index_meta"))
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        counters.bump(&counters.table_opens, 1);
+        *meta_table = Some(opened);
+    }
+    let meta = meta_table.as_mut().expect("opened just above");
+    let current = meta
+        .get(entry.prefix.as_slice())
+        .map_err(|error| WorkerError::Storage(error.to_string()))?
+        .map(|value| value.value().to_vec());
+    let count = current
+        .as_deref()
+        .and_then(|bytes| crate::value_codec::decode_value(bytes).ok())
+        .and_then(|value| {
+            match value {
+                crate::value_codec::RowValue::Int64(n) => Some(n),
+                _ => None,
+            }
+        })
+        .unwrap_or(0)
+        .saturating_add(delta);
+    if count <= 0 {
+        meta
+            .remove(entry.prefix.as_slice())
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    } else {
+        let mut value = vec![crate::value_codec::TAG_INT64];
+        value.extend_from_slice(&count.to_be_bytes());
+        meta
+            .insert(entry.prefix.as_slice(), value.as_slice())
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Maintains the durable index for one primary-row mutation. The index and
+/// presence-meta tables are opened at most once per batch ([index_table] /
+/// [meta_table]); old/new field values are compared as byte slices before any
+/// allocation, and index keys are built in a caller-provided scratch buffer.
+/// The exact encoded prefixes from [plan] (single-field AND composite)
+/// preserve the index-key bytes used by query and repair code.
 ///
 /// The argument count is inherent to the batch-maintenance contract (open
-/// transaction, cached index handle, plan, row identity, both row versions,
-/// scratch, counters); bundling them would allocate per call on the hot path.
+/// transaction, cached index/meta handles, plan, row identity, both row
+/// versions, scratch, counters); bundling them would allocate per call on the
+/// hot path.
 #[allow(clippy::too_many_arguments)]
 fn maintain_durable_index<'txn>(
     transaction: &'txn WriteTransaction,
     index_table: &mut Option<Table<'txn, &'static [u8], &'static [u8]>>,
+    meta_table: &mut Option<Table<'txn, &'static [u8], &'static [u8]>>,
     plan: &IndexPlan,
     table: &str,
     record_key: &[u8],
@@ -3268,7 +3816,7 @@ fn maintain_durable_index<'txn>(
     scratch: &mut Vec<u8>,
     counters: &AtomicCounters
 ) -> Result<(), WorkerError> {
-    if table == "__gecko_index" {
+    if table == "__gecko_index" || table == "__gecko_index_meta" {
         return Ok(());
     }
     let Some(entries) = plan.by_table.get(table) else {
@@ -3285,73 +3833,84 @@ fn maintain_durable_index<'txn>(
         *index_table = Some(opened);
     }
     let index = index_table.as_mut().expect("opened just above");
-    for (field, prefix) in entries {
-        let old_value = match old_row {
-            Some(row) =>
-                crate::value_codec
-                    ::find_field_range(row, field)
-                    .map_err(|error| WorkerError::Storage(error.to_string()))?
-                    .map(|(start, end)| &row[start..end]),
-            None => None,
-        };
-        let new_value = match new_row {
-            Some(row) =>
-                crate::value_codec
-                    ::find_field_range(row, field)
-                    .map_err(|error| WorkerError::Storage(error.to_string()))?
-                    .map(|(start, end)| &row[start..end]),
-            None => None,
-        };
-        // Byte-slice equality: no allocation when the encoded value is
+    for entry in entries {
+        let old_values = extract_field_slices(old_row, &entry.fields)?;
+        let new_values = extract_field_slices(new_row, &entry.fields)?;
+        // Byte-slice equality: no allocation when every indexed value is
         // unchanged (the common update-that-touches-other-fields case).
-        if old_value == new_value {
+        if old_values == new_values {
             continue;
         }
-        if let Some(value) = old_value {
+        if let Some(values) = old_values {
             scratch.clear();
-            scratch.extend_from_slice(prefix);
-            scratch.push(crate::value_codec::TAG_ORDERED);
-            crate::value_codec
-                ::push_order_encode_slice(scratch, value)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            scratch.extend_from_slice(&entry.prefix);
+            for value in &values {
+                scratch.push(crate::value_codec::TAG_ORDERED);
+                crate::value_codec
+                    ::push_order_encode_slice(scratch, value)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            }
             scratch.extend_from_slice(record_key);
             index
                 .remove(scratch.as_slice())
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
             counters.bump(&counters.index_maintenance_ops, 1);
+            bump_index_meta(meta_table, transaction, entry, -1, counters)?;
         }
-        if let Some(value) = new_value {
+        if let Some(values) = new_values {
             scratch.clear();
-            scratch.extend_from_slice(prefix);
-            scratch.push(crate::value_codec::TAG_ORDERED);
-            crate::value_codec
-                ::push_order_encode_slice(scratch, value)
-                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            scratch.extend_from_slice(&entry.prefix);
+            for value in &values {
+                scratch.push(crate::value_codec::TAG_ORDERED);
+                crate::value_codec
+                    ::push_order_encode_slice(scratch, value)
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            }
             scratch.extend_from_slice(record_key);
             index
                 .insert(scratch.as_slice(), record_key)
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
             counters.bump(&counters.index_maintenance_ops, 1);
+            bump_index_meta(meta_table, transaction, entry, 1, counters)?;
         }
     }
     Ok(())
 }
 
-fn durable_index_key(table: &str, field: &str, value: &[u8], record_key: &[u8]) -> Vec<u8> {
+/// Durable-index composite key: `[TAG_LIST, u32(2+2n), enc(table),
+/// enc(f1), enc(f2), …, TAG_ORDERED, ord(v1), ord(v2), …, recordKey]` — all
+/// field names first, then all order-preserving values (the same layout
+/// `maintain_durable_index` and the Dart bounds use, so maintenance, repair,
+/// and query bounds always agree). For n=1 this is byte-identical to the
+/// classic single-field key. [values] must be the raw codec-encoded field
+/// bytes (one per field), which are re-encoded into the order-preserving
+/// element.
+fn durable_index_key_multi(
+    table: &str,
+    fields: &[&str],
+    values: &[&[u8]],
+    record_key: &[u8]
+) -> Vec<u8> {
     use crate::value_codec::{ TAG_LIST, TAG_ORDERED };
+    debug_assert_eq!(fields.len(), values.len());
     let mut out = vec![TAG_LIST];
-    out.extend_from_slice(&(4u32).to_be_bytes());
+    out.extend_from_slice(&((2 + 2 * fields.len()) as u32).to_be_bytes());
     out.extend_from_slice(&encode_index_string(table));
-    out.extend_from_slice(&encode_index_string(field));
-    // Order-preserving value element (Priority 5): byte order == semantic
-    // order for the supported scalar types, so equality/range/prefix scans
-    // are exactly selective instead of broad field spans.
-    out.push(TAG_ORDERED);
-    crate::value_codec
-        ::push_order_encode_slice(&mut out, value)
-        .expect("index value is a valid codec-encoded field value");
+    for field in fields {
+        out.extend_from_slice(&encode_index_string(field));
+    }
+    for value in values {
+        out.push(TAG_ORDERED);
+        crate::value_codec
+            ::push_order_encode_slice(&mut out, value)
+            .expect("index value is a valid codec-encoded field value");
+    }
     out.extend_from_slice(record_key);
     out
+}
+
+fn durable_index_key(table: &str, field: &str, value: &[u8], record_key: &[u8]) -> Vec<u8> {
+    durable_index_key_multi(table, &[field], &[value], record_key)
 }
 
 fn encode_index_string(value: &str) -> Vec<u8> {
@@ -3372,6 +3931,63 @@ fn durable_index_table(bytes: &[u8]) -> Option<String> {
         Some(crate::value_codec::RowValue::String(table)) => Some(table.clone()),
         _ => None,
     }
+}
+
+/// Reads the presence count for one index entry (`__gecko_index_meta` keyed
+/// by the entry's encoded prefix) in a read transaction. Absent or malformed
+/// values read as 0. Used to prove a sort field is complete across the whole
+/// table, which lets the index-ordered path skip its missing-field fallback.
+fn read_index_meta_count(
+    transaction: &ReadTransaction,
+    prefix: &[u8]
+) -> Result<u64, WorkerError> {
+    let meta = match transaction.open_table(table_definition("__gecko_index_meta")) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => {
+            return Ok(0);
+        }
+        Err(error) => {
+            return Err(WorkerError::Storage(error.to_string()));
+        }
+    };
+    let Some(value) = meta
+        .get(prefix)
+        .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+        return Ok(0);
+    };
+    Ok(match crate::value_codec::decode_value(value.value()) {
+        Ok(crate::value_codec::RowValue::Int64(n)) => n.max(0) as u64,
+        _ => 0,
+    })
+}
+
+/// Decodes the ordered value element(s) of a durable-index composite key —
+/// `[TAG_LIST, count, table, f1, f2, …, v1, v2, …, recordKey]` (field names
+/// first, then values) — returning the values in field order. The trailing
+/// record-key element is RAW bytes (not a codec value), so the list is parsed
+/// element-by-element and the record key tail is never decoded. Used to group
+/// contiguous equal-value runs when streaming the index in REVERSE for a
+/// descending sort (within an equal value, the reverse stream yields record
+/// keys descending, which must be reversed back to ascending to match the
+/// stable tie-break).
+fn index_key_values(key: &[u8]) -> Option<Vec<crate::value_codec::RowValue>> {
+    use crate::value_codec::ValueReader;
+    let mut r = ValueReader::new(key);
+    if r.read_u8().ok()? != crate::value_codec::TAG_LIST {
+        return None;
+    }
+    let count = r.read_u32_be().ok()? as usize;
+    if count < 4 {
+        return None; // table + field + value + recordKey minimum
+    }
+    let mut elements = Vec::with_capacity(count - 1);
+    for _ in 0..(count - 1) {
+        elements.push(r.read_value().ok()?);
+    }
+    // elements = [table, f1, f2, …, v1, v2, …]; the values occupy the
+    // trailing half (n = (len-1)/2 fields, values start at index 1+n).
+    let value_start = (elements.len() + 1) / 2;
+    Some(elements[value_start..].to_vec())
 }
 
 fn encode_change_log_key(sequence: u64, ordinal: u64) -> Vec<u8> {
@@ -3658,10 +4274,10 @@ mod tests {
         }
         worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
         let counters = worker.take_counters();
-        // 4 puts × 2 indexed fields = 8 index maintenance ops; the index table
-        // is opened once and the user table once.
+        // 4 puts × 2 indexed fields = 8 index maintenance ops; the user table,
+        // the index table, and the presence-meta table are each opened once.
         assert_eq!(counters.index_maintenance_ops, 8);
-        assert_eq!(counters.table_opens, 2);
+        assert_eq!(counters.table_opens, 3);
         assert_eq!(index_value(&worker, "age", &encode_test_int64(3), b"k3"), Some(b"k3".to_vec()));
         assert_eq!(index_value(&worker, "name", &encode_test_string("n1"), b"k1"), Some(b"k1".to_vec()));
 
@@ -5091,6 +5707,8 @@ mod tests {
                 &empty_pred,
                 "age",
                 false,
+                false,
+                false,
                 Some(5),
                 0
             )
@@ -5110,6 +5728,8 @@ mod tests {
                 &empty_pred,
                 "age",
                 false,
+                false,
+                false,
                 Some(2),
                 0
             )
@@ -5127,6 +5747,8 @@ mod tests {
                 &empty_pred,
                 "age",
                 false,
+                false,
+                false,
                 Some(2),
                 2
             )
@@ -5143,6 +5765,8 @@ mod tests {
                 &end,
                 &empty_pred,
                 "age",
+                false,
+                false,
                 false,
                 None,
                 0
@@ -5317,6 +5941,8 @@ mod tests {
                 &empty_pred,
                 "age",
                 false,
+                false,
+                false,
                 None,
                 0
             )
@@ -5373,7 +5999,10 @@ mod tests {
                 "items",
                 "__gecko_index",
                 &[age_bounds, (nick_start, nick_end)],
-                &predicate
+                &predicate,
+                false,
+                None,
+                0
             )
             .unwrap();
         assert_eq!(got.len(), 2);
@@ -5416,14 +6045,14 @@ mod tests {
         assert_eq!(joined.len(), 1, "index bounds must reach the age=20 entry");
         assert_eq!(joined[0].0, b"k1");
         let got = worker
-            .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, Some(10), 0)
+            .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, false, Some(10), 0)
             .unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, b"k1");
         // limit 0 → empty.
         assert!(
             worker
-                .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, Some(0), 0)
+                .query_indexed_limited("items", "__gecko_index", &full, &end, &eq_pred, false, Some(0), 0)
                 .unwrap()
                 .is_empty()
         );
@@ -6780,7 +7409,15 @@ mod tests {
             ]
         );
         let got = worker
-            .query_indexed_multi("items", "__gecko_index", &[(start.clone(), end.clone())], &pred20)
+            .query_indexed_multi(
+                "items",
+                "__gecko_index",
+                &[(start.clone(), end.clone())],
+                &pred20,
+                false,
+                None,
+                0
+            )
             .unwrap();
         assert!(!got.iter().any(|entry| entry.0 == b"k1"), "drift must fail the recheck");
         let pred21 = predicate::encode_predicate(
@@ -6792,7 +7429,15 @@ mod tests {
             ]
         );
         let got = worker
-            .query_indexed_multi("items", "__gecko_index", &[(start, end)], &pred21)
+            .query_indexed_multi(
+                "items",
+                "__gecko_index",
+                &[(start, end)],
+                &pred21,
+                false,
+                None,
+                0
+            )
             .unwrap();
         assert!(
             got.iter().any(|entry| entry.0 == b"k1"),
@@ -6822,7 +7467,9 @@ mod tests {
         let (path, worker) = seed_indexed_age_fixture("qmulti-edge");
         let empty_pred = predicate::encode_predicate(&[]);
         // Empty ranges → empty result.
-        let got = worker.query_indexed_multi("items", "__gecko_index", &[], &empty_pred).unwrap();
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[], &empty_pred, false, None, 0)
+            .unwrap();
         assert!(got.is_empty());
         // Disjoint equality ranges (age == 10 only k0; age == 30 only k2) →
         // the intersection is empty and the scan exits early.
@@ -6836,7 +7483,10 @@ mod tests {
                     (a0, a1),
                     (b0, b1),
                 ],
-                &empty_pred
+                &empty_pred,
+                false,
+                None,
+                0
             )
             .unwrap();
         assert!(got.is_empty());
@@ -6871,6 +7521,8 @@ mod tests {
                 &empty_pred,
                 "age",
                 true,
+                false,
+                false,
                 Some(10),
                 0
             )
@@ -6887,6 +7539,8 @@ mod tests {
                 &empty_pred,
                 "age",
                 false,
+                false,
+                false,
                 Some(10),
                 0
             )
@@ -6896,6 +7550,557 @@ mod tests {
             .map(|entry| entry.0.as_slice())
             .collect();
         assert_eq!(keys, vec![&b"k0"[..], &b"k1"[..], &b"k2"[..], &b"k3"[..], &b"k4"[..]]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── Priority 5: covers-skip, reverse iterator, planner, composites ─────
+
+    /// Exact bounds for a composite `(f1 == v1, f2 == v2, …)` equality scan:
+    /// the shared prefix + ordered elements, upper-bounded by the incremented
+    /// last byte.
+    fn composite_eq_bounds(
+        table: &str,
+        fields: &[&str],
+        values: &[&[u8]]
+    ) -> (Vec<u8>, Vec<u8>) {
+        let owned: Vec<String> = fields.iter().map(|f| f.to_string()).collect();
+        let mut start = index_key_prefix(table, &owned);
+        for value in values {
+            start.push(crate::value_codec::TAG_ORDERED);
+            crate::value_codec::push_order_encode_slice(&mut start, value).unwrap();
+        }
+        let mut end = start.clone();
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        (start, end)
+    }
+
+    /// Seeds `items` with `(age, name)` rows THROUGH index maintenance (so
+    /// `__gecko_index_meta` counts are maintained), with an `age` index.
+    fn seed_indexed_age_through_maintenance(label: &str) -> (std::path::PathBuf, RedbWorker) {
+        let path = temp_path(label);
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = vec![("items".to_string(), vec!["age".to_string()])];
+        let mut ops = Vec::new();
+        for i in 0..4u8 {
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(format!("k{i}").into_bytes()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("age", encode_test_int64((i as i64 + 1) * 10)),
+                                ("name", encode_test_string(&format!("n{i}"))),
+                            ]
+                        )
+                    )
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        (path, worker)
+    }
+
+    #[test]
+    fn query_indexed_covered_skips_predicate_recheck() {
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::RowValue;
+        let (path, worker) = seed_indexed_age_fixture("qcov");
+        worker.enable_counters();
+        // EXACT eq bounds + a predicate the index proves → covered, so no row
+        // is fetched-and-rechecked (the index entry itself is authoritative).
+        let (start, end) = eq_bounds("items", "age", &encode_test_int64(20));
+        let pred = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "age".into(),
+                    value: RowValue::Int64(20),
+                },
+            ]
+        );
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[(start, end)], &pred, true, None, 0)
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, b"k1");
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.predicate_evaluations, 0,
+            "a covered query must skip the per-row predicate recheck"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_uncovered_rechecks_and_drift_still_fails() {
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::RowValue;
+        let (path, mut worker) = seed_indexed_age_fixture("qcove-un");
+        // Drift: overwrite k1's age to 21 without touching the index (which
+        // still says 20). With covered=false the recheck wins and the stale
+        // entry is rejected.
+        worker
+            .apply_batch(
+                &[
+                    op_with_table(
+                        OpKind::Put,
+                        "items",
+                        Some(b"k1".to_vec()),
+                        Some(
+                            encode_test_row(
+                                &[
+                                    ("age", encode_test_int64(21)),
+                                    ("nick", encode_test_string("g0")),
+                                ]
+                            )
+                        )
+                    ),
+                ]
+            )
+            .unwrap();
+        let (start, end) = eq_bounds("items", "age", &encode_test_int64(20));
+        let pred20 = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "age".into(),
+                    value: RowValue::Int64(20),
+                },
+            ]
+        );
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[(start, end)], &pred20, false, None, 0)
+            .unwrap();
+        assert!(
+            !got.iter().any(|entry| entry.0 == b"k1"),
+            "drift must fail the recheck when the query is not covered"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_multi_planner_falls_back_to_scan_when_index_cannot_narrow() {
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::RowValue;
+        let (path, mut worker) = seed_indexed_age_fixture("qplan");
+        worker.enable_counters();
+        // Add TWO orphaned index entries so the broad age span has MORE
+        // entries than the user table has rows → the index cannot narrow →
+        // the planner falls back to a full filtered scan.
+        for (age, orphan) in [(99i64, b"kX".as_slice()), (100i64, b"kY".as_slice())] {
+            worker
+                .apply_batch(
+                    &[
+                        Op {
+                            kind: OpKind::Put,
+                            table: "__gecko_index".into(),
+                            key: Some(index_key("items", "age", &encode_test_int64(age), orphan)),
+                            value: Some(orphan.to_vec()),
+                            start: None,
+                            end: None,
+                        },
+                    ]
+                )
+                .unwrap();
+        }
+        let (start, end) = age_field_bounds();
+        let pred = predicate::encode_predicate(
+            &[
+                Filter::Range {
+                    field: "age".into(),
+                    min: Some(RowValue::Int64(10)),
+                    max: Some(RowValue::Int64(40)),
+                },
+            ]
+        );
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[(start, end)], &pred, false, None, 0)
+            .unwrap();
+        // The full scan finds k0..k3 (ages 10..40); the orphans are never
+        // materialized and the range predicate is the source of truth.
+        let mut keys: Vec<Vec<u8>> = got.iter().map(|e| e.0.clone()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()],
+            "planner fallback must return the semantically matching rows"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.candidate_keys_allocated, 0,
+            "fallback must not materialize candidate sets"
+        );
+        assert_eq!(
+            counters.primary_rows_visited, 5,
+            "fallback must scan the user table once (k0..k4)"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_descending_streams_reverse_with_missing_first() {
+        use crate::predicate::{ self };
+        let (path, worker) = seed_indexed_age_fixture("qdesc");
+        let empty_pred = predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        // DESC without an eq bound: missing-field k4 sorts FIRST, then values
+        // descending (k3=40, k2=30, k1=20, k0=10) via the reverse iterator.
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                true,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        let keys: Vec<&[u8]> = got
+            .iter()
+            .map(|entry| entry.0.as_slice())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![&b"k4"[..], &b"k3"[..], &b"k2"[..], &b"k1"[..], &b"k0"[..]],
+            "descending must put missing rows first then values in reverse"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_descending_ties_break_by_ascending_key() {
+        use crate::predicate::{ self };
+        let path = temp_path("qdesc-ties");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // Two rows share age=20 (k1, k0 in index order); ties must break by
+        // ascending record key even though the stream is reversed.
+        let indexes = vec![("items".to_string(), vec!["age".to_string()])];
+        let rows = [
+            (b"k1".to_vec(), 20i64, "n1"),
+            (b"k0".to_vec(), 20i64, "n0"),
+            (b"k2".to_vec(), 30i64, "n2"),
+        ];
+        let mut ops = Vec::new();
+        for (key, age, name) in rows {
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(key),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("age", encode_test_int64(age)),
+                                ("name", encode_test_string(name)),
+                            ]
+                        )
+                    )
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        let empty_pred = predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                true,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        let keys: Vec<Vec<u8>> = got.iter().map(|entry| entry.0.clone()).collect();
+        // Values descending: 30 (k2) then 20; the age=20 tie is key-ascending
+        // (k0 before k1) to match the stable top-K contract.
+        assert_eq!(
+            keys,
+            vec![b"k2".to_vec(), b"k0".to_vec(), b"k1".to_vec()],
+            "descending ties must break by ascending record key"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_complete_field_skips_fallback_scan() {
+        use crate::predicate::{ self };
+        let (path, worker) = seed_indexed_age_through_maintenance("qcomplete");
+        worker.enable_counters();
+        let empty_pred = predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        // Every row carries age (meta count == table len), so the ascending
+        // non-eq path must NOT run the missing-field fallback scan.
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                false,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        let keys: Vec<Vec<u8>> = got.iter().map(|entry| entry.0.clone()).collect();
+        assert_eq!(
+            keys,
+            vec![b"k0".to_vec(), b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()],
+            "all rows carry age → stream order is the full semantic order"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.primary_rows_visited, 0,
+            "a complete sort field must skip the missing-field fallback scan"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_ordered_incomplete_field_still_appends() {
+        use crate::predicate::{ self };
+        let (path, worker) = seed_indexed_age_fixture("qincomplete");
+        worker.enable_counters();
+        let empty_pred = predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+        // The fixture has a missing-age row (k4) and its index entries were
+        // seeded directly (meta count 0), so the append scan must run.
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                false,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        let keys: Vec<Vec<u8>> = got.iter().map(|entry| entry.0.clone()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                b"k0".to_vec(),
+                b"k1".to_vec(),
+                b"k2".to_vec(),
+                b"k3".to_vec(),
+                b"k4".to_vec(),
+            ],
+            "missing-field k4 must be appended when the field is not complete"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.primary_rows_visited, 1,
+            "only the missing-field row (k4) reaches the append scan — the \
+             pre-sized present-set skips the already-matched rows"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn query_indexed_multi_early_stops_with_window() {
+        use crate::predicate::{ self, Filter };
+        use crate::value_codec::RowValue;
+        let path = temp_path("qmulti-window");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = vec![("items".to_string(), vec!["nick".to_string()])];
+        let mut ops = Vec::new();
+        for i in 0..100u16 {
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(format!("r{i}").into_bytes()),
+                    Some(
+                        encode_test_row(
+                            &[("nick", encode_test_string(&format!("g{}", i % 5)))]
+                        )
+                    )
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        worker.enable_counters();
+        // Exact nick == g1 bounds: 20 candidate rows; the window (limit 5)
+        // must stop the row fetch after 5 matches.
+        let (start, end) = eq_bounds("items", "nick", &encode_test_string("g1"));
+        let pred = predicate::encode_predicate(
+            &[
+                Filter::Equals {
+                    field: "nick".into(),
+                    value: RowValue::String("g1".into()),
+                },
+            ]
+        );
+        let got = worker
+            .query_indexed_multi("items", "__gecko_index", &[(start, end)], &pred, true, Some(5), 0)
+            .unwrap();
+        assert_eq!(got.len(), 5);
+        let counters = worker.take_counters();
+        // The candidate span is the exact nick==g1 set (20 entries), but the
+        // window stops the ROW FETCH after 5 matches — no point reads beyond
+        // the page.
+        assert_eq!(counters.index_entries_visited, 20);
+        assert_eq!(counters.primary_rows_fetched, 5);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn composite_index_maintenance_query_and_repair() {
+        use crate::predicate::{ self };
+        let path = temp_path("composite");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker.set_composite_indexes(
+            "items",
+            &[vec!["age".to_string(), "name".to_string()]]
+        );
+        let indexes = vec![("items".to_string(), vec!["age".to_string()])];
+        let mut ops = Vec::new();
+        for i in 0..4u8 {
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(format!("k{i}").into_bytes()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("age", encode_test_int64((i as i64 + 1) * 10)),
+                                ("name", encode_test_string(&format!("n{i}"))),
+                            ]
+                        )
+                    )
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        // The composite key for (age=20, name=n1) exists and joins to k1.
+        let (start, end) = composite_eq_bounds(
+            "items",
+            &["age", "name"],
+            &[&encode_test_int64(20), &encode_test_string("n1")]
+        );
+        let got = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, b"k1");
+        // A different composite value (age=30, name=n2 → k2) is outside the
+        // (age=20, name=n1) bounds and inside its own exact bounds.
+        let (s2, e2) = composite_eq_bounds(
+            "items",
+            &["age", "name"],
+            &[&encode_test_int64(30), &encode_test_string("n2")]
+        );
+        let got2 = worker.query_indexed("items", "__gecko_index", &s2, &e2).unwrap();
+        assert_eq!(got2.len(), 1);
+        assert_eq!(got2[0].0, b"k2");
+
+        // Repair rebuilds a removed composite entry from the primary rows.
+        let composite_key = durable_index_key_multi(
+            "items",
+            &["age", "name"],
+            &[&encode_test_int64(30), &encode_test_string("n2")],
+            b"k2"
+        );
+        worker
+            .apply_batch(
+                &[
+                    Op {
+                        kind: OpKind::Delete,
+                        table: "__gecko_index".into(),
+                        key: Some(composite_key),
+                        value: None,
+                        start: None,
+                        end: None,
+                    },
+                ]
+            )
+            .unwrap();
+        worker.repair_index("items", &["age".to_string()]).unwrap();
+        let (s3, e3) = composite_eq_bounds(
+            "items",
+            &["age", "name"],
+            &[&encode_test_int64(30), &encode_test_string("n2")]
+        );
+        let got3 = worker.query_indexed("items", "__gecko_index", &s3, &e3).unwrap();
+        assert_eq!(got3.len(), 1, "repair must restore the composite entry");
+        assert_eq!(got3[0].0, b"k2");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn composite_index_range_on_trailing_field_is_selective() {
+        use crate::predicate::{ self };
+        let path = temp_path("composite-range");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker.set_composite_indexes(
+            "items",
+            &[vec!["age".to_string(), "name".to_string()]]
+        );
+        let indexes = vec![("items".to_string(), vec!["age".to_string()])];
+        let mut ops = Vec::new();
+        for i in 0..6u8 {
+            ops.push(
+                op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(format!("k{i}").into_bytes()),
+                    Some(
+                        encode_test_row(
+                            &[
+                                ("age", encode_test_int64(30)),
+                                ("name", encode_test_string(&format!("n{i}"))),
+                            ]
+                        )
+                    )
+                )
+            );
+        }
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        worker.enable_counters();
+        // age == 30 AND name in [n1, n3]: a tight composite range → exactly
+        // k1, k2, k3.
+        let owned: Vec<String> = ["age", "name"].iter().map(|f| f.to_string()).collect();
+        let mut start = index_key_prefix("items", &owned);
+        start.push(crate::value_codec::TAG_ORDERED);
+        crate::value_codec::push_order_encode_slice(&mut start, &encode_test_int64(30)).unwrap();
+        start.push(crate::value_codec::TAG_ORDERED);
+        crate::value_codec::push_order_encode_slice(&mut start, &encode_test_string("n1")).unwrap();
+        let mut end = index_key_prefix("items", &owned);
+        end.push(crate::value_codec::TAG_ORDERED);
+        crate::value_codec::push_order_encode_slice(&mut end, &encode_test_int64(30)).unwrap();
+        end.push(crate::value_codec::TAG_ORDERED);
+        crate::value_codec::push_order_encode_slice(&mut end, &encode_test_string("n3")).unwrap();
+        let last = end.pop().unwrap();
+        end.push(last + 1);
+        let got = worker.query_indexed("items", "__gecko_index", &start, &end).unwrap();
+        let mut keys: Vec<Vec<u8>> = got.iter().map(|e| e.0.clone()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![b"k1".to_vec(), b"k2".to_vec(), b"k3".to_vec()],
+            "a composite (eq, range) bound must be exactly selective"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(counters.index_entries_visited, 3, "tight composite range visits only matches");
         let _ = std::fs::remove_file(path);
     }
 
