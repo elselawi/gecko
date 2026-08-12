@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:path/path.dart' as path_util;
@@ -710,13 +711,19 @@ class _CollectionImpl<T> implements Collection<T> {
 
   /// the full-set diff stream is maintained by the worker's
   /// reactive registry. Dart registers on listen, emits the initial snapshot,
-  /// and forwards worker deltas (suppressing no-op emissions) — no Dart-side
-  /// result-set computation.
+  /// and forwards worker deltas (suppressing no-op emissions). The full
+  /// snapshot is maintained INCREMENTALLY here (from added/updated/removed) so
+  /// diff-oriented consumers never pay for a full snapshot clone/transfer/
+  /// decode — the worker skips materializing it for watchAllDiff.
   @override
   Stream<CollectionDiff<T>> watchAllDiff() {
     _db._assertOpen();
     late StreamController<CollectionDiff<T>> controller;
     late StreamSubscription<RegistryDelta> sub;
+    // Dart maintains the full ordered result set (byte-key order, matching the
+    // registry) so `CollectionDiff.snapshot` stays correct without decoding a
+    // full snapshot per emission.
+    final rows = SplayTreeMap<ByteKey, T>();
     var registrationId = -1;
     controller = StreamController<CollectionDiff<T>>(
       onListen: () {
@@ -725,24 +732,29 @@ class _CollectionImpl<T> implements Collection<T> {
         sub = _db.engine.liveDeltas.listen((delta) {
           if (delta.id != registrationId) return;
           if (delta.unchanged) return;
+          final added = <T>[];
+          for (final entry in delta.added) {
+            final row = _fromRow(_codec.decode(entry.value ?? const []));
+            rows[entry.key] = row;
+            added.add(row);
+          }
+          final updated = <T>[];
+          for (final entry in delta.updated) {
+            final row = _fromRow(_codec.decode(entry.value ?? const []));
+            rows[entry.key] = row;
+            updated.add(row);
+          }
+          final removed = <T>[];
+          for (final entry in delta.removed) {
+            rows.remove(entry.key);
+            removed.add(_fromRow(_codec.decode(entry.value ?? const [])));
+          }
           controller.add(
             CollectionDiff<T>(
-              added: [
-                for (final entry in delta.added)
-                  _fromRow(_codec.decode(entry.value ?? const [])),
-              ],
-              updated: [
-                for (final entry in delta.updated)
-                  _fromRow(_codec.decode(entry.value ?? const [])),
-              ],
-              removed: [
-                for (final entry in delta.removed)
-                  _fromRow(_codec.decode(entry.value ?? const [])),
-              ],
-              snapshot: [
-                for (final entry in delta.snapshot)
-                  _fromRow(_codec.decode(entry.value ?? const [])),
-              ],
+              added: added,
+              updated: updated,
+              removed: removed,
+              snapshot: [for (final row in rows.values) row],
             ),
           );
         });
@@ -763,16 +775,18 @@ class _CollectionImpl<T> implements Collection<T> {
             return;
           }
           registrationId = registration.id;
-          final initial = [
-            for (final entry in registration.initial)
-              _fromRow(_codec.decode(entry.value ?? const [])),
-          ];
+          final initial = <T>[];
+          for (final entry in registration.initial) {
+            final row = _fromRow(_codec.decode(entry.value ?? const []));
+            rows[entry.key] = row;
+            initial.add(row);
+          }
           controller.add(
             CollectionDiff<T>(
               added: initial,
               updated: const [],
               removed: const [],
-              snapshot: initial,
+              snapshot: [for (final row in rows.values) row],
             ),
           );
         }());
