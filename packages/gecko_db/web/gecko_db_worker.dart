@@ -28,6 +28,7 @@ library;
 import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
+import 'dart:typed_data';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
     show ExternalLibrary, jsEval;
@@ -41,6 +42,55 @@ import 'package:gecko_db/src/worker/native_dispatch.dart'
     show dispatchNativeWorker;
 import 'package:gecko_db/src/worker/web_worker_protocol.dart';
 
+/// Builds a JS `Uint8Array` from [bytes] for binary postMessage leaves.
+JSObject _newUint8Array(Uint8List bytes) {
+  final ctor = globalContext.getProperty('Uint8Array'.toJS) as JSFunction;
+  final arr = ctor.callAsFunction(null, bytes.length.toJS) as JSObject;
+  for (var i = 0; i < bytes.length; i++) {
+    arr.setProperty(i.toString().toJS, bytes[i].toJS);
+  }
+  return arr;
+}
+
+/// Converts a binary-encoded response map into a JS message with transferable
+/// byte leaves, returning `(message, transferList)`.
+(JSObject, JSArray<JSAny?>) _jsifyBinary(Map<String, Object?> message) {
+  final transferables = <JSAny?>[];
+  JSAny? walk(Object? v) {
+    if (v == null) return null;
+    if (v is Map && v[bytesTag] is List<int>) {
+      final arr = _newUint8Array(
+        v[bytesTag] is Uint8List
+            ? v[bytesTag] as Uint8List
+            : Uint8List.fromList(v[bytesTag] as List<int>),
+      );
+      transferables.add(arr.getProperty('buffer'.toJS));
+      return arr;
+    }
+    if (v is Map) {
+      final obj = JSObject();
+      for (final entry in v.entries) {
+        obj.setProperty(entry.key.toString().toJS, walk(entry.value));
+      }
+      return obj;
+    }
+    if (v is List) {
+      return <JSAny?>[for (final e in v) walk(e)].toJS;
+    }
+    if (v is String) return v.toJS;
+    if (v is int) return v.toJS;
+    if (v is bool) return v.toJS;
+    if (v is double) return v.toJS;
+    return v as JSAny?;
+  }
+
+  final root = JSObject();
+  for (final entry in message.entries) {
+    root.setProperty(entry.key.toJS, walk(entry.value));
+  }
+  return (root, transferables.toJS);
+}
+
 /// The opened FRB worker, or null before `open` / after `close`. Mutable
 /// top-level state so the `onmessage` handler can reach the worker opened by
 /// [_handleOpen].
@@ -50,7 +100,13 @@ Future<void> main() async {
   final global = globalContext;
 
   void post(Map<String, Object?> message) {
-    global.callMethod('postMessage'.toJS, encodeResponse(message).toJS);
+    final binary = encodeResponseBinary(message);
+    try {
+      final (jsMessage, transferables) = _jsifyBinary(binary);
+      global.callMethod('postMessage'.toJS, jsMessage, transferables);
+    } catch (_) {
+      global.callMethod('postMessage'.toJS, encodeResponse(message).toJS);
+    }
   }
 
   void postStartupError(String error) =>
@@ -89,9 +145,7 @@ Future<void> main() async {
       'onmessage'.toJS,
       ((JSAny? event) {
         final data = (event as JSObject).getProperty('data'.toJS);
-        final text = data.dartify();
-        if (text is! String) return;
-        final message = decodeMessage(text);
+        final message = decodeMessageBinary(data.dartify());
         final cmd = message['cmd'] as String?;
         final id = message['id'];
 
@@ -117,14 +171,16 @@ Future<void> main() async {
         if (cmd == 'request' && worker != null) {
           final op = message['op'] as String;
           final rawArgs = message['args'] as List? ?? const <Object?>[];
-          final args = <Object?>[for (final arg in rawArgs) decodeValue(arg)];
+          final args = <Object?>[
+            for (final arg in rawArgs) decodeValueBinary(arg),
+          ];
           dispatchNativeWorker(worker, op, args)
               .then((result) {
                 post(<String, Object?>{
                   'type': 'response',
                   'id': id,
                   'ok': true,
-                  'value': encodeValue(result),
+                  'value': encodeValueBinary(result),
                 });
               })
               .catchError((Object error) {

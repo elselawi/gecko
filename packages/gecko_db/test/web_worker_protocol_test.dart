@@ -269,6 +269,92 @@ void main() {
     });
   });
 
+  group('web worker protocol binary codec', () {
+    test('byte arrays round-trip as transferable bytes tags (zero copy)',
+        () {
+      final bytes = Uint8List.fromList(<int>[0, 1, 2, 250, 251, 252]);
+      final encoded = encodeValueBinary(bytes);
+      expect(encoded, isA<Map<String, Object?>>());
+      expect((encoded as Map<String, Object?>)[bytesTag], same(bytes),
+          reason: 'a Uint8List leaf is wrapped without copying');
+      final decoded = decodeValueBinary(encoded);
+      expect(decoded, same(bytes));
+    });
+
+    test('plain List<int> leaves are converted once to Uint8List', () {
+      final encoded = encodeValueBinary(<int>[1, 2, 3]);
+      final leaf = (encoded as Map<String, Object?>)[bytesTag];
+      expect(leaf, isA<Uint8List>());
+      final decoded = decodeValueBinary(encoded);
+      expect(decoded, isA<Uint8List>());
+      expect(List<int>.from(decoded as Uint8List), [1, 2, 3]);
+    });
+
+    test('binary request messages round-trip structure and bytes', () {
+      final request = <String, Object?>{
+        'cmd': 'request',
+        'id': 7,
+        'op': 'applyBatch',
+        'args': <Object?>[
+          encodeValueBinary(<int>[9, 8, 7]),
+          <String, Object?>{'inner': encodeValueBinary(<int>[4, 5])},
+        ],
+      };
+      final encoded = encodeRequestBinary(request);
+      final decoded = decodeMessageBinary(encoded);
+      expect(decoded['cmd'], 'request');
+      expect(decoded['id'], 7);
+      expect(decoded['op'], 'applyBatch');
+      final args = (decoded['args'] as List).cast<Object?>();
+      expect(decodeValueBinary(args[0]), <int>[9, 8, 7]);
+      final inner = (args[1] as Map)['inner'];
+      expect(decodeValueBinary(inner), <int>[4, 5]);
+    });
+
+    test('binary decoder accepts a JSON string message (interop fallback)',
+        () {
+      final jsonString = encodeRequest(<String, Object?>{
+        'cmd': 'request',
+        'id': 1,
+        'args': <Object?>[encodeValue(<int>[1, 2])],
+      });
+      final decoded = decodeMessageBinary(jsonString);
+      expect(decoded['cmd'], 'request');
+      expect(decoded['id'], 1);
+    });
+
+    test('binary decoder accepts legacy b64 leaves (mixed-version interop)',
+        () {
+      final decoded = decodeValueBinary(<String, Object?>{
+        'b64': base64Encode(<int>[1, 2, 3]),
+      });
+      expect(List<int>.from(decoded as Uint8List), [1, 2, 3]);
+    });
+
+    test('binary codec round-trips StorageStats and non-byte values', () {
+      final stats = StorageStats(
+        physicalBytes: BigInt.from(1024),
+        logicalBytes: BigInt.from(512),
+        tableCount: BigInt.from(3),
+        openSnapshots: BigInt.from(1),
+        commitSequence: BigInt.from(99),
+      );
+      final decoded = decodeValueBinary(encodeValueBinary(stats));
+      expect(decoded, isA<StorageStats>());
+      expect((decoded as StorageStats).physicalBytes, BigInt.from(1024));
+      final list = decodeValueBinary(encodeValueBinary(<Object?>[
+        'hello',
+        42,
+        true,
+        null,
+      ])) as List<Object?>;
+      expect(list[0], 'hello');
+      expect(list[1], 42);
+      expect(list[2], true);
+      expect(list[3], isNull);
+    });
+  });
+
   group('web worker client (VM stub)', () {
     test('open throws UnsupportedError on the VM', () async {
       await expectLater(

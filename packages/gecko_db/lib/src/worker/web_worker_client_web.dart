@@ -8,6 +8,7 @@ library;
 import 'dart:async';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
+import 'dart:typed_data';
 
 import '../backend/byte_key.dart';
 import '../backend/raw_backend.dart';
@@ -19,6 +20,58 @@ import 'web_worker_protocol.dart';
 @JS('Worker')
 extension type _WorkerCtor._(JSObject _) implements JSObject {
   external factory _WorkerCtor(String url);
+}
+
+/// Builds a JS `Uint8Array` from [bytes] (the transport's transferable
+/// byte-leaf representation).
+JSObject _newUint8Array(Uint8List bytes) {
+  final ctor = globalContext.getProperty('Uint8Array'.toJS) as JSFunction;
+  final arr = ctor.callAsFunction(null, bytes.length.toJS) as JSObject;
+  for (var i = 0; i < bytes.length; i++) {
+    arr.setProperty(i.toString().toJS, bytes[i].toJS);
+  }
+  return arr;
+}
+
+/// Converts [message] (a map whose byte leaves are `{"bytes": Uint8List}`)
+/// into a JS object, replacing byte leaves with JS `Uint8Array`s, and returns
+/// the transfer list (their underlying `ArrayBuffer`s) for zero-copy
+/// `postMessage`.
+(JSObject, JSArray<JSAny?>) _jsifyBinary(Map<String, Object?> message) {
+  final transferables = <JSAny?>[];
+  JSAny? walk(Object? v) {
+    if (v == null) return null;
+    if (v is Map && v[bytesTag] is List<int>) {
+      final arr = _newUint8Array(
+        v[bytesTag] is Uint8List
+            ? v[bytesTag] as Uint8List
+            : Uint8List.fromList(v[bytesTag] as List<int>),
+      );
+      transferables.add(arr.getProperty('buffer'.toJS));
+      return arr;
+    }
+    if (v is Map) {
+      final obj = JSObject();
+      for (final entry in v.entries) {
+        obj.setProperty(entry.key.toString().toJS, walk(entry.value));
+      }
+      return obj;
+    }
+    if (v is List) {
+      return <JSAny?>[for (final e in v) walk(e)].toJS;
+    }
+    if (v is String) return v.toJS;
+    if (v is int) return v.toJS;
+    if (v is bool) return v.toJS;
+    if (v is double) return v.toJS;
+    return v as JSAny?;
+  }
+
+  final root = JSObject();
+  for (final entry in message.entries) {
+    root.setProperty(entry.key.toJS, walk(entry.value));
+  }
+  return (root, transferables.toJS);
 }
 
 class WebWorkerClient {
@@ -53,13 +106,17 @@ class WebWorkerClient {
     final worker = _WorkerCtor(workerUrl);
     final client = WebWorkerClient._(worker, '');
 
-    // Wire the worker's onmessage/onerror to the stream.
+    // Wire the worker's onmessage/onerror to the stream. Binary (structured)
+    // messages arrive as JS objects and are delivered as maps; JSON
+    // fallback messages arrive as strings.
     worker.setProperty(
       'onmessage'.toJS,
       ((JSAny? event) {
         final data = (event as JSObject).getProperty('data'.toJS);
-        final text = data.dartify();
-        if (text is String) client._messages.add(text);
+        final decoded = data.dartify();
+        if (decoded is String || decoded is Map) {
+          client._messages.add(decoded);
+        }
       }).toJS,
     );
     worker.setProperty(
@@ -105,14 +162,22 @@ class WebWorkerClient {
   }
 
   void _send(Map<String, Object?> request) {
-    _worker.callMethod('postMessage'.toJS, encodeRequest(request).toJS);
+    // Binary channel (preferred): byte leaves travel as transferable
+    // ArrayBuffers. Falls back to the JSON/base64 channel when the
+    // environment cannot post binary messages.
+    final binary = encodeRequestBinary(request);
+    try {
+      final (jsMessage, transferables) = _jsifyBinary(binary);
+      _worker.callMethod('postMessage'.toJS, jsMessage, transferables);
+    } catch (_) {
+      _worker.callMethod('postMessage'.toJS, encodeRequest(request).toJS);
+    }
   }
 
   int _nextId() => ++_nextRequestId;
 
   void _handleMessage(Object? message) {
-    if (message is! String) return;
-    final decoded = decodeMessage(message);
+    final decoded = decodeMessageBinary(message);
     final id = decoded['id'];
     final type = decoded['type'] as String?;
 
@@ -158,11 +223,11 @@ class WebWorkerClient {
       'cmd': 'request',
       'id': id,
       'op': operation,
-      'args': <Object?>[for (final arg in arguments) encodeValue(arg)],
+      'args': <Object?>[for (final arg in arguments) encodeValueBinary(arg)],
     });
     final response = await completer.future;
     if (response['ok'] == true) {
-      return decodeValue(response['value']);
+      return decodeValueBinary(response['value']);
     }
     throw StateError(response['error'] as String? ?? 'operation failed');
   }
@@ -289,6 +354,26 @@ class WebWorkerClient {
   /// localMutationId) in Rust; returns (key, record) pairs for Dart to decode.
   Future<List<RawEntry>> pendingChanges() async {
     final result = await _request('pendingChanges', const <Object?>[]);
+    return _decodeEntries(result);
+  }
+
+  /// Filters the sync-state table in Rust to the matching records.
+  Future<List<RawEntry>> syncStateMatching(List<List<int>> matchers) async {
+    final result = await _request('syncStateMatching', <Object?>[
+      [for (final m in matchers) m],
+    ]);
+    return _decodeEntries(result);
+  }
+
+  /// Range-filtered `changesSince(lastSeq)` in Rust.
+  Future<List<RawEntry>> changesSince(int seq) async {
+    final result = await _request('changesSince', <Object?>[seq]);
+    return _decodeEntries(result);
+  }
+
+  /// Attachment metadata whose parent row is missing (scan in Rust).
+  Future<List<RawEntry>> orphanedAttachments() async {
+    final result = await _request('orphanedAttachments', const <Object?>[]);
     return _decodeEntries(result);
   }
 
