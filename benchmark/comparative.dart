@@ -380,11 +380,7 @@ class _SqliteBackend implements _Backend {
     final rows = _get.select([id]).toList();
     if (rows.isEmpty) return null;
     final r = rows.first;
-    return <String, Object?>{
-      'id': id,
-      'num': r['num'],
-      'group': r['group'],
-    };
+    return <String, Object?>{'id': id, 'num': r['num'], 'group': r['group']};
   }
 
   @override
@@ -399,23 +395,15 @@ class _SqliteBackend implements _Backend {
 
   @override
   Future<List<Map<String, Object?>>> scanAll() async => [
-        for (final r in _scan.select([]))
-          <String, Object?>{
-            'id': r['id'],
-            'num': r['num'],
-            'group': r['group'],
-          },
-      ];
+    for (final r in _scan.select([]))
+      <String, Object?>{'id': r['id'], 'num': r['num'], 'group': r['group']},
+  ];
 
   @override
   Future<List<Map<String, Object?>>> queryGroup(String group) async => [
-        for (final r in _query.select([group]))
-          <String, Object?>{
-            'id': r['id'],
-            'num': r['num'],
-            'group': r['group'],
-          },
-      ];
+    for (final r in _query.select([group]))
+      <String, Object?>{'id': r['id'], 'num': r['num'], 'group': r['group']},
+  ];
 
   @override
   Future<void> close() async {
@@ -444,8 +432,11 @@ class _IsarBackend implements _Backend {
     ..num = row['num'] as int
     ..group = row['group'] as String;
 
-  Map<String, Object?> _toRow(Item item) =>
-      <String, Object?>{'id': item.id - 1, 'num': item.num, 'group': item.group};
+  Map<String, Object?> _toRow(Item item) => <String, Object?>{
+    'id': item.id - 1,
+    'num': item.num,
+    'group': item.group,
+  };
 
   @override
   Future<void> open(String dirPath) async {
@@ -462,22 +453,19 @@ class _IsarBackend implements _Backend {
   }
 
   @override
-  Future<void> seed(List<Map<String, Object?>> rows) => _isar.writeTxn(() async {
-        await _coll.putAll(
-          [for (final r in rows) _toItem(r['id'] as int, r)],
-        );
+  Future<void> seed(List<Map<String, Object?>> rows) =>
+      _isar.writeTxn(() async {
+        await _coll.putAll([for (final r in rows) _toItem(r['id'] as int, r)]);
       });
 
   @override
-  Future<void> put(int id, Map<String, Object?> row) => _isar.writeTxn(
-        () => _coll.put(_toItem(id, row)),
-      );
+  Future<void> put(int id, Map<String, Object?> row) =>
+      _isar.writeTxn(() => _coll.put(_toItem(id, row)));
 
   @override
-  Future<void> bulkPut(List<Map<String, Object?>> rows) => _isar.writeTxn(() async {
-        await _coll.putAll(
-          [for (final r in rows) _toItem(r['id'] as int, r)],
-        );
+  Future<void> bulkPut(List<Map<String, Object?>> rows) =>
+      _isar.writeTxn(() async {
+        await _coll.putAll([for (final r in rows) _toItem(r['id'] as int, r)]);
       });
 
   @override
@@ -487,24 +475,22 @@ class _IsarBackend implements _Backend {
   }
 
   @override
-  Future<void> update(int id, Map<String, Object?> row) => _isar.writeTxn(
-        () => _coll.put(_toItem(id, row)),
-      );
+  Future<void> update(int id, Map<String, Object?> row) =>
+      _isar.writeTxn(() => _coll.put(_toItem(id, row)));
 
   @override
-  Future<void> delete(int id) => _isar.writeTxn(
-        () => _coll.delete(id + 1),
-      );
+  Future<void> delete(int id) => _isar.writeTxn(() => _coll.delete(id + 1));
 
   @override
-  Future<List<Map<String, Object?>>> scanAll() async =>
-      [for (final item in await _coll.where().findAll()) _toRow(item)];
+  Future<List<Map<String, Object?>>> scanAll() async => [
+    for (final item in await _coll.where().findAll()) _toRow(item),
+  ];
 
   @override
   Future<List<Map<String, Object?>>> queryGroup(String group) async => [
-        for (final item in await _coll.where().groupEqualTo(group).findAll())
-          _toRow(item),
-      ];
+    for (final item in await _coll.where().groupEqualTo(group).findAll())
+      _toRow(item),
+  ];
 
   @override
   Future<void> close() => _isar.close();
@@ -525,8 +511,11 @@ class _DriftBackend implements _Backend {
         group: row['group'] as String,
       );
 
-  Map<String, Object?> _toRow(ItemRow r) =>
-      <String, Object?>{'id': r.id, 'num': r.num, 'group': r.group};
+  Map<String, Object?> _toRow(ItemRow r) => <String, Object?>{
+    'id': r.id,
+    'num': r.num,
+    'group': r.group,
+  };
 
   @override
   Future<void> open(String dirPath) async {
@@ -557,9 +546,9 @@ class _DriftBackend implements _Backend {
 
   @override
   Future<Map<String, Object?>?> get(int id) async {
-    final row = await (_db.select(_db.items)
-          ..where((t) => t.id.equals(id)))
-        .getSingleOrNull();
+    final row = await (_db.select(
+      _db.items,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
     return row == null ? null : _toRow(row);
   }
 
@@ -574,17 +563,17 @@ class _DriftBackend implements _Backend {
 
   @override
   Future<List<Map<String, Object?>>> scanAll() async {
-    final rows = await (_db.select(_db.items)
-          ..orderBy([(t) => drift.OrderingTerm.asc(t.id)]))
-        .get();
+    final rows = await (_db.select(
+      _db.items,
+    )..orderBy([(t) => drift.OrderingTerm.asc(t.id)])).get();
     return [for (final r in rows) _toRow(r)];
   }
 
   @override
   Future<List<Map<String, Object?>>> queryGroup(String group) async {
-    final rows = await (_db.select(_db.items)
-          ..where((t) => t.group.equals(group)))
-        .get();
+    final rows = await (_db.select(
+      _db.items,
+    )..where((t) => t.group.equals(group))).get();
     return [for (final r in rows) _toRow(r)];
   }
 
