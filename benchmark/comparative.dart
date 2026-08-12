@@ -55,6 +55,13 @@ const int _deleteOps = 100;
 const int _scanOps = 2;
 const int _queryOps = 50;
 
+/// Unmeasured read-path JIT warm-up before the hot/cold read timing. Every
+/// backend runs in a fresh process, so the first reads JIT-compile the get()
+/// path; timing a cold read path inflates the hot/cold read means. Warm the
+/// hit path on the hot key and the native miss path on existing keys outside
+/// the cold-read set (see `_runBackend`).
+const int _warmupReads = 5000;
+
 // Sizes are modest because Sembast rewrites its whole store file per
 // transaction (O(n²) on individual puts) — at 10k seed rows a single backend
 // alone would take many minutes. The benchmark documents this cost honestly;
@@ -737,6 +744,17 @@ Future<List<_Row>> _runBackend(
       bulkWatch.elapsedMicroseconds / _bulkRows / 1000,
     ),
   );
+
+  // Read-path JIT warm-up (unmeasured). Warm the hit path on the hot key so
+  // hotRead measures steady-state cache hits, and warm the native miss path
+  // on existing keys OUTSIDE the cold-read set (0..seedRows) so coldRead
+  // still measures genuine cache misses on a JIT-warm path.
+  for (var i = 0; i < _warmupReads; i++) {
+    await backend.get(0);
+  }
+  for (var i = 0; i < _warmupReads; i++) {
+    await backend.get(_seedRows + (i % (_insertOps + _bulkRows)));
+  }
 
   // 3. Hot read.
   final hotWatch = Stopwatch()..start();
