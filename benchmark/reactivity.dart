@@ -35,6 +35,8 @@ import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
 
+import 'reactivity_helpers.dart';
+
 const List<int> _sizes = [10000, 50000];
 const int _liveQueries = 6; // N live filtered queries (per size)
 const int _writeRuns = 40; // writes measured per size
@@ -126,12 +128,11 @@ Future<void> main(List<String> args) async {
   await _profileLargeWatches(nativePath);
 }
 
-/// Holds one live subscription's emission counter.
+/// Holds one live subscription's delivery counter.
 class _Live {
-  _Live(this.sub, this.name);
-  final StreamSubscription<List<_Row>> sub;
+  _Live(this.counter, this.name);
+  final EmissionCounter<List<_Row>> counter;
   final String name;
-  int emissions = 0;
 }
 
 Future<({int avg, int p50})?> _profileSize(
@@ -185,14 +186,27 @@ Future<({int avg, int p50})?> _profileSize(
     }
 
     // N live filtered queries, each matching exactly one row (num in 1..N).
+    // Every listener increments exactly one counter per received event so the
+    // benchmark actually verifies that the measured subscription delivered.
     final lives = <_Live>[];
     for (var q = 0; q < _liveQueries; q++) {
       final name = 'num==${q + 1}';
-      final sub = col.where({'num': q + 1}).watch().listen((_) {});
-      lives.add(_Live(sub, name));
+      lives.add(_Live(
+        EmissionCounter<List<_Row>>(col.where({'num': q + 1}).watch()),
+        name,
+      ));
     }
-    // Wait for every subscription to emit its initial materialized result.
+    // Registration latency: time until every subscription has delivered its
+    // initial materialized snapshot.
+    final regSw = Stopwatch()..start();
     await _waitAll(lives);
+    regSw.stop();
+    if (!quiet) {
+      stdout.writeln(
+        '  $_liveQueries live registrations delivered initial snapshots in '
+        '${regSw.elapsedMicroseconds} µs',
+      );
+    }
 
     // From here on, incremental updates must perform zero full scans.
     db.engine.resetDiagnosticsCounters();
@@ -219,7 +233,7 @@ Future<({int avg, int p50})?> _profileSize(
     final scanned = db.engine.scannedRows;
     if (quiet) {
       for (final l in lives) {
-        await l.sub.cancel();
+        await l.counter.cancel();
       }
       await db.close();
       return null;
@@ -236,7 +250,7 @@ Future<({int avg, int p50})?> _profileSize(
     );
 
     for (final l in lives) {
-      await l.sub.cancel();
+      await l.counter.cancel();
     }
     await db.close();
     return (avg: total ~/ timings.length, p50: p50);
@@ -246,7 +260,9 @@ Future<({int avg, int p50})?> _profileSize(
 }
 
 /// Performs one single-row write and waits until every live subscription has
-/// emitted; returns the elapsed microseconds.
+/// emitted; returns the elapsed microseconds. Throws a descriptive error if
+/// any subscription does not deliver within the poll budget instead of
+/// silently timing out and reporting a bogus (timeout-dominated) latency.
 Future<int> _singleWrite(
   DatabaseImpl db,
   Collection<_Row> col,
@@ -254,28 +270,35 @@ Future<int> _singleWrite(
   String id,
   int matchNum,
 ) async {
-  final before = [for (final l in lives) l.emissions];
+  final before = [for (final l in lives) l.counter.count];
   final sw = Stopwatch()..start();
   await col.put(_Row(id, matchNum, 'g0')); // flips this row into num==matchNum
+  var delivered = false;
   for (var i = 0; i < 20000; i++) {
-    var done = true;
+    delivered = true;
     for (var j = 0; j < lives.length; j++) {
-      if (lives[j].emissions == before[j]) {
-        done = false;
+      if (lives[j].counter.count == before[j]) {
+        delivered = false;
         break;
       }
     }
-    if (done) break;
+    if (delivered) break;
     await Future<void>.delayed(_poll);
   }
   sw.stop();
+  if (!delivered) {
+    throw StateError(
+      'timed out waiting for all $_liveQueries live emissions after '
+      'write "$id"',
+    );
+  }
   return sw.elapsedMicroseconds;
 }
 
-Future<void> _waitAll(List<_Live> lives) async {
-  for (var i = 0; i < 400 && lives.any((l) => l.emissions == 0); i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 5));
-  }
+/// Waits for every subscription to deliver its initial emission, throwing a
+/// descriptive timeout error rather than silently continuing.
+Future<void> _waitAll(List<_Live> lives) {
+  return waitForInitialEmissions([for (final l in lives) l.counter]);
 }
 
 // ── large watched result sets / windowed / relationship watches ─────────────

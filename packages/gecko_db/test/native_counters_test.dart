@@ -188,4 +188,44 @@ void main() {
     expect(counters.registryRowsCloned, greaterThan(BigInt.zero));
     expect(counters.registrySnapshotBytes, greaterThan(BigInt.zero));
   });
+
+  test(
+    'global Database.watchAll bypasses the worker registry; collection watch uses it',
+    () async {
+      await backend.enableCounters();
+      final col = db.collection<Map<String, Object?>>(
+        'items',
+        toRow: (m) => m,
+        fromRow: (m) => Map<String, Object?>.from(m as Map),
+        id: (m) => m['id'],
+      );
+      await col.put({'id': 'a', 'num': 1});
+
+      // The global change feed is Dart-side (ChangeBus): a write while it is
+      // subscribed must not drive any worker-registry work at all.
+      final globalSub = db.watchAll().listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+      await col.put({'id': 'b', 'num': 2});
+      await Future<void>.delayed(Duration.zero);
+      await globalSub.cancel();
+      final afterGlobal = await backend.takeCounters();
+      expect(afterGlobal.registryRowsAdded, BigInt.zero,
+          reason: 'global feed must not touch the worker registry');
+      expect(afterGlobal.registryRowsCloned, BigInt.zero);
+      expect(afterGlobal.registrySnapshotBytes, BigInt.zero);
+
+      // The same write with a collection watch registered must drive
+      // registry work: the changed row joins the result set and every
+      // touched registration clones its snapshot.
+      final colSub = col.watchAll().listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+      await col.put({'id': 'c', 'num': 3});
+      await Future<void>.delayed(Duration.zero);
+      await colSub.cancel();
+      final afterCol = await backend.takeCounters();
+      expect(afterCol.registryRowsAdded, greaterThan(BigInt.zero));
+      expect(afterCol.registryRowsCloned, greaterThan(BigInt.zero));
+      expect(afterCol.registrySnapshotBytes, greaterThan(BigInt.zero));
+    },
+  );
 }
