@@ -271,6 +271,7 @@ class NativeWorkerClient {
   }
   // coverage:ignore-end
 
+  // coverage:ignore-start web only validated live by the browser smoke suites
   void _adoptWebWorker(NativeWorker worker) {
     _worker = worker;
     _workerIsolateName = 'gecko-native-worker (web, same isolate)';
@@ -305,6 +306,7 @@ class NativeWorkerClient {
     _workerAlive = false;
     if (!_workerExited.isCompleted) _workerExited.complete();
   }
+  // coverage:ignore-end web
 
   /// Whether the worker isolate completed its startup handshake and has not
   /// yet reported termination. Test/qualification surface.

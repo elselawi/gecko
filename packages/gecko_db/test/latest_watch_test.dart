@@ -83,6 +83,42 @@ void main() {
       expect(errors, hasLength(1));
       await source.close();
     });
+
+    test('pause pauses the source and resume redelivers the buffered state',
+        () async {
+      final source = StreamController<int>(sync: true);
+      final out = <int>[];
+      final sub = latestStateOnly(source.stream).listen(out.add);
+      addTearDown(() => sub.cancel());
+      sub.pause();
+      source.add(1);
+      source.add(2);
+      // While paused the adapter pauses the source; events buffer there.
+      await flush();
+      expect(out, isEmpty);
+      sub.resume();
+      await flush();
+      await flush();
+      // Buffered events are redelivered on resume (each in its own turn).
+      expect(out, [1, 2]);
+      await source.close();
+    });
+
+    test('cancel tears down the source subscription', () async {
+      final source = StreamController<int>(sync: true);
+      var done = false;
+      final sub = latestStateOnly(source.stream).listen(
+        (_) {},
+        onDone: () => done = true,
+      );
+      await sub.cancel();
+      source.add(1);
+      await source.close();
+      await flush();
+      // The adapter unsubscribed from the source, so the source close never
+      // reaches the (cancelled) listener.
+      expect(done, isFalse);
+    });
   });
 
   group('watchAllLatest (collection)', () {
