@@ -1027,10 +1027,6 @@ mod tests {
         changed
     }
 
-    /// Builds the post-commit value map the registry consumes: for every
-    /// affected (table, key), the current row bytes (None when absent), read
-    /// once from [txn] — replacing the registry's own per-key re-reads.
-
     /// Applies a batch directly through the registry (unit level): builds the
     /// post-commit value map from a write transaction, then calls
     /// `registry.apply` in the same transaction.
