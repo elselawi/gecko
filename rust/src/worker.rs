@@ -1837,6 +1837,7 @@ impl RedbWorker {
         Ok(count)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn query_indexed_distinct_with(
         &self,
         transaction: &ReadTransaction,
@@ -3986,7 +3987,7 @@ fn index_key_values(key: &[u8]) -> Option<Vec<crate::value_codec::RowValue>> {
     }
     // elements = [table, f1, f2, …, v1, v2, …]; the values occupy the
     // trailing half (n = (len-1)/2 fields, values start at index 1+n).
-    let value_start = (elements.len() + 1) / 2;
+    let value_start = elements.len().div_ceil(2);
     Some(elements[value_start..].to_vec())
 }
 
@@ -7966,7 +7967,6 @@ mod tests {
 
     #[test]
     fn composite_index_maintenance_query_and_repair() {
-        use crate::predicate::{ self };
         let path = temp_path("composite");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         worker.set_composite_indexes(
@@ -8048,7 +8048,6 @@ mod tests {
 
     #[test]
     fn composite_index_range_on_trailing_field_is_selective() {
-        use crate::predicate::{ self };
         let path = temp_path("composite-range");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         worker.set_composite_indexes(
