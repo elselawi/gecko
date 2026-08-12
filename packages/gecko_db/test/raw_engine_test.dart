@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:gecko_db/gecko_db.dart';
 import 'package:gecko_db/src/backend/raw_backend.dart'
-    show RawBatchPlan, DirectReadBackend, PreparedBatchBackend;
+    show RawBatchPlan, RawChangeTemplate, DirectReadBackend, PreparedBatchBackend;
 import 'package:test/test.dart';
 
 import 'support/native_database.dart';
@@ -206,30 +206,74 @@ void main() {
     });
   });
 
-  group('RawEngine: selective invalidation', () {
-    test('a batch write invalidates only the touched keys, not the whole LRU',
+  group('RawEngine: write round trips are bounded (plan 2.1/2.2 guards)', () {
+    test('a single put/delete makes no snapshot round trip', () async {
+      final counting = _CountingBackend(backend);
+      final eng = RawEngine(counting, lruCapacity: 4, inFlightBatchLimit: 2);
+      await eng.rawPut('t', ByteKey([1]), [10]);
+      await eng.rawDelete('t', ByteKey([1]));
+      expect(
+        counting.snapshotCount,
+        0,
+        reason: 'plain writes must not create/dispose a worker snapshot',
+      );
+      expect(
+        counting.preparedBatchCalls,
+        2,
+        reason: 'one prepared write batch per mutation, no per-write reads',
+      );
+      expect(counting.directReads, 0);
+      await eng.dispose();
+    });
+
+    test('a large prepared batch issues one write and zero per-row reads',
         () async {
       final counting = _CountingBackend(backend);
-      final eng = RawEngine(counting, lruCapacity: 16, inFlightBatchLimit: 2);
-      // Cache two hot keys.
-      await eng.rawPut('t', ByteKey([1]), [1]);
-      await eng.rawPut('t', ByteKey([2]), [2]);
-      expect(await eng.rawGet('t', ByteKey([1])), [1]);
-      expect(await eng.rawGet('t', ByteKey([2])), [2]);
-      // A batch touching key 1 only.
-      await eng.applyPreparedPlan(
-        RawBatchPlan(ops: [RawPut('t', ByteKey([1]), [10])]),
+      final eng = RawEngine(counting, lruCapacity: 4, inFlightBatchLimit: 2);
+      const count = 1000;
+      const codec = DefaultWireCodec();
+      final plan = RawBatchPlan(
+        ops: [
+          for (var i = 0; i < count; i++) RawPut('t', ByteKey([i]), [i]),
+        ],
+        previousOperationIndexes: [for (var i = 0; i < count; i++) i],
+        changeTemplates: [
+          for (var i = 0; i < count; i++)
+            RawChangeTemplate(
+              operationIndex: i,
+              ordinal: i,
+              syncStateKey: ByteKey([1, 2, 3]),
+              recordTemplate: codec.encode(<String, Object?>{
+                'localMutationId': 0,
+                'recordId': i,
+                'timestamp': DateTime.fromMillisecondsSinceEpoch(0),
+                'collection': 't',
+                'kind': 'put',
+                'value': {'id': i},
+                'origin': 'user',
+                'dirty': true,
+                'syncPhase': 'pending',
+              }),
+              fillPreviousVersion: true,
+            ),
+        ],
       );
-      // Key 2 must still be cache-resident (no full-clear after the batch).
-      final before = counting.directReads;
-      expect(await eng.rawGet('t', ByteKey([2])), [2]);
+      await eng.applyPreparedPlan(plan);
+      expect(
+        counting.preparedBatchCalls,
+        1,
+        reason: 'N mutations cross the boundary once as one encoded batch',
+      );
       expect(
         counting.directReads,
-        before,
-        reason: 'an unrelated hot key must survive a batch write',
+        0,
+        reason: 'previous-row reads happen inside the Rust write transaction',
       );
-      // Key 1 was invalidated → read through to the new value.
-      expect(await eng.rawGet('t', ByteKey([1])), [10]);
+      expect(
+        counting.snapshotCount,
+        0,
+        reason: 'bulk writes never open a Dart-side snapshot',
+      );
       await eng.dispose();
     });
   });
@@ -241,6 +285,8 @@ class _CountingBackend implements RawBackend, DirectReadBackend, PreparedBatchBa
   _CountingBackend(this._inner);
   final NativeRawBackend _inner;
   int directReads = 0;
+  int snapshotCount = 0;
+  int preparedBatchCalls = 0;
 
   @override
   bool get isReadOnly => _inner.isReadOnly;
@@ -249,8 +295,10 @@ class _CountingBackend implements RawBackend, DirectReadBackend, PreparedBatchBa
   Future<ApplyBatchResult> applyBatch(RawBatch ops) => _inner.applyBatch(ops);
 
   @override
-  Future<ApplyBatchResult> applyPreparedBatch(RawBatchPlan plan) =>
-      _inner.applyPreparedBatch(plan);
+  Future<ApplyBatchResult> applyPreparedBatch(RawBatchPlan plan) {
+    preparedBatchCalls++;
+    return _inner.applyPreparedBatch(plan);
+  }
 
   @override
   Future<void> registerCompositeIndexes(
@@ -283,7 +331,10 @@ class _CountingBackend implements RawBackend, DirectReadBackend, PreparedBatchBa
   Future<List<RawEntry>> pendingChanges() => _inner.pendingChanges();
 
   @override
-  Future<RawSnapshot> snapshot() => _inner.snapshot();
+  Future<RawSnapshot> snapshot() {
+    snapshotCount++;
+    return _inner.snapshot();
+  }
 
   @override
   Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) =>
