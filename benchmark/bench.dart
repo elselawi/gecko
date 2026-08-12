@@ -34,6 +34,9 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:gecko_db/gecko_db.dart';
+import 'package:gecko_db/src/backend/raw_backend.dart'
+    show RawBatchPlan, RawChangeTemplate;
+import 'package:gecko_db/src/wire/wire_codec.dart' show DefaultWireCodec;
 
 /// JSON schema version of the harness output. Bump when the output shape
 /// changes; tool/perf_gate.dart refuses to compare across versions.
@@ -52,11 +55,17 @@ const int _indexedOps = 10;
 const int _indexedRows = 100000;
 const int _defaultGroups = 100;
 
-/// The benchmark measures the storage path, so the change-log pruning scan
-/// (O(n) per commit once the log is full, and it never prunes dirty records)
-/// is disabled. With default config (1000) the per-write scan dominates and
-/// would swamp the numbers.
-const int _changeLogMaxEntries = 0;
+/// Application-level positive LRU capacity for point reads. The cache-mode
+/// workloads (lruHitRead / lruMissRead) are only meaningful relative to this
+/// number: a miss test needs a working set strictly larger than it.
+const int _defaultLruCapacity = 1024;
+
+/// Change-log retention for the `--retention` profile. The default (0) keeps
+/// the storage-only numbers unchanged; `--retention=1000` measures the
+/// default retention path (prune scans once the log is full) and
+/// `--retention=1000 --allDirty` measures the all-dirty bounded-inspection
+/// profile (prune finds nothing clean and must not re-scan on every write).
+const int _defaultRetention = 0;
 
 const Set<String> _shapes = {'narrow', 'wide', 'nested', 'blob'};
 
@@ -73,6 +82,11 @@ class _Options {
     required this.indexedRows,
     required this.counters,
     required this.encrypted,
+    required this.lruCapacity,
+    required this.retention,
+    required this.allDirty,
+    required this.coldRead,
+    required this.pages,
   });
 
   final bool json;
@@ -84,6 +98,22 @@ class _Options {
   final int indexedRows;
   final bool counters;
   final bool encrypted;
+  final int lruCapacity;
+  final int retention;
+  final bool allDirty;
+  final bool coldRead;
+  final List<int> pages;
+
+  /// The effective positive-LRU capacity actually used for the run: when the
+  /// working set (seed rows) is not strictly larger than the configured
+  /// capacity, the capacity is lowered so `lruMissRead` is a genuine miss
+  /// test (the acceptance rule for the cache-mode separation). Recorded in
+  /// the dataset so the number is attributed.
+  int get effectiveLruCapacity {
+    final configured = lruCapacity;
+    if (rows > configured) return configured;
+    return rows > 1 ? rows - 1 : 1;
+  }
 
   Map<String, Object?> toDataset() => {
     'seedRows': rows,
@@ -93,16 +123,20 @@ class _Options {
     'indexed': indexed,
     'indexedRows': indexed ? indexedRows : 0,
     'encrypted': encrypted,
-    'changeLogMaxEntries': _changeLogMaxEntries,
+    'changeLogMaxEntries': retention,
+    'allDirtyHistory': allDirty,
+    'lruCapacity': effectiveLruCapacity,
+    'pageSizes': pages,
   };
 }
 
 /// Outcome of one benchmark run: measured rows plus, with `--counters`, the
 /// worker's physical-work counters accumulated over the measured workloads.
 class _BenchOutcome {
-  _BenchOutcome(this.results, this.workCounters);
+  _BenchOutcome(this.results, this.workCounters, this.dbPath);
   final List<_Result> results;
   final WorkCounters? workCounters;
+  final String dbPath;
 }
 
 class _Row {
@@ -284,6 +318,25 @@ class _Metadata {
 final List<Directory> _tempDirs = <Directory>[];
 
 Future<void> main(List<String> args) async {
+  // Hidden child mode for storageColdRead: an isolated process that opens a
+  // pre-seeded database and times one full read pass. The parent spawns this
+  // with --coldChild=<path> and folds the child's distribution in.
+  final coldChildIndex = args.indexOf(
+    args.firstWhere((a) => a.startsWith('--coldChild='), orElse: () => ''),
+  );
+  if (coldChildIndex >= 0) {
+    final path = args[coldChildIndex].substring('--coldChild='.length);
+    // Strip the child-mode flag before parsing the rest.
+    await _runColdChild(
+      path,
+      _parseArgs([
+        for (final a in args)
+          if (!a.startsWith('--coldChild=')) a,
+      ]),
+    );
+    return;
+  }
+
   final opts = _parseArgs(args);
   final root = _repoRoot();
   final nativePath = _nativeLibraryPath(root);
@@ -306,10 +359,20 @@ Future<void> main(List<String> args) async {
   final wall = Stopwatch()..start();
   final outcome = await _benchmark(
     opts.encrypted ? 'native file (encrypted)' : 'native file',
+    nativePath,
     () => _openNative(nativePath, opts),
     opts,
   );
   wall.stop();
+
+  // storageColdRead: an isolated child process reopens the SAME file (the
+  // parent already closed it) with a fresh heap and times one full read pass.
+  // The OS page cache may still be warm on this host — the strategy is
+  // documented, not claimed portable. Run it before the temp dirs are removed.
+  if (opts.coldRead) {
+    final cold = await _runStorageColdRead(opts, outcome.dbPath);
+    if (cold != null) outcome.results.add(cold);
+  }
 
   for (final dir in _tempDirs) {
     try {
@@ -343,6 +406,87 @@ Future<void> main(List<String> args) async {
   );
 }
 
+/// The isolated `storageColdRead` child: reopens [path] with an empty heap
+/// and application cache and times one full pass over every seeded row (each
+/// key read once, so the fresh LRU cannot help). Emits a one-workload JSON
+/// document on stdout for the parent to fold in.
+Future<void> _runColdChild(String path, _Options opts) async {
+  final nativePath = _nativeLibraryPath(_repoRoot());
+  final db = await _reopenNative(nativePath, path, opts);
+  try {
+    final col = db.collection<_Row>(
+      'items',
+      toRow: (r) => _makeRow(opts.shape, r.id, r.num, r.group),
+      fromRow: _fromRow,
+      id: _id,
+    );
+    final m = await _measure(
+      (i) => col.get('r${i % opts.rows}'),
+      opts.rows,
+      warmup: 0,
+    );
+    stdout.writeln(
+      const JsonEncoder().convert({
+        'workload': 'storageColdRead',
+        'msPerOp': m.dist.meanMs,
+        'p50MsPerOp': m.dist.p50Ms,
+        'p95MsPerOp': m.dist.p95Ms,
+        'p99MsPerOp': m.dist.p99Ms,
+        'minMsPerOp': m.dist.minMs,
+        'maxMsPerOp': m.dist.maxMs,
+        'stddevMsPerOp': m.dist.stddevMs,
+        'samples': m.dist.samples,
+      }),
+    );
+  } finally {
+    await db.close();
+  }
+}
+
+/// Spawns the `storageColdRead` child and returns its measured distribution,
+/// or null if the child failed. Cold-start semantics are host-dependent (the
+/// OS page cache may still be warm); the isolated process guarantees a fresh
+/// Dart heap and an empty application LRU.
+Future<_Result?> _runStorageColdRead(_Options opts, String path) async {
+  final root = _repoRoot();
+  final args = [
+    'run',
+    'benchmark/bench.dart',
+    '--coldChild=$path',
+    '--rows=${opts.rows}',
+    '--shape=${opts.shape}',
+    '--lruCapacity=${opts.lruCapacity}',
+    '--retention=${opts.retention}',
+    if (opts.encrypted) '--encrypted',
+  ];
+  final proc = await Process.start(Platform.resolvedExecutable, args,
+      workingDirectory: root);
+  final stdoutBuf = StringBuffer();
+  final stderrBuf = StringBuffer();
+  proc.stdout.transform(utf8.decoder).listen(stdoutBuf.write);
+  proc.stderr.transform(utf8.decoder).listen(stderrBuf.write);
+  final code = await proc.exitCode;
+  if (code != 0) {
+    stderr.writeln('storageColdRead child failed (exit $code): '
+        '${stderrBuf.toString().trim()}');
+    return null;
+  }
+  try {
+    final doc = jsonDecode(stdoutBuf.toString()) as Map<String, Object?>;
+    return _Result(
+      opts.encrypted ? 'native file (encrypted)' : 'native file',
+      'storageColdRead',
+      _Dist.fromMicros([
+        for (var i = 0; i < (doc['samples'] as num).toInt(); i++)
+          ((doc['msPerOp'] as num) * 1000).round(),
+      ]),
+    );
+  } catch (e) {
+    stderr.writeln('storageColdRead child output unparsable: $e');
+    return null;
+  }
+}
+
 /// Parses CLI flags; fails loudly on unknown flags and on `--mem`, which is
 /// no longer produced by this harness.
 _Options _parseArgs(List<String> args) {
@@ -350,11 +494,16 @@ _Options _parseArgs(List<String> args) {
   var indexed = false;
   var counters = false;
   var encrypted = false;
+  var allDirty = false;
+  var coldRead = false;
   var rows = _seedRows;
   var batch = _bulkPerCall;
   var groups = _defaultGroups;
   var indexedRows = _indexedRows;
   var shape = 'narrow';
+  var lruCapacity = _defaultLruCapacity;
+  var retention = _defaultRetention;
+  var pages = const <int>[50, 200];
 
   final usage =
       '''
@@ -372,6 +521,19 @@ Usage: dart run benchmark/bench.dart [options]
   --encrypted          run the same workloads over a physically encrypted
                        database (separate baseline; never merged with
                        plaintext numbers)
+  --lruCapacity=N      positive LRU capacity for point reads
+                       (default $_defaultLruCapacity); the lruMissRead
+                       working set is always strictly larger than the
+                       effective capacity
+  --retention=N        change-log retention (default $_defaultRetention);
+                       >0 measures the retention/prune path instead of the
+                       storage-only path
+  --allDirty           (with --retention) seed an all-dirty change history so
+                       prune has no clean entries to remove (bounded-
+                       inspection profile)
+  --coldRead           measure storageColdRead in an isolated child process
+                       (documented host-dependent cold-start strategy)
+  --pages=50,200       page sizes for the pagination workload
   --counters           enable the worker's physical-work counters for the
                        measured workloads and emit them in the JSON output
   --help               this help
@@ -405,6 +567,19 @@ Usage: dart run benchmark/bench.dart [options]
       counters = true;
     } else if (a == '--encrypted') {
       encrypted = true;
+    } else if (a == '--allDirty') {
+      allDirty = true;
+    } else if (a == '--coldRead') {
+      coldRead = true;
+    } else if (a.startsWith('--lruCapacity=')) {
+      lruCapacity = _flagInt(a, '--lruCapacity=');
+    } else if (a.startsWith('--retention=')) {
+      retention = _flagInt(a, '--retention=');
+    } else if (a.startsWith('--pages=')) {
+      pages = [
+        for (final p in a.substring('--pages='.length).split(','))
+          int.parse(p),
+      ];
     } else if (a.startsWith('--indexedRows=')) {
       indexedRows = _flagInt(a, '--indexedRows=');
     } else {
@@ -422,6 +597,22 @@ Usage: dart run benchmark/bench.dart [options]
     );
     exit(2);
   }
+  if (lruCapacity < 1) {
+    stderr.writeln('ERROR: --lruCapacity must be >= 1.');
+    exit(2);
+  }
+  if (retention < 0) {
+    stderr.writeln('ERROR: --retention must be >= 0.');
+    exit(2);
+  }
+  if (allDirty && retention == 0) {
+    stderr.writeln('ERROR: --allDirty requires --retention > 0.');
+    exit(2);
+  }
+  if (pages.isEmpty || pages.any((p) => p < 1)) {
+    stderr.writeln('ERROR: --pages must be a comma list of sizes >= 1.');
+    exit(2);
+  }
   return _Options(
     json: json,
     rows: rows,
@@ -432,6 +623,11 @@ Usage: dart run benchmark/bench.dart [options]
     indexedRows: indexedRows,
     counters: counters,
     encrypted: encrypted,
+    lruCapacity: lruCapacity,
+    retention: retention,
+    allDirty: allDirty,
+    coldRead: coldRead,
+    pages: pages,
   );
 }
 
@@ -494,13 +690,27 @@ String _readRustCrateVersion(String root) {
   return 'unknown';
 }
 
-Future<DatabaseImpl> _openNative(String nativePath, _Options opts) async {
+/// A freshly opened benchmark database plus its file path (the path lets the
+/// harness reopen the same file for the pageCacheRead / storageColdRead
+/// cache-mode workloads).
+class _OpenHandle {
+  _OpenHandle(this.db, this.path);
+  final DatabaseImpl db;
+  final String path;
+}
+
+Future<_OpenHandle> _openNative(String nativePath, _Options opts) async {
   final dir = await Directory.systemTemp.createTemp('gecko-bench-');
+  final path = '${dir.path}${Platform.pathSeparator}db.redb';
   final db = await DatabaseImpl.open(
-    '${dir.path}${Platform.pathSeparator}db.redb',
+    path,
     config: DatabaseConfig(
       nativeLibraryPath: nativePath,
-      changeLogMaxEntries: _changeLogMaxEntries,
+      changeLogMaxEntries: opts.retention,
+      // Application-level LRU sized so the cache-mode workloads are
+      // unambiguous: the lruMissRead working set is strictly larger than the
+      // effective capacity recorded in the dataset.
+      lruCapacity: opts.effectiveLruCapacity,
       // Physical encryption (AES-256-GCM per page): established as a SEPARATE
       // baseline, never merged into the plaintext numbers. Fixed 32-byte key
       // so every encrypted run is comparable.
@@ -508,7 +718,74 @@ Future<DatabaseImpl> _openNative(String nativePath, _Options opts) async {
     ),
   );
   _tempDirs.add(dir);
-  return db;
+  return _OpenHandle(db, path);
+}
+
+/// Reopens an existing benchmark database at [path] (used by pageCacheRead,
+/// which must leave the OS page cache warm while starting with an empty
+/// application LRU).
+Future<DatabaseImpl> _reopenNative(
+  String nativePath,
+  String path,
+  _Options opts,
+) async {
+  return DatabaseImpl.open(
+    path,
+    config: DatabaseConfig(
+      nativeLibraryPath: nativePath,
+      changeLogMaxEntries: opts.retention,
+      lruCapacity: opts.effectiveLruCapacity,
+      encryptionKey: opts.encrypted ? _benchmarkEncryptionKey : null,
+    ),
+  );
+}
+
+/// Seeds [count] DIRTY change-log + sync-state records (never clean, so
+/// retention can prune nothing) using prepared change templates. This is the
+/// all-dirty history profile: subsequent writes must prove prune stays
+/// bounded instead of re-scanning unprunable history on every commit.
+Future<void> _seedDirtyHistory(
+  DatabaseImpl db,
+  int count,
+  int batch,
+  String shape,
+  int groups,
+) async {
+  final codec = DefaultWireCodec();
+  for (var start = 0; start < count; start += batch) {
+    final end = (start + batch) < count ? start + batch : count;
+    final ops = <RawOp>[];
+    final templates = <RawChangeTemplate>[];
+    for (var j = start; j < end; j++) {
+      final id = 'd$j';
+      final row = _makeRow(shape, id, j, 'g${j % groups}');
+      ops.add(
+        RawPut('items', ByteKey(codec.encode(id)), codec.encode(row)),
+      );
+      templates.add(
+        RawChangeTemplate(
+          operationIndex: j - start,
+          ordinal: j,
+          syncStateKey: ByteKey(codec.encode('items:$id')),
+          recordTemplate: codec.encode({
+            'localMutationId': j,
+            'recordId': id,
+            'timestamp': DateTime.fromMillisecondsSinceEpoch(1),
+            'collection': 'items',
+            'kind': 'put',
+            'value': row,
+            'previousVersion': null,
+            'origin': 'user',
+            'dirty': true,
+            'syncPhase': 'pending',
+          }),
+        ),
+      );
+    }
+    await db.engine.applyPreparedPlan(
+      RawBatchPlan(ops: ops, changeTemplates: templates),
+    );
+  }
 }
 
 /// Fixed 32-byte AES-256 key for the encrypted benchmark baseline.
@@ -519,11 +796,13 @@ const List<int> _benchmarkEncryptionKey = [
 
 Future<_BenchOutcome> _benchmark(
   String label,
-  Future<DatabaseImpl> Function() open,
+  String nativePath,
+  Future<_OpenHandle> Function() open,
   _Options opts,
 ) async {
   final quiet = opts.json;
-  final db = await open();
+  final handle = await open();
+  final db = handle.db;
   final col = db.collection<_Row>(
     'items',
     toRow: (r) => _makeRow(opts.shape, r.id, r.num, r.group),
@@ -544,6 +823,17 @@ Future<_BenchOutcome> _benchmark(
   // Seed the main table (excluded from the measured insert workload).
   final seedWatch = Stopwatch()..start();
   await _seedTable(db, 'items', opts.rows, opts.shape, opts.batch, opts.groups);
+  if (opts.allDirty) {
+    // All-dirty history profile: retention has no clean entry to remove, so
+    // every later write must prove the prune scan stays bounded.
+    await _seedDirtyHistory(
+      db,
+      opts.rows,
+      opts.batch,
+      opts.shape,
+      opts.groups,
+    );
+  }
   seedWatch.stop();
   if (!quiet) {
     stdout.writeln(
@@ -579,22 +869,28 @@ Future<_BenchOutcome> _benchmark(
     }, scale: opts.batch.toDouble()),
   );
 
-  // 3. Hot point read (LRU cache hit on the same key).
+  // 3. Cache-mode point reads — three distinct workloads that are NEVER
+  //    compared as if they were the same thing:
+  //    - lruHitRead: one resident key, always an application-LRU hit.
+  //    - lruMissRead: the full working set (strictly larger than the
+  //      effective LRU capacity), so every read is a genuine storage miss.
+  //    - pageCacheRead: a FRESH open of the same file (empty application
+  //      cache) with the OS page cache still warm, one pass over all rows.
+  //    storageColdRead is opt-in (--coldRead) and runs in an isolated child
+  //    process (see _runStorageColdRead).
   await col.get('r0');
   results.add(
-    await _runWorkload(label, 'hotRead', _readOps, (_) async {
+    await _runWorkload(label, 'lruHitRead', _readOps, (_) async {
       await col.get('r0');
     }),
   );
-
-  // 4. Cold point read (cycling through distinct keys).
   results.add(
-    await _runWorkload(label, 'coldRead', _readOps, (i) async {
+    await _runWorkload(label, 'lruMissRead', _readOps, (i) async {
       await col.get('r${i % opts.rows}');
     }),
   );
 
-  // 5. Range scan (half-table window). The base collection is UNINDEXED, so
+  // 4. Range scan (half-table window). The base collection is UNINDEXED, so
   //    this exercises the full scan + predicate pushdown path, not an index
   //    range; the indexed range workload (--indexed) measures the indexed
   //    path. Named `rangeScanUnindexed` so the two are never conflated.
@@ -606,12 +902,23 @@ Future<_BenchOutcome> _benchmark(
     }),
   );
 
-  // 6. Filtered query (equality on a 1/N-selectivity column).
+  // 5. Filtered query (equality on a 1/N-selectivity column).
   results.add(
     await _runWorkload(label, 'filteredQuery', _queryOps, (i) async {
       await col.where({'group': 'g${i % opts.groups}'}).findAll();
     }),
   );
+
+  // 6. Pagination / first-result latency: the first page of a page-sized
+  //    query. First-page latency and bytes must scale with the page size,
+  //    not the full result size, for supported plans.
+  for (final pageSize in opts.pages) {
+    results.add(
+      await _runWorkload(label, 'findPage$pageSize', _queryOps, (i) async {
+        await col.where().findPage(pageSize: pageSize);
+      }),
+    );
+  }
 
   // 7. Watch latency (time from put until the change event is delivered).
   var received = 0;
@@ -648,8 +955,28 @@ Future<_BenchOutcome> _benchmark(
     }),
   );
 
-  // 9. Indexed equality/range/prefix workloads (opt-in via --indexed) so
-  //    index selectivity is measured instead of only the unindexed paths.
+  // 9. Sync history profile (with --retention): mark-synced transitions over
+  //    a large change log. The transition must be selective (no full-history
+  //    Dart scan) and the write must stay bounded even when the history is
+  //    all dirty.
+  if (opts.retention > 0) {
+    final history = col.where({'group': 'g0'}).findAll();
+    final rows = await history;
+    if (rows.isNotEmpty) {
+      final ids = [for (var i = 0; i < rows.length && i < 500; i++) rows[i].id];
+      results.add(
+        await _runWorkload(label, 'markSynced', 20, (c) async {
+          final slice = ids
+              .sublist((c * 25) % ids.length, ((c * 25) % ids.length) + 25)
+              .toList();
+          await db.sync.markSynced(slice);
+        }),
+      );
+    }
+  }
+
+  // 10. Indexed equality/range/prefix workloads (opt-in via --indexed) so
+  //     index selectivity is measured instead of only the unindexed paths.
   if (opts.indexed) {
     results.addAll(await _benchmarkIndexed(db, label, opts));
   }
@@ -659,8 +986,82 @@ Future<_BenchOutcome> _benchmark(
     counters = await (db.engine.backend as NativeRawBackend).takeCounters();
   }
   await db.close();
+
+  // 11. pageCacheRead + openToFirstIndexedQuery: a FRESH open of the same
+  //     file (empty application cache, warm OS page cache) timed as a single
+  //     read pass, plus — with --indexed — the open-to-first-indexed-query
+  //     latency on that fresh handle. The main handle must be closed first —
+  //     the engine refuses two opens of one path in a process. Neither is
+  //     comparable to lruHitRead/lruMissRead: distinct cache modes.
+  results.addAll(await _runReopenedWorkloads(nativePath, handle.path, opts, label));
+
   if (!quiet) stdout.writeln();
-  return _BenchOutcome(results, counters);
+  return _BenchOutcome(results, counters, handle.path);
+}
+
+/// Reopens [path] with an empty application cache (the OS page cache stays
+/// warm from the prior session) and measures two fresh-handle workloads:
+/// `pageCacheRead` (one pass over every seeded row, each key read once so
+/// the fresh LRU cannot help) and, with `--indexed`, `openToFirstIndexedQuery`
+/// (latency from collection declaration to the first indexed-query result,
+/// which includes any index repair on the fresh open).
+Future<List<_Result>> _runReopenedWorkloads(
+  String nativePath,
+  String path,
+  _Options opts,
+  String label,
+) async {
+  final reopened = await _reopenNative(nativePath, path, opts);
+  final results = <_Result>[];
+  try {
+    final col = reopened.collection<_Row>(
+      'items',
+      toRow: (r) => _makeRow(opts.shape, r.id, r.num, r.group),
+      fromRow: _fromRow,
+      id: _id,
+    );
+    final m = await _measure(
+      (i) => col.get('r${i % opts.rows}'),
+      opts.rows,
+      warmup: 0,
+    );
+    results.add(
+      _Result(
+        label,
+        'pageCacheRead',
+        m.dist,
+        rssStartKb: m.rssStartKb,
+        rssEndKb: m.rssEndKb,
+      ),
+    );
+
+    if (opts.indexed) {
+      // Declare the indexed collection on the fresh handle and time the first
+      // query (the declaration triggers repair on a fresh open when the
+      // manifest is absent — the open-to-first-indexed-query profile).
+      final idx = reopened.collection<Map<String, Object?>>(
+        'items_indexed',
+        toRow: (m) => m,
+        fromRow: (m) => Map<String, Object?>.from(m as Map),
+        id: (m) => m['id'],
+        indexFields: ['num', 'group'],
+        prefixFields: ['nick'],
+      );
+      final sw = Stopwatch()..start();
+      await idx.where({'group': 'g0'}).findAll();
+      sw.stop();
+      results.add(
+        _Result(
+          label,
+          'openToFirstIndexedQuery',
+          _Dist.fromMicros([sw.elapsedMicroseconds]),
+        ),
+      );
+    }
+  } finally {
+    await reopened.close();
+  }
+  return results;
 }
 
 /// Seeds [count] rows into [table] via `bulkWrite` in [batch]-sized chunks
@@ -851,7 +1252,14 @@ void _printDataset(_Options opts) {
     '${opts.groups} (eq selectivity ${(100 / opts.groups).toStringAsFixed(1)}%)',
   );
   _kv('indexed', opts.indexed ? 'yes (${opts.indexedRows} rows)' : 'no');
-  _kv('change-log', 'disabled (storage path only)');
+  _kv('LRU capacity', '${opts.effectiveLruCapacity} (miss working set larger)');
+  _kv(
+    'change-log',
+    opts.retention > 0
+        ? 'max ${opts.retention}${opts.allDirty ? ', all-dirty history' : ''}'
+        : 'disabled (storage path only)',
+  );
+  _kv('page sizes', opts.pages.join(', '));
 }
 
 /// Human-readable results table as a Markdown pipe table: p50/p95/p99/mean
@@ -995,7 +1403,15 @@ void _printJson(
       'freshFile': true,
       'countersEnabled': opts.counters,
       'cacheWarmth':
-          'hotRead: r0 LRU-resident; coldRead: cycling r0..r${opts.rows - 1}',
+          'lruHitRead: r0 LRU-resident; lruMissRead: cycling r0..r${opts.rows - 1} '
+          'with effective LRU capacity ${opts.effectiveLruCapacity} (working set > '
+          'capacity); pageCacheRead: fresh open, warm OS page cache, one pass; '
+          'storageColdRead: isolated child process, fresh heap, one pass '
+          '(host-dependent cold start)${opts.coldRead ? '' : ' (not run)'}',
+      'retention': opts.retention > 0
+          ? 'changeLogMaxEntries=${opts.retention}'
+              '${opts.allDirty ? ', all-dirty history' : ', clean history'}'
+          : 'disabled (storage path only)',
     },
     'summary': {
       'backend': 'native file',

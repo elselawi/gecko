@@ -7,13 +7,14 @@ export: src/api/bulk.dart show: BulkMutation, BulkWriteResult
 export: src/api/change.dart show: Change, ChangeSet, ChangeKind
 export: src/api/change_tracking.dart show: ChangeOrigin, ChangeRecord, SyncHookApi, SyncSnapshot, PendingChange, RecordRef
 export: src/api/collection.dart show: Collection, RowMapper, IdExtractor
-export: src/api/collection_diff.dart show: CollectionDiff
+export: src/api/collection_diff.dart show: CollectionDiff, CollectionDelta
 export: src/api/conflict.dart show: ConflictApi, ConflictRequest, ConflictResolutionResult, ConflictStrategy, ConflictStrategyHandler, ConflictVersion, PreservedConflict, Resolution, ResolutionKind
 export: src/api/database.dart show: Database, DatabaseConfig, WriteCallback
 export: src/api/diagnostics.dart show: DiagnosticsApi, DiagnosticsSnapshot, WorkerContention
 export: src/api/maintenance.dart show: MaintenanceApi, MaintenanceState, StorageStats, SlowQueryRecord, QueryStageTimings
 export: src/api/query.dart show: Query, QueryCursor, SortOrder, SortSpec, IndexPlan
 export: src/api/schema.dart show: SchemaApi, MigrationStep, MigrationPlan, MigrationFailure, RecordRewriter
+export: src/api/stream_utils.dart show: latestStateOnly
 export: src/api/sync_state.dart show: SyncState, SyncPhase
 export: src/api/transaction.dart show: Transaction
 export: src/backend/byte_key.dart show: ByteKey
@@ -30,7 +31,7 @@ export: src/namespaces.dart show: geckoReservedPrefix, isReservedName, ensureUse
 export: src/native/generated/api.dart show: NativeWorker
 export: src/native/generated/counters.dart show: WorkCounters
 export: src/native/generated/frb_generated.dart show: RustLib
-export: src/native/native_resolver.dart show: NativeArtifact, NativeResolver, ResolverStorage, ResolverDownloader, LocalResolverStorage, IoResolverDownloader, bundledArtifactPath, bundledNativeDir, bundledWebGluePrefix, isWeb, nativeArtifactSha256, nativeArtifactManifest
+export: src/native/native_resolver.dart show: NativeArtifact, NativeResolver, ResolverStorage, ResolverDownloader, LocalResolverStorage, IoResolverDownloader, bundledArtifactPath, bundledNativeDir, bundledWebGluePrefix, bundledWebWorkerUrl, isWeb, nativeArtifactSha256, nativeArtifactManifest
 export: src/native/opfs.dart show: registerOpfsHandle
 export: src/query/filter.dart show: Filter, FilterGroup
 export: src/query/query_impl.dart show: QueryImpl

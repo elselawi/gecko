@@ -24,19 +24,36 @@ Map<String, Object?> _defaultDataset() => {
   'indexed': false,
   'indexedRows': 0,
   'changeLogMaxEntries': 0,
+  'encrypted': false,
+  'allDirtyHistory': false,
+  'lruCapacity': 1024,
+  'pageSizes': [50, 200],
+};
+
+Map<String, Object?> _provenance({String os = 'test'}) => {
+  'os': os,
+  'dirty': false,
+  'nativeLibrary': {
+    'path': '/artifacts/gecko_db_rust.so',
+    'sha256': 'abc123',
+  },
 };
 
 String _jsonDoc(
   List<Map<String, Object?>> results, {
   int schemaVersion = 2,
   Map<String, Object?>? dataset,
+  Map<String, Object?>? provenance,
 }) => const JsonEncoder.withIndent('  ').convert({
   'benchmark': 'gecko_db_local_stopgap',
   'schemaVersion': schemaVersion,
   'platform': 'test',
   'dart': '3.10.8',
   'generatedAt': '2026-01-01T00:00:00Z',
-  'metadata': {'dataset': dataset ?? _defaultDataset()},
+  'metadata': {
+    'dataset': dataset ?? _defaultDataset(),
+    ...?provenance,
+  },
   'results': results,
 });
 
@@ -200,8 +217,110 @@ void main() {
       'dataset': {..._defaultDataset(), 'seedRows': 100000},
     }, {});
     expect(datasetMismatch(run, different), contains('seedRows'));
+    // New cache-mode / profile keys are part of the gated config.
+    final encrypted = BaselineFile(2, {
+      'dataset': {..._defaultDataset(), 'encrypted': true},
+    }, {});
+    expect(datasetMismatch(run, encrypted), contains('encrypted'));
     // A baseline without dataset config is treated as matching (legacy).
     expect(datasetMismatch(run, BaselineFile(2, const {}, {})), isNull);
+  });
+
+  test('provenance mismatches (artifact, dirty, OS, Dart) fail closed', () {
+    final run = parseBenchDoc(
+      _jsonDoc([
+        {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+      ], provenance: _provenance()),
+    );
+    final matching = BaselineFile(
+      2,
+      _provenance(),
+      {'native file|insert': _baseline(0.05)},
+      dart: '3.10.8',
+    );
+    expect(provenanceMismatch(run, matching), isNull);
+
+    // Different native artifact hash.
+    final otherArtifact = BaselineFile(
+      2,
+      _provenance(),
+      {'native file|insert': _baseline(0.05)},
+      dart: '3.10.8',
+    );
+    final runOtherArtifact = parseBenchDoc(
+      _jsonDoc([
+        {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+      ], provenance: {
+        ..._provenance(),
+        'nativeLibrary': {
+          'path': '/artifacts/gecko_db_rust.so',
+          'sha256': 'different',
+        },
+      }),
+    );
+    expect(
+      provenanceMismatch(runOtherArtifact, otherArtifact),
+      contains('nativeLibrary.sha256'),
+    );
+
+    // Dirty source state differs.
+    final dirtyRun = parseBenchDoc(
+      _jsonDoc([
+        {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+      ], provenance: {..._provenance(), 'dirty': true}),
+    );
+    expect(provenanceMismatch(dirtyRun, matching), contains('dirty'));
+
+    // OS family differs.
+    final otherOs = parseBenchDoc(
+      _jsonDoc([
+        {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+      ], provenance: _provenance(os: 'linux')),
+    );
+    expect(provenanceMismatch(otherOs, matching), contains('os'));
+
+    // Dart version differs.
+    final otherDart = parseBenchDoc(
+      _jsonDoc([
+        {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+      ], provenance: _provenance()),
+    );
+    final dartBaseline = BaselineFile(
+      2,
+      _provenance(),
+      {'native file|insert': _baseline(0.05)},
+      dart: '3.9.0',
+    );
+    expect(provenanceMismatch(otherDart, dartBaseline), contains('dart'));
+
+    // A legacy baseline with no provenance is treated as matching.
+    expect(
+      provenanceMismatch(
+        parseBenchDoc(
+          _jsonDoc([
+            {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+          ]),
+        ),
+        BaselineFile(2, const {}, {'native file|insert': _baseline(0.05)}),
+      ),
+      isNull,
+    );
+  });
+
+  test('allowHostDiff escape hatch accepts cross-host runs', () {
+    final run = parseBenchDoc(
+      _jsonDoc([
+        {'backend': 'native file', 'workload': 'insert', 'msPerOp': 0.05},
+      ], provenance: _provenance(os: 'linux')),
+    );
+    final baseline = BaselineFile(
+      2,
+      _provenance(),
+      {'native file|insert': _baseline(0.05)},
+      dart: '3.10.8',
+    );
+    expect(provenanceMismatch(run, baseline), isNotNull);
+    expect(provenanceMismatch(run, baseline, allowHostDiff: true), isNull);
   });
 
   test('gate source documents the regression rules', () {

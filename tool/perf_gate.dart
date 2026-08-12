@@ -55,6 +55,10 @@ const List<String> datasetConfigKeys = [
   'indexed',
   'indexedRows',
   'changeLogMaxEntries',
+  'encrypted',
+  'allDirtyHistory',
+  'lruCapacity',
+  'pageSizes',
 ];
 
 /// Baseline mean (ms/op) at or above which p95 is a gated regression metric.
@@ -106,10 +110,11 @@ class BenchDoc {
 
 /// Parsed baseline file.
 class BaselineFile {
-  BaselineFile(this.schemaVersion, this.metadata, this.rows);
+  BaselineFile(this.schemaVersion, this.metadata, this.rows, {this.dart});
   final int? schemaVersion;
   final Map<String, Object?> metadata;
   final Map<String, BaselineRow> rows;
+  final String? dart;
 
   Map<String, Object?> get dataset =>
       (metadata['dataset'] as Map<String, Object?>?) ?? const {};
@@ -160,6 +165,7 @@ BaselineFile parseBaseline(String jsonText) {
           (r['p95MsPerOp'] as num?)?.toDouble(),
         ),
     },
+    dart: doc['dart'] as String?,
   );
 }
 
@@ -177,18 +183,79 @@ String? baselineUsable(BaselineFile baseline) {
   return null;
 }
 
+/// Deep equality for dataset values: lists (e.g. page sizes) are compared
+/// element-wise, since two JSON parses produce distinct list instances and
+/// Dart list `==` is identity-based.
+bool _datasetValueEquals(Object? a, Object? b) {
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_datasetValueEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  return a == b;
+}
+
 /// Returns a human-readable error when the run's dataset configuration
 /// differs from the baseline's, or null when they match (or the baseline
 /// carries no dataset config).
 String? datasetMismatch(BenchDoc run, BaselineFile baseline) {
   for (final k in datasetConfigKeys) {
     if (!baseline.dataset.containsKey(k)) continue;
-    if (run.dataset[k] != baseline.dataset[k]) {
+    if (!_datasetValueEquals(run.dataset[k], baseline.dataset[k])) {
       return 'dataset config mismatch on `$k`: baseline=${baseline.dataset[k]} '
           'run=${run.dataset[k]}. Run the gate with the same configuration '
           'as the baseline (or regenerate the baseline with --update only '
           'for an intentional, reviewed scale/config change).';
     }
+  }
+  return null;
+}
+
+/// Returns a human-readable error when the run's provenance (OS family, Dart
+/// version, dirty source state, native artifact SHA-256) differs from the
+/// baseline's, or null when it matches (or the baseline carries no
+/// provenance). Numbers from different hosts, artifacts, or source states are
+/// not comparable; rather than calculate a misleading regression the gate
+/// fails closed. Set `GECKO_PERF_ALLOW_HOST_DIFF=1` to accept a different
+/// host/artifact (only when you know the numbers are comparable).
+String? provenanceMismatch(
+  BenchDoc run,
+  BaselineFile baseline, {
+  bool allowHostDiff = false,
+}) {
+  if (allowHostDiff ||
+      Platform.environment['GECKO_PERF_ALLOW_HOST_DIFF'] == '1') {
+    return null;
+  }
+  final runMeta = run.metadata;
+  final baseMeta = baseline.metadata;
+  String? firstDiff(String label, Object? a, Object? b) {
+    // Absent metadata on either side is skipped (legacy baselines).
+    if (a == null || b == null) return null;
+    return a == b ? null : 'provenance mismatch on `$label`: '
+        'baseline=$b run=$a. Regenerate the baseline with --update only '
+        'for an intentional, reviewed host/artifact change (or set '
+        'GECKO_PERF_ALLOW_HOST_DIFF=1 to compare across hosts).';
+  }
+
+  final nativeRun =
+      (runMeta['nativeLibrary'] as Map<String, Object?>?) ?? const {};
+  final nativeBase =
+      (baseMeta['nativeLibrary'] as Map<String, Object?>?) ?? const {};
+  final checks = [
+    firstDiff('os', runMeta['os'], baseMeta['os']),
+    firstDiff('dart', run.dart, baseline.dart),
+    firstDiff('dirty', runMeta['dirty'], baseMeta['dirty']),
+    firstDiff(
+      'nativeLibrary.sha256',
+      nativeRun['sha256'],
+      nativeBase['sha256'],
+    ),
+  ];
+  for (final c in checks) {
+    if (c != null) return c;
   }
   return null;
 }
@@ -320,6 +387,11 @@ Future<void> main(List<String> args) async {
   final configProblem = datasetMismatch(doc, baseline);
   if (configProblem != null) {
     stderr.writeln('PERF GATE FAILED: $configProblem');
+    exit(1);
+  }
+  final provenanceProblem = provenanceMismatch(doc, baseline);
+  if (provenanceProblem != null) {
+    stderr.writeln('PERF GATE FAILED: $provenanceProblem');
     exit(1);
   }
 

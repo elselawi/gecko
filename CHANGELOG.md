@@ -15,6 +15,44 @@ All notable changes to gecko_db are documented here. The format follows
   single-field ranges plus Rust candidate intersection. Composite keys are
   maintained atomically with the rows and rebuilt by the one-time per-session
   repair.
+- **Delta-only collection watch** (`collection.watchAllDeltas()`): a
+  snapshot-less stream of `CollectionDelta<T>` (added/updated/removed only)
+  for consumers with their own state store — no full collection snapshot is
+  ever built. The existing `watchAllDiff` / `CollectionDiff.snapshot`
+  behavior is unchanged.
+- **Latest-state collection watch** (`collection.watchAllLatest()`): opt-in
+  coalescing via `latestStateOnly` — a burst of full snapshots within one
+  event-loop turn collapses to a single emission of the final state, so a
+  slow listener never accumulates redundant snapshots. Default streams keep
+  their current delivery semantics.
+- **Native windowed live queries**: `Query.watch()` with `limit`/`offset`
+  now runs through the worker's reactive registry (initial slice plus
+  window-relative added/updated/removed deltas) instead of falling back to a
+  full result set.
+- **Missing-field index structure**: the durable index now records which
+  primary rows lack an indexed field (`__gecko_index_missing`), so
+  index-ordered fallback enumerates only genuinely missing rows instead of
+  scanning the whole primary table; repair reconciles the structure.
+- **One-pass relationship resolution**: child fetching and delete-resolution
+  read each dependent row once (single foreign-key classification pass), and
+  the native relationship scan groups candidates by FK in one fetch per row.
+- **Native metadata query**: attachment/conflict listing runs a predicate
+  scan + key-ordered result in Rust; orphaned-attachment detection caches
+  parent-table existence and walks both parent fields in one pass.
+- **Internal no-key clear/delete-range mode**: batches can request that Rust
+  not collect every removed key (`RawBatchPlan.reportRemovedKeys`); a
+  whole-table clear invalidates the application read cache as one table
+  generation instead of enumerating keys. Existing per-key reporting is
+  unchanged by default.
+- **Worker queue-contention benchmark** (`benchmark/contention.dart`):
+  measures latency-sensitive get/write latency (mean/p50/p95/p99/max),
+  in-flight depth high-water, and write-gate contention under a concurrent
+  background scan/repair/compaction, plus correctness under close.
+- **Public web open via dedicated worker**: on the main thread (where OPFS
+  sync access handles are unavailable), `Database.open` now provisions the
+  in-package `web/gecko_db_worker.js` automatically and proxies every
+  request over the transferable binary protocol; `nativeLibraryPath` on the
+  web overrides the resolved worker URL.
 
 ### Changed
 
@@ -67,8 +105,21 @@ All notable changes to gecko_db are documented here. The format follows
 - **Zero-copy byte transport**: `Uint8List` values flow end-to-end through
   dispatch and the worker isolate without `List<int>.from` / `.toList()`
   copies; the web worker protocol gained a binary message path with a
-  JSON/base64 fallback.
+  JSON/base64 fallback, and both client and worker build JS `Uint8Array`s
+  with bulk `toJS` copies instead of per-byte loops.
 - **Release profile**: the native crate now builds with `lto = true`,
   `codegen-units = 1`, and pinned `opt-level = 3` for cross-crate inlining on
   codec/predicate hot paths (`panic = "abort"` stays off because redb's
   `Drop`-based rollback needs unwinding).
+- **Encrypted read path**: the physical-page read path fills the caller's
+  page buffer directly and decrypts GCM in place into a reused plaintext
+  scratch (one allocation per multi-page read instead of two per page), with
+  page size, authentication, nonce, zero-page, and rotation semantics
+  unchanged.
+- **Exclusive native range bounds**: `RangeScan` / `SnapshotRangeScan` accept
+  explicit inclusive flags so exclusive raw ranges never fall back to a full
+  scan plus Dart-side filtering (exclusive bounds become inclusive redb
+  ranges with an O(1) boundary-key skip).
+- **Native scalar distinct dedup**: `queryFilteredDistinct` /
+  `queryIndexedDistinct` deduplicate safe scalars in Rust before returning,
+  so Dart receives one encoded value per distinct value.

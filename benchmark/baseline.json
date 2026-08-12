@@ -3,10 +3,10 @@
   "schemaVersion": 2,
   "platform": "windows",
   "dart": "3.10.8",
-  "generatedAt": "2026-08-12T06:09:56.913859Z",
+  "generatedAt": "2026-08-12T15:22:39.681881Z",
   "tolerance": 0.3,
   "metadata": {
-    "commit": "d12eb34",
+    "commit": "b6ef5e3",
     "dirty": true,
     "os": "windows",
     "osVersion": "\"Windows 11 Home Single Language\" 10.0 (Build 26200)",
@@ -14,7 +14,7 @@
     "rustCrateVersion": "0.0.1",
     "nativeLibrary": {
       "path": "C:\\Users\\alias\\Coding\\gecko\\rust\\target\\release\\gecko_db_rust.dll",
-      "sha256": "eb9f58b22abe95aa8b1183969825464f61cdc003406943254263325836482e75"
+      "sha256": "23516c9d8965a5ff5b2633e857a5cddd4fe90e568ebd7b56cc7fdcff4975d0a0"
     },
     "dataset": {
       "seedRows": 1000,
@@ -23,79 +23,111 @@
       "distinctGroups": 100,
       "indexed": true,
       "indexedRows": 100000,
-      "changeLogMaxEntries": 0
+      "encrypted": false,
+      "changeLogMaxEntries": 0,
+      "allDirtyHistory": false,
+      "lruCapacity": 999,
+      "pageSizes": [
+        50,
+        200
+      ]
     },
     "durability": "redb default (Immediate fsync)",
     "freshFile": true,
     "countersEnabled": false,
-    "cacheWarmth": "hotRead: r0 LRU-resident; coldRead: cycling r0..r999"
+    "cacheWarmth": "lruHitRead: r0 LRU-resident; lruMissRead: cycling r0..r999 with effective LRU capacity 999 (working set > capacity); pageCacheRead: fresh open, warm OS page cache, one pass; storageColdRead: isolated child process, fresh heap, one pass (host-dependent cold start) (not run)",
+    "retention": "disabled (storage path only)"
   },
   "results": [
     {
       "backend": "native file",
       "workload": "insert",
-      "msPerOp": 1.500256,
-      "p95MsPerOp": 2.008
+      "msPerOp": 1.25268,
+      "p95MsPerOp": 1.668
     },
     {
       "backend": "native file",
       "workload": "bulkInsert",
-      "msPerOp": 0.024318000000000003,
-      "p95MsPerOp": 0.025506
+      "msPerOp": 0.019572,
+      "p95MsPerOp": 0.020482
     },
     {
       "backend": "native file",
-      "workload": "hotRead",
-      "msPerOp": 0.0020638,
+      "workload": "lruHitRead",
+      "msPerOp": 0.0018726,
       "p95MsPerOp": 0.004
     },
     {
       "backend": "native file",
-      "workload": "coldRead",
-      "msPerOp": 0.014429399999999998,
-      "p95MsPerOp": 0.075
+      "workload": "lruMissRead",
+      "msPerOp": 0.115334,
+      "p95MsPerOp": 0.212
     },
     {
       "backend": "native file",
       "workload": "rangeScanUnindexed",
-      "msPerOp": 79.19256666666666,
-      "p95MsPerOp": 100.87
+      "msPerOp": 107.93276666666667,
+      "p95MsPerOp": 137.035
     },
     {
       "backend": "native file",
       "workload": "filteredQuery",
-      "msPerOp": 7.647166666666667,
-      "p95MsPerOp": 6.309
+      "msPerOp": 17.08366666666667,
+      "p95MsPerOp": 14.323
+    },
+    {
+      "backend": "native file",
+      "workload": "findPage50",
+      "msPerOp": 50.371300000000005,
+      "p95MsPerOp": 70.048
+    },
+    {
+      "backend": "native file",
+      "workload": "findPage200",
+      "msPerOp": 49.931400000000004,
+      "p95MsPerOp": 65.284
     },
     {
       "backend": "native file",
       "workload": "watch",
-      "msPerOp": 1.48284,
-      "p95MsPerOp": 2.065
+      "msPerOp": 2.00785,
+      "p95MsPerOp": 2.615
     },
     {
       "backend": "native file",
       "workload": "txnCommit",
-      "msPerOp": 1.5640699999999998,
-      "p95MsPerOp": 2.146
+      "msPerOp": 2.03463,
+      "p95MsPerOp": 2.569
     },
     {
       "backend": "native file",
       "workload": "indexedEq",
-      "msPerOp": 2.7714000000000003,
-      "p95MsPerOp": 3.056
+      "msPerOp": 2.7344,
+      "p95MsPerOp": 3.179
     },
     {
       "backend": "native file",
       "workload": "indexedRange",
-      "msPerOp": 2.5563000000000002,
-      "p95MsPerOp": 2.842
+      "msPerOp": 2.6940999999999997,
+      "p95MsPerOp": 3.206
     },
     {
       "backend": "native file",
       "workload": "indexedPrefix",
-      "msPerOp": 36.2187,
-      "p95MsPerOp": 45.344
+      "msPerOp": 37.5877,
+      "p95MsPerOp": 40.15
+    },
+    {
+      "backend": "native file",
+      "workload": "pageCacheRead",
+      "msPerOp": 0.046991,
+      "p95MsPerOp": 0.112
+    },
+    {
+      "backend": "native file",
+      "workload": "openToFirstIndexedQuery",
+      "msPerOp": 11.75,
+      "p95MsPerOp": 11.75
     }
   ]
 }
