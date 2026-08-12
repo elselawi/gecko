@@ -43,3 +43,27 @@ All notable changes to gecko_db are documented here. The format follows
 - **Smaller-first streaming candidate intersection** with deterministic
   record-key output and a planner fallback to a full filtered scan when the
   index cannot narrow the candidate set.
+- **Bounded open-snapshot cap**: the worker refuses to create more than 256
+  concurrent read snapshots with an explicit typed error, so a leaked Dart
+  snapshot can no longer pin MVCC versions and stall compaction silently.
+- **Worker contention diagnostics**: `DiagnosticsSnapshot.workerContention`
+  reports request count, queue-depth high-water mark, and average/max service
+  time across the native worker boundary (zero allocation when unused).
+- **Native sync/migration primitives**: state-transition filtering by
+  collection/id set, a range-based `changesSince(lastSeq)`, orphaned
+  attachment detection, and remote-deletion candidate selection now run in
+  Rust; Dart only authors the matcher/ID sets and maps results.
+- **Bounded, resumable record migrations**: large record rewrites apply in
+  durable chunks with idempotent resume from a progress marker, instead of
+  building one unbounded op list.
+- **Batched remote-change dedupe**: `applyRemoteTransactional` resolves
+  duplicates with one batched snapshot read rather than one point read per
+  record.
+- **Zero-copy byte transport**: `Uint8List` values flow end-to-end through
+  dispatch and the worker isolate without `List<int>.from` / `.toList()`
+  copies; the web worker protocol gained a binary message path with a
+  JSON/base64 fallback.
+- **Release profile**: the native crate now builds with `lto = true`,
+  `codegen-units = 1`, and pinned `opt-level = 3` for cross-crate inlining on
+  codec/predicate hot paths (`panic = "abort"` stays off because redb's
+  `Drop`-based rollback needs unwinding).
