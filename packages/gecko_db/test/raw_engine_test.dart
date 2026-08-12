@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:gecko_db/gecko_db.dart';
+import 'package:gecko_db/src/backend/raw_backend.dart'
+    show RawBatchPlan, DirectReadBackend, PreparedBatchBackend;
 import 'package:test/test.dart';
 
 import 'support/native_database.dart';
@@ -161,4 +163,155 @@ void main() {
       expect(engine.isReservedTable('users'), isFalse);
     });
   });
+
+  group('RawEngine: negative-lookup cache', () {
+    test(
+      'a repeated read of a missing key makes no backend call after the first',
+      () async {
+        final counting = _CountingBackend(backend);
+        final eng = RawEngine(counting, lruCapacity: 4, inFlightBatchLimit: 2);
+        final k = ByteKey([99]);
+        expect(await eng.rawGet('t', k), isNull);
+        final afterFirst = counting.directReads;
+        expect(await eng.rawGet('t', k), isNull);
+        expect(await eng.rawGet('t', k), isNull);
+        expect(
+          counting.directReads,
+          afterFirst,
+          reason: 'a cached miss must not cross the boundary again',
+        );
+        // A put to that key clears the negative entry and serves the value.
+        await eng.rawPut('t', k, [1]);
+        expect(await eng.rawGet('t', k), [1]);
+        await eng.dispose();
+      },
+    );
+
+    test('a delete of a cached key leaves a negative entry for it', () async {
+      final counting = _CountingBackend(backend);
+      final eng = RawEngine(counting, lruCapacity: 4, inFlightBatchLimit: 2);
+      final k = ByteKey([5]);
+      await eng.rawPut('t', k, [5]);
+      expect(await eng.rawGet('t', k), [5]);
+      await eng.rawDelete('t', k);
+      final before = counting.directReads;
+      expect(await eng.rawGet('t', k), isNull);
+      expect(await eng.rawGet('t', k), isNull);
+      expect(
+        counting.directReads,
+        before + 1,
+        reason: 'exactly one backend read for a now-missing hot key',
+      );
+      await eng.dispose();
+    });
+  });
+
+  group('RawEngine: selective invalidation', () {
+    test('a batch write invalidates only the touched keys, not the whole LRU',
+        () async {
+      final counting = _CountingBackend(backend);
+      final eng = RawEngine(counting, lruCapacity: 16, inFlightBatchLimit: 2);
+      // Cache two hot keys.
+      await eng.rawPut('t', ByteKey([1]), [1]);
+      await eng.rawPut('t', ByteKey([2]), [2]);
+      expect(await eng.rawGet('t', ByteKey([1])), [1]);
+      expect(await eng.rawGet('t', ByteKey([2])), [2]);
+      // A batch touching key 1 only.
+      await eng.applyPreparedPlan(
+        RawBatchPlan(ops: [RawPut('t', ByteKey([1]), [10])]),
+      );
+      // Key 2 must still be cache-resident (no full-clear after the batch).
+      final before = counting.directReads;
+      expect(await eng.rawGet('t', ByteKey([2])), [2]);
+      expect(
+        counting.directReads,
+        before,
+        reason: 'an unrelated hot key must survive a batch write',
+      );
+      // Key 1 was invalidated → read through to the new value.
+      expect(await eng.rawGet('t', ByteKey([1])), [10]);
+      await eng.dispose();
+    });
+  });
+}
+
+/// A read-counting backend: delegates to the real native backend and counts
+/// direct point-read calls so cache behavior is observable in tests.
+class _CountingBackend implements RawBackend, DirectReadBackend, PreparedBatchBackend {
+  _CountingBackend(this._inner);
+  final NativeRawBackend _inner;
+  int directReads = 0;
+
+  @override
+  bool get isReadOnly => _inner.isReadOnly;
+
+  @override
+  Future<ApplyBatchResult> applyBatch(RawBatch ops) => _inner.applyBatch(ops);
+
+  @override
+  Future<ApplyBatchResult> applyPreparedBatch(RawBatchPlan plan) =>
+      _inner.applyPreparedBatch(plan);
+
+  @override
+  Future<void> registerCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  ) =>
+      _inner.registerCompositeIndexes(table, indexes);
+
+  @override
+  Future<LiveQueryRegistration> registerLiveQuery({
+    required String table,
+    required List<int> predicateBytes,
+    required List<int> sortBytes,
+    required int kind,
+  }) =>
+      _inner.registerLiveQuery(
+        table: table,
+        predicateBytes: predicateBytes,
+        sortBytes: sortBytes,
+        kind: kind,
+      );
+
+  @override
+  Future<void> unregisterLiveQuery(int id) => _inner.unregisterLiveQuery(id);
+
+  @override
+  Future<int> liveQueryCount() => _inner.liveQueryCount();
+
+  @override
+  Future<List<RawEntry>> pendingChanges() => _inner.pendingChanges();
+
+  @override
+  Future<RawSnapshot> snapshot() => _inner.snapshot();
+
+  @override
+  Future<List<RawEntry>> getMany(String table, List<ByteKey> keys) =>
+      _inner.getMany(table, keys);
+
+  @override
+  Future<bool> tableExists(String table) => _inner.tableExists(table);
+
+  @override
+  Future<List<String>> tables() => _inner.tables();
+
+  @override
+  Future<int> lastCommitSeq() => _inner.lastCommitSeq();
+
+  @override
+  Future<void> close() => _inner.close();
+
+  @override
+  Future<List<int>?> directRead(String table, ByteKey key) async {
+    directReads++;
+    return _inner.directRead(table, key);
+  }
+
+  @override
+  Future<List<RawEntry>> directScan(
+    String table, {
+    ByteKey? start,
+    ByteKey? end,
+  }) =>
+      _inner.directScan(table, start: start, end: end);
 }

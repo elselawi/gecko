@@ -45,14 +45,24 @@ class RawEngine {
          maxWeight: lruMaxWeight,
          weightOf: lruMaxWeight == null ? null : (value) => value?.length ?? 0,
        ),
+       // Negative (missing-key) lookups live in their OWN bounded cache so a
+       // burst of absent-key reads never evicts real row data.
+       _negativeLru = LruCache<_CacheKey, bool>(
+         capacity: _defaultNegativeLruCapacity,
+       ),
        _writeGate = _WriteGate(inFlightBatchLimit ?? _defaultInFlight),
        _changeBus = changeBus ?? ChangeBus();
 
   static const int _defaultLruCapacity = 1024;
+  static const int _defaultNegativeLruCapacity = 256;
   static const int _defaultInFlight = 8;
 
   final RawBackend _backend;
   final LruCache<_CacheKey, List<int>?> _lru;
+
+  /// Cached absent keys: a repeated read of a missing key returns null without
+  /// crossing the boundary, and never evicts a real cached row.
+  final LruCache<_CacheKey, bool> _negativeLru;
   bool _disposed = false;
   final _WriteGate _writeGate;
   final ChangeBus _changeBus;
@@ -206,24 +216,66 @@ class RawEngine {
 
   /// Reads the raw value at [key] in [table], or null if absent.
   ///
-  /// On a cache hit the value is returned without touching the backend; on a
-  /// write the cache is invalidated so results are never stale.
+  /// On a cache hit the value is returned without touching the backend; a
+  /// cached MISSING key is also served from the bounded negative cache (no
+  /// boundary crossing on repeated absent reads). On a write the affected
+  /// cache entries are invalidated so results are never stale.
   Future<List<int>?> rawGet(String table, ByteKey key) async {
     _assertUsable();
     if (_diagnosticsEnabled) _totalReads++;
     final cacheKey = _CacheKey(table, key);
-    final cached = _lru.get(cacheKey);
-    if (cached != null) {
-      // Cache hit (including a cached "missing" sentinel). Return a defensive
+    if (_negativeLru.containsKey(cacheKey)) {
+      // Cached missing sentinel: the key was absent on a previous read and no
+      // write has touched it since.
+      return null;
+    }
+    if (_lru.containsKey(cacheKey)) {
+      // Cache hit (the value is never null in [_lru]). Return a defensive
       // copy so a caller mutating the returned list cannot corrupt the cache
       // (the cache stores the shared encoding of the value).
-      return List<int>.from(cached);
+      return List<int>.from(_lru.get(cacheKey)!);
     }
     final value = _backend is DirectReadBackend
         ? await (_backend as DirectReadBackend).directRead(table, key)
         : await _readThroughSnapshot(table, key);
-    if (value != null) _lru.put(cacheKey, value);
+    if (value == null) {
+      _negativeLru.put(cacheKey, true);
+    } else {
+      _lru.put(cacheKey, value);
+    }
     return value == null ? null : List<int>.from(value);
+  }
+
+  /// Invalidates both the value cache and the negative (missing-key) cache for
+  /// [table]/[key] — a write to a previously-missing key must clear its
+  /// negative entry, and vice versa.
+  void _invalidate(String table, ByteKey key) {
+    final cacheKey = _CacheKey(table, key);
+    _lru.invalidate(cacheKey);
+    _negativeLru.invalidate(cacheKey);
+  }
+
+  void _invalidateAll(Iterable<(String, ByteKey)> keys) {
+    for (final (table, key) in keys) {
+      _invalidate(table, key);
+    }
+  }
+
+  /// Selectively invalidates the keys touched by [ops] (put/delete carry the
+  /// key; delete-range/clear keys come from [result].removedKeys) instead of
+  /// clearing the whole LRU after every batch.
+  void _invalidateForOps(RawBatch ops, ApplyBatchResult result) {
+    for (final op in ops) {
+      switch (op) {
+        case RawPut(:final table, :final key):
+          _invalidate(table, key);
+        case RawDelete(:final table, :final key):
+          _invalidate(table, key);
+        default:
+          break; // delete-range/clear keys arrive via removedKeys
+      }
+    }
+    _invalidateAll(result.removedKeys);
   }
 
   Future<List<int>?> _readThroughSnapshot(String table, ByteKey key) async {
@@ -264,7 +316,7 @@ class RawEngine {
         final previous = result.previousValues.isEmpty
             ? null
             : result.previousValues.single;
-        _lru.invalidate(_CacheKey(table, key));
+        _invalidate(table, key);
         _publishAt(result.sequence, [(table, key, ChangeKind.put)]);
         return previous;
       } catch (_) {
@@ -293,7 +345,7 @@ class RawEngine {
         final previous = result.previousValues.isEmpty
             ? null
             : result.previousValues.single;
-        _lru.invalidate(_CacheKey(table, key));
+        _invalidate(table, key);
         _publishAt(result.sequence, [(table, key, ChangeKind.delete)]);
         return previous != null;
       } catch (_) {
@@ -313,7 +365,9 @@ class RawEngine {
         final result = await _applyBatchWithDeltas(
           RawBatchPlan(ops: [RawClear(table)]),
         );
-        _lru.clear();
+        // The worker reports every removed key; invalidate only those (a
+        // whole-table clear does not have to evict unrelated hot keys).
+        _invalidateAll(result.removedKeys);
         _publishAt(result.sequence, [
           (table, ByteKey(const []), ChangeKind.delete),
         ]);
@@ -411,7 +465,7 @@ class RawEngine {
         if (ops.isEmpty) return lsn - 1;
         try {
           final result = await _applyBatchWithDeltas(RawBatchPlan(ops: ops));
-          _lru.clear();
+          _invalidateForOps(ops, result);
           final changes =
               buildChanges?.call(result.sequence) ?? const <Change>[];
           if (changes.isNotEmpty) {
@@ -439,7 +493,7 @@ class RawEngine {
       final started = _diagnosticsEnabled ? (Stopwatch()..start()) : null;
       try {
         final result = await _applyBatchWithDeltas(plan);
-        _lru.clear();
+        _invalidateForOps(plan.ops, result);
         return result;
       } catch (_) {
         if (_diagnosticsEnabled) _failedWrites++;
@@ -469,7 +523,7 @@ class RawEngine {
         final ops = await buildOps(predicted);
         if (ops.isEmpty) return _changeBus.lastSequence;
         final result = await _applyBatchWithDeltas(RawBatchPlan(ops: ops));
-        _lru.clear();
+        _invalidateForOps(ops, result);
         final changes = buildChanges?.call(result.sequence) ?? const <Change>[];
         if (changes.isNotEmpty) {
           _publishAt(result.sequence, const [], supplied: changes);
@@ -498,7 +552,7 @@ class RawEngine {
         final plan = await buildPlan();
         if (plan.ops.isEmpty) return _changeBus.lastSequence;
         final result = await _applyBatchWithDeltas(plan);
-        _lru.clear();
+        _invalidateForOps(plan.ops, result);
         final changes = buildChanges?.call(result.sequence) ?? const <Change>[];
         if (changes.isNotEmpty) {
           _publishAt(result.sequence, const [], supplied: changes);
