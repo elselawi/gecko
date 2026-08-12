@@ -92,6 +92,13 @@ class _DelayedBackend implements RawBackend {
   }
 
   @override
+  Future<void> registerCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  ) =>
+      delegate.registerCompositeIndexes(table, indexes);
+
+  @override
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,

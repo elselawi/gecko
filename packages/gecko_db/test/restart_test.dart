@@ -26,6 +26,13 @@ class _FailingBackend implements RawBackend {
     return _inner.applyBatch(ops);
   }
 
+  @override
+  Future<void> registerCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  ) =>
+      _inner.registerCompositeIndexes(table, indexes);
+
   bool _failedOnce = false;
 
   @override

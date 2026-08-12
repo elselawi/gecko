@@ -292,6 +292,13 @@ class _ThrowingBatchBackend implements RawBackend {
   }
 
   @override
+  Future<void> registerCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  ) =>
+      _delegate.registerCompositeIndexes(table, indexes);
+
+  @override
   Future<LiveQueryRegistration> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
