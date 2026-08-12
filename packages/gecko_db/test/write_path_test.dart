@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
+import 'package:gecko_db/src/backend/raw_backend.dart'
+    show RawBatchPlan, RawChangeTemplate;
 import 'package:test/test.dart';
 
 import 'support/native_database.dart';
@@ -75,6 +77,57 @@ void main() {
     expect(counters.batchesApplied, BigInt.one);
     expect(counters.snapshotsCreated, BigInt.zero);
   });
+
+  test(
+    'bulk path requests no previous values from the worker but still fills them in the log',
+    () async {
+      final db = await openNativeTestDatabase('priority2-bulk-no-prev');
+      addTearDown(db.close);
+      final collection = items(db);
+      await collection.put({'id': 'k', 'value': 0});
+      final before = await db.engine.backend.lastCommitSeq();
+
+      // Mirror exactly what DatabaseImpl.bulkWrite sends today: no
+      // previousOperationIndexes, change templates with fillPreviousVersion.
+      final result = await db.engine.applyPreparedPlan(
+        RawBatchPlan(
+          ops: [
+            RawPut(
+              'items',
+              ByteKey(codec.encode('k')),
+              codec.encode({'id': 'k', 'value': 1}),
+            ),
+          ],
+          changeTemplates: [
+            RawChangeTemplate(
+              operationIndex: 0,
+              ordinal: 0,
+              syncStateKey: ByteKey(codec.encode('items:k')),
+              recordTemplate: codec.encode({
+                'localMutationId': 0,
+                'recordId': 'k',
+                'timestamp': DateTime.fromMillisecondsSinceEpoch(1),
+                'collection': 'items',
+                'kind': 'put',
+                'value': {'id': 'k', 'value': 1},
+                'previousVersion': null,
+                'origin': 'user',
+                'dirty': true,
+                'syncPhase': 'pending',
+              }),
+              fillPreviousVersion: true,
+            ),
+          ],
+        ),
+      );
+      expect(result.previousValues, isEmpty,
+          reason: 'the bulk path must not carry old row bytes back');
+      // The change log still records the prior value via the template.
+      final records = await changesSince(db, before);
+      expect(records, hasLength(1));
+      expect(records.single.previousVersion, {'id': 'k', 'value': 0});
+    },
+  );
 
   test(
     'raw writes validate modes atomically and preserve error categories',

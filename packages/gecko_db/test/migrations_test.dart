@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
+import 'package:gecko_db/src/namespaces.dart' show geckoSchemaTable;
 import 'package:test/test.dart';
 
 import 'support/native_database.dart';
@@ -261,6 +262,171 @@ void main() {
         await db.close();
       },
     );
+  });
+
+  group('bounded rewrite paging', () {
+    test(
+      'large migration rewrites every row across bounded pages '
+      '(including a partial final page)',
+      () async {
+        final db = await openNativeTestDatabase('migrate-paged-1');
+        final col = db.collection<_Rec>(
+          'items',
+          toRow: _toRow,
+          fromRow: _fromRow,
+          id: _recId,
+        );
+        // 450 rows: 200 + 200 + a 50-row partial final page. Zero-padded ids
+        // keep byte order equal to numeric order so page boundaries are
+        // deterministic.
+        for (var i = 0; i < 450; i++) {
+          await col.put(_Rec('r${i.toString().padLeft(4, '0')}', 'n$i'));
+        }
+        await db.schema.stamp(1);
+        await db.schema.migrateStep(
+          MigrationStep(
+            name: 'paged',
+            fromVersion: 1,
+            toVersion: 2,
+            rewritesRecords: true,
+            collection: 'items',
+            upgrade: _addStatusField,
+          ),
+        );
+        expect(await db.schema.readVersion(), 2);
+        final all = await col.getAll();
+        expect(all.length, 450);
+        for (final r in all) {
+          final raw = await db.rawGet(
+            'items',
+            ByteKey(DefaultWireCodec().encode(r.id)),
+          );
+          final row = DefaultWireCodec().decode(raw!) as Map;
+          expect(row['status'], 'active', reason: 'row ${r.id} must be upgraded');
+        }
+        await db.close();
+      },
+    );
+
+    test(
+      'interrupted migration resumes strictly after the last committed key',
+      () async {
+        final db = await openNativeTestDatabase('migrate-paged-2');
+        final col = db.collection<_Rec>(
+          'items',
+          toRow: _toRow,
+          fromRow: _fromRow,
+          id: _recId,
+        );
+        for (var i = 0; i < 450; i++) {
+          await col.put(_Rec('r${i.toString().padLeft(4, '0')}', 'n$i'));
+        }
+        await db.schema.stamp(1);
+
+        // The failing upgrade throws on row n250 (page 2). Page 1
+        // (r0000-r0199) is committed and durable before page 2 rolls back.
+        Object? failing(Object? row) {
+          final m = row as Map;
+          if (m['name'] == 'n250') throw StateError('boom');
+          return _addStatusField(row);
+        }
+        await expectLater(
+          db.schema.migrateStep(
+            MigrationStep(
+              name: 'paged',
+              fromVersion: 1,
+              toVersion: 2,
+              rewritesRecords: true,
+              collection: 'items',
+              upgrade: failing,
+            ),
+          ),
+          throwsA(isA<GeckoError>()),
+        );
+        expect(await db.schema.readVersion(), 1, reason: 'version stays unstamped');
+
+        // Page 1 is durable; page 2 rolled back atomically.
+        final firstUpgraded = await db.rawGet(
+          'items',
+          ByteKey(DefaultWireCodec().encode('r0000')),
+        );
+        expect(
+          (DefaultWireCodec().decode(firstUpgraded!) as Map)['status'],
+          'active',
+          reason: 'committed page 1 rows are upgraded',
+        );
+        final rolledBack = await db.rawGet(
+          'items',
+          ByteKey(DefaultWireCodec().encode('r0250')),
+        );
+        expect(
+          (DefaultWireCodec().decode(rolledBack!) as Map).containsKey('status'),
+          isFalse,
+          reason: 'the failed page must roll back atomically',
+        );
+
+        // Durable progress points at the last committed page's key.
+        final progressRaw = await db.rawGet(
+          geckoSchemaTable,
+          ByteKey(DefaultWireCodec().encode('migration:paged')),
+        );
+        final progress = DefaultWireCodec().decode(progressRaw!) as Map;
+        expect(progress['from'], 1);
+        expect(progress['rows'], 200);
+        expect(
+          progress['lastKey'],
+          DefaultWireCodec().encode('r0199'),
+          reason: 'resume must start strictly after the last committed key',
+        );
+
+        // Retry with a healthy upgrade: only the remaining 250 rows are
+        // transformed (the first 200 are never re-read/re-transformed).
+        var resumeInvocations = 0;
+        Object? good(Object? row) {
+          resumeInvocations++;
+          return _addStatusField(row);
+        }
+        await db.schema.migrateStep(
+          MigrationStep(
+            name: 'paged',
+            fromVersion: 1,
+            toVersion: 2,
+            rewritesRecords: true,
+            collection: 'items',
+            upgrade: good,
+          ),
+        );
+        expect(await db.schema.readVersion(), 2);
+        expect(resumeInvocations, 250, reason: 'resume skips already-done rows');
+        for (var i = 0; i < 450; i++) {
+          final id = 'r${i.toString().padLeft(4, '0')}';
+          final raw = await db.rawGet(
+            'items',
+            ByteKey(DefaultWireCodec().encode(id)),
+          );
+          final row = DefaultWireCodec().decode(raw!) as Map;
+          expect(row['status'], 'active', reason: 'row $id must be upgraded');
+        }
+        await db.close();
+      },
+    );
+
+    test('rewrite step on an empty table still stamps the version', () async {
+      final db = await openNativeTestDatabase('migrate-paged-3');
+      await db.schema.stamp(1);
+      await db.schema.migrateStep(
+        MigrationStep(
+          name: 'paged',
+          fromVersion: 1,
+          toVersion: 2,
+          rewritesRecords: true,
+          collection: 'items',
+          upgrade: _addStatusField,
+        ),
+      );
+      expect(await db.schema.readVersion(), 2);
+      await db.close();
+    });
   });
 
   group('open-time compatibility gate', () {

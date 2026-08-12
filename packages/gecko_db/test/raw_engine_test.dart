@@ -313,7 +313,9 @@ void main() {
     });
 
     test('changesSince filters change-log rows by sequence', () async {
-      ByteKey keyFor(int seq) => ByteKey(_wire.encode('c$seq'));
+      // Production change-log keys are encoded as (sequence, ordinal): the
+      // Rust lower-bounded scan starts at (seq+1, 0).
+      ByteKey keyFor(int seq) => ByteKey(_wire.encode([seq, 0]));
       for (final seq in [1, 5, 10]) {
         await engine.rawPut(
           geckoChangeLogTable,
