@@ -225,3 +225,96 @@ List<int> _incrementLastByte(List<int> bytes) {
   // All 0xFF bytes: return the original as a safe no-match fallback.
   return bytes;
 }
+
+/// The shared composite index-key prefix `[0x06 | u32be(2 + 2n) | enc(table) |
+/// enc(f1)..enc(fn)]`, mirroring `rust/src/worker.rs::index_key_prefix`. For
+/// n = 1 this is byte-identical to the single-field `_fieldPrefix`.
+List<int> compositeIndexKeyPrefix(
+  String table,
+  List<String> fields, {
+  WireCodec codec = const DefaultWireCodec(),
+}) {
+  final out = <int>[0x06, 0, 0, 0, 2 + 2 * fields.length];
+  out.addAll(codec.encode(table));
+  for (final field in fields) {
+    out.addAll(codec.encode(field));
+  }
+  return out;
+}
+
+/// The exact durable-index bounds for a composite query: equality on the
+/// leading [eqValues] (one value per [eqFields], in composite-field order)
+/// followed by an optional open-ended range `min..max` on the trailing field.
+/// The prefix-then-values layout makes this a contiguous index-key range
+/// containing exactly the rows that match the eq prefix AND the trailing
+/// range — the composite serves the compound predicate as ONE ordered scan.
+(List<int>, List<int>) compositeRangeBounds(
+  String table,
+  List<String> fields,
+  List<String> eqFields,
+  List<Object?> eqValues, {
+  Object? min,
+  Object? max,
+  WireCodec codec = const DefaultWireCodec(),
+}) {
+  final prefix = compositeIndexKeyPrefix(table, fields, codec: codec);
+  final start = List<int>.of(prefix);
+  for (var i = 0; i < eqFields.length; i++) {
+    start.addAll(orderedIndexElement(eqValues[i], codec: codec));
+  }
+  if (min != null) {
+    start.addAll(orderedIndexElement(min, codec: codec));
+  }
+  final endBase = List<int>.of(prefix);
+  for (var i = 0; i < eqFields.length; i++) {
+    endBase.addAll(orderedIndexElement(eqValues[i], codec: codec));
+  }
+  if (max != null) {
+    endBase.addAll(orderedIndexElement(max, codec: codec));
+    return (start, _incrementLastByte(endBase));
+  }
+  return (start, _incrementLastByte(endBase));
+}
+
+/// The exact durable-index bounds for a composite query with an equality
+/// prefix only (no trailing range): `[prefix + ord(v1)..ord(vk), successor)`.
+/// Every row whose leading [eqFields] match the [eqValues] falls inside.
+(List<int>, List<int>) compositeEqBounds(
+  String table,
+  List<String> fields,
+  List<String> eqFields,
+  List<Object?> eqValues, {
+  WireCodec codec = const DefaultWireCodec(),
+}) {
+  final start = compositeIndexKeyPrefix(table, fields, codec: codec);
+  for (var i = 0; i < eqFields.length; i++) {
+    start.addAll(orderedIndexElement(eqValues[i], codec: codec));
+  }
+  final end = _incrementLastByte(start);
+  return (start, end);
+}
+
+/// The exact durable-index bounds for a composite query whose trailing
+/// [field] must start with [prefixValue] (all leading [eqFields] bounded by
+/// equality): the escaped string-prefix bytes form a contiguous range inside
+/// the composite key space containing exactly the strings with that prefix.
+(List<int>, List<int>) compositePrefixBounds(
+  String table,
+  List<String> fields,
+  List<String> eqFields,
+  List<Object?> eqValues,
+  String field,
+  String prefixValue, {
+  WireCodec codec = const DefaultWireCodec(),
+}) {
+  final shared = compositeIndexKeyPrefix(table, fields, codec: codec);
+  for (var i = 0; i < eqFields.length; i++) {
+    shared.addAll(orderedIndexElement(eqValues[i], codec: codec));
+  }
+  shared.add(_tagOrdered);
+  shared.add(_ordString);
+  _pushOrdString(shared, utf8.encode(prefixValue));
+  shared.removeRange(shared.length - 2, shared.length);
+  final end = _incrementLastByte(shared);
+  return (shared, end);
+}

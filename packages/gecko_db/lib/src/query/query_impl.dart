@@ -69,17 +69,23 @@ class QueryImpl<T> implements Query<T> {
     required this.fromRow,
     Map<String, Object?>? initialEq,
     CollectionIndex? secondary,
+    List<List<String>>? compositeIndexes,
   }) : _filters = <Filter>[
          for (final entry in (initialEq ?? const {}).entries)
            Filter.eq(entry.key.toString(), entry.value),
        ],
-       _secondary = secondary;
+       _secondary = secondary,
+       _compositeIndexes =
+           compositeIndexes == null
+               ? const <List<String>>[]
+               : List<List<String>>.unmodifiable(compositeIndexes);
 
   final RawEngine _engine;
   final String _table;
   final Object? Function(T) toRow;
   final T Function(Object? row) fromRow;
   final CollectionIndex? _secondary;
+  final List<List<String>> _compositeIndexes;
 
   final List<Filter> _filters;
   List<SortSpec> _sort = const [];
@@ -140,6 +146,7 @@ class QueryImpl<T> implements Query<T> {
           toRow: toRow,
           fromRow: fromRow,
           secondary: _secondary,
+          compositeIndexes: _compositeIndexes,
         )
         .._filters.addAll(_filters)
         .._sort = List<SortSpec>.from(_sort)
@@ -182,32 +189,65 @@ class QueryImpl<T> implements Query<T> {
     int nativeOffset = 0,
   }) async* {
     final nativeRanges = _nativeIndexedRanges(idx);
+    final compositeRoute = _compositeRoute();
     final predicateBytes = encodePredicate(_filters, codec: _codec);
     final List<RawEntry> entries;
-    if (nativeRanges != null) {
+    final nativeEq = nativeRanges != null ? _nativeEqProbe(idx) : null;
+    if (nativeEq != null) {
       lastPlan = IndexPlan.secondaryIndex;
-      final nativeEq = _nativeEqProbe(idx);
-      if (nativeEq != null) {
-        final (field, value) = nativeEq;
-        final (start, end) = eqBounds(_table, field, value, codec: _codec);
-        entries = await backend.queryIndexedLimited(
-          table: _table,
-          start: ByteKey(start),
-          end: ByteKey(end),
-          predicateBytes: predicateBytes,
-          limit: nativeLimit,
-          offset: nativeOffset,
-        );
-      } else {
-        entries = await backend.queryIndexedMulti(
-          table: _table,
-          ranges: [
-            for (final range in nativeRanges)
-              (ByteKey(range.$1), ByteKey(range.$2)),
-          ],
-          predicateBytes: predicateBytes,
-        );
-      }
+      final (field, value) = nativeEq;
+      final (start, end) = eqBounds(_table, field, value, codec: _codec);
+      entries = await backend.queryIndexedLimited(
+        table: _table,
+        start: ByteKey(start),
+        end: ByteKey(end),
+        predicateBytes: predicateBytes,
+        covered: _indexCoversFilters(idx),
+        limit: nativeLimit,
+        offset: nativeOffset,
+      );
+    } else if (compositeRoute != null) {
+      // A declared composite index serves the compound predicate as one
+      // ordered scan (eq prefix + optional trailing range).
+      lastPlan = IndexPlan.secondaryIndex;
+      final (_, (start, end), covered) = compositeRoute;
+      entries = await backend.queryIndexedLimited(
+        table: _table,
+        start: ByteKey(start),
+        end: ByteKey(end),
+        predicateBytes: predicateBytes,
+        covered: covered,
+        limit: nativeLimit,
+        offset: nativeOffset,
+      );
+    } else if (nativeRanges != null && nativeRanges.length == 1) {
+      // A single range/prefix: stream the exact bounds with an early window
+      // (Priority 5 limit/offset pushdown) instead of materializing the whole
+      // candidate span and windowing it afterwards.
+      lastPlan = IndexPlan.secondaryIndex;
+      final (start, end) = nativeRanges.single;
+      entries = await backend.queryIndexedLimited(
+        table: _table,
+        start: ByteKey(start),
+        end: ByteKey(end),
+        predicateBytes: predicateBytes,
+        covered: _indexCoversFilters(idx),
+        limit: nativeLimit,
+        offset: nativeOffset,
+      );
+    } else if (nativeRanges != null) {
+      lastPlan = IndexPlan.secondaryIndex;
+      entries = await backend.queryIndexedMulti(
+        table: _table,
+        ranges: [
+          for (final range in nativeRanges)
+            (ByteKey(range.$1), ByteKey(range.$2)),
+        ],
+        predicateBytes: predicateBytes,
+        covered: _indexCoversFilters(idx),
+        limit: nativeLimit,
+        offset: nativeOffset,
+      );
     } else {
       lastPlan = IndexPlan.nativeFilteredScan;
       final windowed = nativeLimit != null || nativeOffset > 0;
@@ -271,6 +311,86 @@ class QueryImpl<T> implements Query<T> {
     return ranges.isEmpty ? null : ranges;
   }
 
+  /// True when the durable single-field index [idx] covers every filter:
+  /// each filter's field is in the index's declared fields (for a
+  /// single-field index, all on that one field), so the exact eq/range/prefix
+  /// bounds prove the whole predicate and Rust may skip the per-row recheck
+  /// (Priority 5). Mirrors `Predicate::covers` in Rust.
+  bool _indexCoversFilters(CollectionIndex? idx) {
+    if (idx == null || _filters.isEmpty) return false;
+    return _filters.every((f) => idx.fields.contains(f.field));
+  }
+
+  /// Picks a declared composite index that can serve this query's compound
+  /// predicate as ONE ordered scan (Priority 5): the composite fields'
+  /// leading prefix must be equality-bounded, optionally followed by a single
+  /// range/prefix on the trailing field. Returns `(fields, (start, end),
+  /// covered)`; [covered] is true only when the composite bounds prove every
+  /// filter (all filters are eq on the bounded prefix, plus at most the
+  /// trailing range/prefix). Otherwise Rust rechecks the complete predicate.
+  (List<String>, (List<int>, List<int>), bool)? _compositeRoute() {
+    if (_compositeIndexes.isEmpty || _filters.isEmpty) return null;
+    final eqs = <String, Object?>{
+      for (final f in _filters)
+        if (f.isIndexUsable) f.field: f.value,
+    };
+    for (final fields in _compositeIndexes) {
+      if (fields.isEmpty) continue;
+      var k = 0;
+      while (k < fields.length && eqs.containsKey(fields[k])) {
+        k++;
+      }
+      if (k == 0) continue; // the first field must be eq-bounded to narrow
+      // A single range/prefix filter on the next field becomes the trailing
+      // bound; anything else (or a filter on a deeper field) falls back to
+      // eq-prefix-only bounds with Rust recheck.
+      Filter? trailing;
+      if (k < fields.length) {
+        final candidates = <Filter>[
+          for (final f in _filters)
+            if ((f.isRangeFilter || f.isPrefixFilter) && f.field == fields[k])
+              f,
+        ];
+        if (candidates.length == 1) trailing = candidates.single;
+      }
+      // covered: every filter is proven by the composite bounds (eq on the
+      // bounded prefix, plus at most the single trailing range/prefix).
+      final proven = <String>{for (var i = 0; i < k; i++) fields[i]};
+      if (trailing != null) proven.add(trailing.field);
+      final covered = _filters.every((f) {
+        if (f.isIndexUsable) return proven.contains(f.field);
+        return (f.isRangeFilter || f.isPrefixFilter) && identical(f, trailing);
+      });
+      final eqFields = fields.sublist(0, k);
+      final eqValues = [for (final field in eqFields) eqs[field]];
+      final (start, end) = trailing == null
+          ? compositeEqBounds(
+              _table, fields, eqFields, eqValues, codec: _codec,
+            )
+          : trailing.isRangeFilter
+          ? compositeRangeBounds(
+              _table,
+              fields,
+              eqFields,
+              eqValues,
+              min: trailing.min,
+              max: trailing.max,
+              codec: _codec,
+            )
+          : compositePrefixBounds(
+              _table,
+              fields,
+              eqFields,
+              eqValues,
+              trailing.field,
+              trailing.prefix!,
+              codec: _codec,
+            );
+      return (fields, (start, end), covered);
+    }
+    return null;
+  }
+
   Stream<_Decoded> _scanWith(
     NativeRawSnapshot snap,
     CollectionIndex? idx,
@@ -284,6 +404,7 @@ class QueryImpl<T> implements Query<T> {
     // bounds; the transitional Dart index remains authoritative only for
     // the in-memory reference backend.
     final nativeRanges = _nativeIndexedRanges(idx);
+    final compositeRoute = _compositeRoute();
     if (t != null) {
       if (idx != null) t.stop(_QueryStage.indexLookup);
       t.stop(_QueryStage.plan);
@@ -310,6 +431,7 @@ class QueryImpl<T> implements Query<T> {
           start: ByteKey(start),
           end: ByteKey(end),
           predicateBytes: encodePredicate(_filters, codec: _codec),
+          covered: _indexCoversFilters(idx),
           limit: nativeLimit,
           offset: nativeOffset,
         );
@@ -337,7 +459,86 @@ class QueryImpl<T> implements Query<T> {
         if (t != null) t.stopAccum(_QueryStage.predicate);
         return;
       }
-
+    }
+    if (compositeRoute != null) {
+      // A declared composite index serves the compound predicate as one
+      // ordered scan (eq prefix + optional trailing range); the complete
+      // predicate is rechecked in Rust unless the bounds prove every filter.
+      lastPlan = IndexPlan.secondaryIndex;
+      final (_, (start, end), covered) = compositeRoute;
+      if (t != null) t.start(_QueryStage.backendRead);
+      final entries = await snap.queryIndexedLimited(
+        table: _table,
+        start: ByteKey(start),
+        end: ByteKey(end),
+        predicateBytes: encodePredicate(_filters, codec: _codec),
+        covered: covered,
+        limit: nativeLimit,
+        offset: nativeOffset,
+      );
+      if (t != null) t.stop(_QueryStage.backendRead);
+      final decoded = <_Decoded>[];
+      for (final entry in entries) {
+        if (t != null) {
+          t.scanned++;
+          t.start(_QueryStage.decode);
+        }
+        final row = _mapOf(_codec.decode(entry.value ?? const []));
+        if (t != null) {
+          t.stop(_QueryStage.decode);
+          t.start(_QueryStage.mapCopy);
+        }
+        if (t != null) t.stop(_QueryStage.mapCopy);
+        decoded.add(_Decoded(entry.key, row));
+      }
+      if (t != null) t.start(_QueryStage.predicate);
+      for (final item in decoded) {
+        if (t != null) t.matched++;
+        yield item;
+      }
+      if (t != null) t.stopAccum(_QueryStage.predicate);
+      return;
+    }
+    if (nativeRanges != null && nativeRanges.length == 1) {
+      // A single range/prefix: stream the exact bounds with an early window
+      // (Priority 5 limit/offset pushdown) instead of materializing the whole
+      // candidate span and windowing it afterwards.
+      lastPlan = IndexPlan.secondaryIndex;
+      final (start, end) = nativeRanges.single;
+      if (t != null) t.start(_QueryStage.backendRead);
+      final entries = await snap.queryIndexedLimited(
+        table: _table,
+        start: ByteKey(start),
+        end: ByteKey(end),
+        predicateBytes: encodePredicate(_filters, codec: _codec),
+        covered: _indexCoversFilters(idx),
+        limit: nativeLimit,
+        offset: nativeOffset,
+      );
+      if (t != null) t.stop(_QueryStage.backendRead);
+      final decoded = <_Decoded>[];
+      for (final entry in entries) {
+        if (t != null) {
+          t.scanned++;
+          t.start(_QueryStage.decode);
+        }
+        final row = _mapOf(_codec.decode(entry.value ?? const []));
+        if (t != null) {
+          t.stop(_QueryStage.decode);
+          t.start(_QueryStage.mapCopy);
+        }
+        if (t != null) t.stop(_QueryStage.mapCopy);
+        decoded.add(_Decoded(entry.key, row));
+      }
+      if (t != null) t.start(_QueryStage.predicate);
+      for (final item in decoded) {
+        if (t != null) t.matched++;
+        yield item;
+      }
+      if (t != null) t.stopAccum(_QueryStage.predicate);
+      return;
+    }
+    if (nativeRanges != null) {
       // range, prefix, and multi-equality filters use durable-index
       // candidate intersection in Rust. The broad field ranges are followed
       // by a complete Rust predicate recheck, preserving semantic range and
@@ -350,6 +551,9 @@ class QueryImpl<T> implements Query<T> {
             (ByteKey(range.$1), ByteKey(range.$2)),
         ],
         predicateBytes: encodePredicate(_filters, codec: _codec),
+        covered: _indexCoversFilters(idx),
+        limit: nativeLimit,
+        offset: nativeOffset,
       );
       if (t != null) t.stop(_QueryStage.backendRead);
       final decoded = <_Decoded>[];
@@ -489,7 +693,7 @@ class QueryImpl<T> implements Query<T> {
       if (route != null) {
         // Index-covered: stream the durable index in order and stop early.
         lastPlan = IndexPlan.secondaryIndex;
-        final (field, (start, end), eqBounded) = route;
+        final (field, (start, end), eqBounded, descending, covered) = route;
         if (t != null) t.start(_QueryStage.backendRead);
         entries = directBackend != null
             ? await directBackend.queryIndexedOrdered(
@@ -499,6 +703,8 @@ class QueryImpl<T> implements Query<T> {
                 predicateBytes: predicateBytes,
                 sortField: field,
                 eqBounded: eqBounded,
+                descending: descending,
+                covered: covered,
                 limit: limit,
                 offset: offset,
               )
@@ -509,6 +715,8 @@ class QueryImpl<T> implements Query<T> {
                 predicateBytes: predicateBytes,
                 sortField: field,
                 eqBounded: eqBounded,
+                descending: descending,
+                covered: covered,
                 limit: limit,
                 offset: offset,
               );
@@ -562,34 +770,65 @@ class QueryImpl<T> implements Query<T> {
     }
   }
 
-  /// returns `(sortField, (start, end), eqBounded)` when the query's
-  /// single sort spec is covered by a single-field durable index, so index-key
-  /// order matches the sort and Rust can stream the index with an early stop.
-  /// Returns null for multi-spec, non-indexed, or descending-without-eq sorts
-  /// (those use the Rust top-K path, which handles missing-field placement).
-  (String, (List<int>, List<int>), bool)? _indexCoveredSortRoute(
+  /// returns `(sortField, (start, end), eqBounded, descending, covered)` when
+  /// the query's single sort spec can be served by streaming a durable index
+  /// in key order (Priority 5): a single-field index on the sort field, or a
+  /// composite whose LAST field is the sort field with every preceding field
+  /// eq-bounded. Rust streams the index (reverse for descending) with an early
+  /// stop; non-eq routes keep [covered] false so the Rust missing-field
+  /// fallback rechecks the predicate. Returns null for multi-spec or
+  /// non-indexed sorts (those use the Rust top-K path).
+  (String, (List<int>, List<int>), bool, bool, bool)? _indexCoveredSortRoute(
     CollectionIndex? idx,
   ) {
-    if (idx == null || _sort.length != 1) return null;
+    if (_sort.length != 1) return null;
     final spec = _sort.single;
-    if (!idx.fields.contains(spec.field)) return null;
-    final eqOnField = _filters.any(
-      (f) => f.isIndexUsable && f.field == spec.field,
-    );
-    if (eqOnField) {
-      // Every matching row has the same value, so index-key (recordId) order
-      // is exactly the stable Dart order for either direction.
-      final value = _filters
-          .firstWhere((f) => f.isIndexUsable && f.field == spec.field)
-          .value;
-      final (start, end) = eqBounds(_table, spec.field, value, codec: _codec);
-      return (spec.field, (start, end), true);
+    final descending = spec.order == SortOrder.descending;
+    // Single-field durable index on the sort field.
+    if (idx != null && idx.fields.contains(spec.field)) {
+      final eqOnField = _filters.any(
+        (f) => f.isIndexUsable && f.field == spec.field,
+      );
+      if (eqOnField) {
+        // Every matching row has the same value, so index-key (recordId)
+        // order is exactly the stable order for either direction; the exact
+        // bounds prove every filter on the field.
+        final value = _filters
+            .firstWhere((f) => f.isIndexUsable && f.field == spec.field)
+            .value;
+        final (start, end) = eqBounds(_table, spec.field, value, codec: _codec);
+        return (
+          spec.field,
+          (start, end),
+          true,
+          descending,
+          _indexCoversFilters(idx),
+        );
+      }
+      final (start, end) = fieldBounds(_table, spec.field, codec: _codec);
+      // Non-eq: missing-field rows need the Rust fallback scan (rechecked),
+      // so the covered skip stays off.
+      return (spec.field, (start, end), false, descending, false);
     }
-    // Descending without an eq on the field sorts missing rows FIRST; that
-    // needs the top-K path (which handles missing-first correctly).
-    if (spec.order == SortOrder.descending) return null;
-    final (start, end) = fieldBounds(_table, spec.field, codec: _codec);
-    return (spec.field, (start, end), false);
+    // Composite whose LAST field is the sort field with all preceding fields
+    // eq-bounded: index-key order equals sort order within the eq prefix.
+    for (final fields in _compositeIndexes) {
+      if (fields.isEmpty || fields.last != spec.field) continue;
+      final prefix = fields.sublist(0, fields.length - 1);
+      final eqs = <String, Object?>{
+        for (final f in _filters)
+          if (f.isIndexUsable) f.field: f.value,
+      };
+      if (!prefix.every(eqs.containsKey)) continue;
+      final eqValues = [for (final field in prefix) eqs[field]];
+      final (start, end) = compositeEqBounds(
+        _table, fields, prefix, eqValues, codec: _codec,
+      );
+      // Non-eq on the sort field: Rust handles missing-field placement and
+      // rechecks the predicate (covered stays false).
+      return (spec.field, (start, end), false, descending, false);
+    }
+    return null;
   }
 
   /// [Iterable] timed scan: wraps [_scan] so the per-stage accumulator [t]
@@ -705,6 +944,7 @@ class QueryImpl<T> implements Query<T> {
               (ByteKey(range.$1), ByteKey(range.$2)),
           ],
           predicateBytes: predicateBytes,
+          covered: _indexCoversFilters(secondary),
         );
       }
       lastPlan = IndexPlan.nativeFilteredScan;
@@ -724,6 +964,7 @@ class QueryImpl<T> implements Query<T> {
               (ByteKey(range.$1), ByteKey(range.$2)),
           ],
           predicateBytes: predicateBytes,
+          covered: _indexCoversFilters(secondary),
         );
       }
       lastPlan = IndexPlan.nativeFilteredScan;
@@ -765,6 +1006,7 @@ class QueryImpl<T> implements Query<T> {
           ],
           predicateBytes: predicateBytes,
           field: field,
+          covered: _indexCoversFilters(secondary),
         );
       }
     } else {
@@ -784,6 +1026,7 @@ class QueryImpl<T> implements Query<T> {
                 ],
                 predicateBytes: predicateBytes,
                 field: field,
+                covered: _indexCoversFilters(secondary),
               );
       } finally {
         await snap.dispose();
