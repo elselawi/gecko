@@ -209,8 +209,9 @@ Future<Object?> dispatchNativeWorker(
         start: _bytes(arguments[2]),
         end: _bytes(arguments[3]),
         predicateBytes: _bytes(arguments[4]),
-        limit: arguments[5] == null ? null : _asBigInt(arguments[5]),
-        offset: _asBigInt(arguments[6]),
+        covered: arguments[5] as bool,
+        limit: arguments[6] == null ? null : _asBigInt(arguments[6]),
+        offset: _asBigInt(arguments[7]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -235,8 +236,10 @@ Future<Object?> dispatchNativeWorker(
         predicateBytes: _bytes(arguments[4]),
         sortField: arguments[5] as String,
         eqBounded: arguments[6] as bool,
-        limit: arguments[7] == null ? null : _asBigInt(arguments[7]),
-        offset: _asBigInt(arguments[8]),
+        descending: arguments[7] as bool,
+        covered: arguments[8] as bool,
+        limit: arguments[9] == null ? null : _asBigInt(arguments[9]),
+        offset: _asBigInt(arguments[10]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -334,6 +337,9 @@ Future<Object?> dispatchNativeWorker(
             (_bytes((range as List)[0]), _bytes(range[1])),
         ],
         predicateBytes: _bytes(arguments[3]),
+        covered: arguments[4] as bool,
+        limit: arguments[5] == null ? null : _asBigInt(arguments[5]),
+        offset: _asBigInt(arguments[6]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1, pair.$2],
@@ -348,6 +354,7 @@ Future<Object?> dispatchNativeWorker(
         ],
         predicateBytes: _bytes(arguments[3]),
         field: arguments[4] as String,
+        covered: arguments[5] as bool,
       );
       return fields;
     case 'queryIndexedCount':
@@ -359,6 +366,7 @@ Future<Object?> dispatchNativeWorker(
             (_bytes((range as List)[0]), _bytes(range[1])),
         ],
         predicateBytes: _bytes(arguments[3]),
+        covered: arguments[4] as bool,
       );
       return count.toString();
     case 'snapshotQueryIndexedMulti':
@@ -377,6 +385,9 @@ Future<Object?> dispatchNativeWorker(
         predicateBytes: Uint8List.fromList(
           List<int>.from(arguments[4] as List),
         ),
+        covered: arguments[5] as bool,
+        limit: arguments[6] == null ? null : _asBigInt(arguments[6]),
+        offset: _asBigInt(arguments[7]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
@@ -396,6 +407,7 @@ Future<Object?> dispatchNativeWorker(
         predicateBytes: Uint8List.fromList(
           List<int>.from(arguments[4] as List),
         ),
+        covered: arguments[5] as bool,
       );
       return count.toString();
     case 'snapshotQueryIndexedDistinct':
@@ -414,6 +426,7 @@ Future<Object?> dispatchNativeWorker(
           List<int>.from(arguments[4] as List),
         ),
         field: arguments[5] as String,
+        covered: arguments[6] as bool,
       );
       return [for (final bytes in fields) bytes.toList()];
     case 'snapshotQueryIndexedLimited':
@@ -426,8 +439,9 @@ Future<Object?> dispatchNativeWorker(
         predicateBytes: Uint8List.fromList(
           List<int>.from(arguments[5] as List),
         ),
-        limit: arguments[6] == null ? null : _asBigInt(arguments[6]),
-        offset: _asBigInt(arguments[7]),
+        covered: arguments[6] as bool,
+        limit: arguments[7] == null ? null : _asBigInt(arguments[7]),
+        offset: _asBigInt(arguments[8]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
@@ -458,12 +472,23 @@ Future<Object?> dispatchNativeWorker(
         ),
         sortField: arguments[6] as String,
         eqBounded: arguments[7] as bool,
-        limit: arguments[8] == null ? null : _asBigInt(arguments[8]),
-        offset: _asBigInt(arguments[9]),
+        descending: arguments[8] as bool,
+        covered: arguments[9] as bool,
+        limit: arguments[10] == null ? null : _asBigInt(arguments[10]),
+        offset: _asBigInt(arguments[11]),
       );
       return [
         for (final pair in pairs) <Object?>[pair.$1.toList(), pair.$2.toList()],
       ];
+    case 'setCompositeIndexes':
+      await worker.setCompositeIndexes(
+        table: arguments[0] as String,
+        indexes: [
+          for (final index in arguments[1] as List)
+            [for (final field in index as List) field as String],
+        ],
+      );
+      return null;
     case 'commitSequence':
       return (await worker.commitSequence()).toString();
     case 'compact':

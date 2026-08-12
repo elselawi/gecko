@@ -270,6 +270,14 @@ abstract class RawBackend {
   /// reactive-registry deltas produced by the batch.
   Future<ApplyBatchResult> applyBatch(RawBatch ops);
 
+  /// Registers composite durable-index definitions for [table]. Composite
+  /// keys are maintained in the worker with the prefix-then-values layout and
+  /// can serve multi-field equality/range predicates as a single index.
+  Future<void> registerCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  );
+
   /// registers a live query with the worker's reactive
   /// registry and materializes its initial result set. [kind] is 0 = watchAll,
   /// 1 = watchAllDiff, 2 = query. [predicateBytes]/[sortBytes] are the encoded

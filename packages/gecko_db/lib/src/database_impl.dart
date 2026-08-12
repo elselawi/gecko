@@ -71,6 +71,8 @@ class DatabaseImpl implements Database {
   final Duration _compactionSnapshotDrainTimeout;
   final _AsyncMutex _txnMutex = _AsyncMutex();
   final Map<String, CollectionIndex> _indexes = <String, CollectionIndex>{};
+  final Map<String, List<List<String>>> _compositeIndexes =
+      <String, List<List<String>>>{};
 
   late final SyncHookApi _sync = _SyncHookImpl(this);
   late final ConflictApi _conflicts = _ConflictApiImpl(this);
@@ -236,11 +238,16 @@ class DatabaseImpl implements Database {
     RowSchema? schema,
     List<String>? indexFields,
     Iterable<String>? prefixFields,
+    Iterable<List<String>>? compositeIndexes,
   }) {
     _assertOpen();
     ensureUserTableName(name);
     schema?.validateDefinition();
-    final index = indexFields == null && prefixFields == null
+    final composites = [
+      for (final entry in (compositeIndexes ?? const <List<String>>[]))
+        List<String>.unmodifiable(entry),
+    ];
+    final index = indexFields == null && prefixFields == null && composites.isEmpty
         ? null
         : _indexes.putIfAbsent(
             name,
@@ -257,12 +264,15 @@ class DatabaseImpl implements Database {
           ...index.prefixFields,
         ]);
       }
-      // Rust is the sole durable-index authority. Run the one-time
-      // per-session repair so rows written before the index was declared are
-      // covered, and drift is corrected (the worker compares expected entries
-      // derived from primary rows against `__gecko_index`). Fire-and-forget:
-      // queries await `index.ready` before routing through the index.
-      unawaited(_prepareIndex(name, index));
+      // Composite definitions must reach the worker before the repair so the
+      // one-time repair also rebuilds composite keys (Rust's repair derives
+      // expected composite entries from its plan).
+      if (composites.isNotEmpty) {
+        _compositeIndexes[name] = composites;
+        unawaited(_prepareCompositesAndIndex(name, index, composites));
+      } else {
+        unawaited(_prepareIndex(name, index));
+      }
     }
     return _CollectionImpl<T>(
       this,
@@ -272,6 +282,7 @@ class DatabaseImpl implements Database {
       id,
       schema: schema,
       index: index,
+      compositeIndexes: composites,
     );
   }
 
@@ -293,6 +304,32 @@ class DatabaseImpl implements Database {
       }
     } catch (_) {
       // Best-effort drift correction; never block a query on repair failure.
+    } finally {
+      index.markReady();
+    }
+  }
+
+  /// Registers [composites] with the worker, then runs the one-time repair
+  /// so composite durable keys are rebuilt from primary rows (Rust derives
+  /// expected composite entries from its plan). Coalesced like
+  /// [_prepareIndex]; a failed registration never blocks queries.
+  Future<void> _prepareCompositesAndIndex(
+    String name,
+    CollectionIndex index,
+    List<List<String>> composites,
+  ) async {
+    if (index.isReady) return;
+    try {
+      final backend = _engine.backend;
+      if (backend is NativeRawBackend) {
+        await backend.registerCompositeIndexes(name, composites);
+        await backend.repairIndex(
+          table: name,
+          fields: [...index.fields, ...index.prefixFields],
+        );
+      }
+    } catch (_) {
+      // Best-effort; never block a query on composite setup failure.
     } finally {
       index.markReady();
     }
@@ -432,12 +469,14 @@ class _CollectionImpl<T> implements Collection<T> {
     this._id, {
     this.schema,
     this.index,
+    this.compositeIndexes,
     this.transaction,
   });
 
   final DatabaseImpl _db;
   final _TxnImpl? transaction;
   final CollectionIndex? index;
+  final List<List<String>>? compositeIndexes;
   @override
   final String name;
   final Object? Function(T) _toRow;
@@ -816,6 +855,7 @@ class _CollectionImpl<T> implements Collection<T> {
       fromRow: _fromRow,
       initialEq: predicates,
       secondary: index,
+      compositeIndexes: compositeIndexes,
     );
   }
 }
@@ -848,11 +888,18 @@ class _TxnImpl implements Transaction {
     RowSchema? schema,
     List<String>? indexFields,
     Iterable<String>? prefixFields,
+    Iterable<List<String>>? compositeIndexes,
   }) {
     _checkActive();
     ensureUserTableName(name);
     schema?.validateDefinition();
-    final index = indexFields == null && prefixFields == null
+    final composites = [
+      for (final entry in (compositeIndexes ?? const <List<String>>[]))
+        List<String>.unmodifiable(entry),
+    ];
+    final index = indexFields == null &&
+            prefixFields == null &&
+            composites.isEmpty
         ? _db._indexes[name]
         : _db._indexes.putIfAbsent(
             name,
@@ -869,7 +916,12 @@ class _TxnImpl implements Transaction {
           ...index.prefixFields,
         ]);
       }
-      unawaited(_db._prepareIndex(name, index));
+      if (composites.isNotEmpty) {
+        _db._compositeIndexes[name] = composites;
+        unawaited(_db._prepareCompositesAndIndex(name, index, composites));
+      } else {
+        unawaited(_db._prepareIndex(name, index));
+      }
     }
     return _CollectionImpl<T>(
       _db,
@@ -879,6 +931,7 @@ class _TxnImpl implements Transaction {
       id,
       schema: schema,
       index: index,
+      compositeIndexes: composites,
       transaction: this,
     );
   }

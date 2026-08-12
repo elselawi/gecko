@@ -142,6 +142,7 @@ abstract class Database {
     RowSchema? schema,
     List<String>? indexFields,
     Iterable<String>? prefixFields,
+    Iterable<List<String>>? compositeIndexes,
   });
 
   /// Atomically runs [body] inside a write transaction spanning one or more

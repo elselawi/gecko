@@ -17,6 +17,7 @@ abstract class Transaction {
     RowSchema? schema,
     List<String>? indexFields,
     Iterable<String>? prefixFields,
+    Iterable<List<String>>? compositeIndexes,
   });
 
   /// Reads a record within the transaction, or null.

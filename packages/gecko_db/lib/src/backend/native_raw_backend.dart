@@ -207,6 +207,20 @@ class NativeRawBackend
   }
 
   @override
+  Future<void> registerCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  ) async {
+    try {
+      await _worker.setCompositeIndexes(table, indexes);
+    } catch (error) {
+      throw mapNativeError(
+        error,
+      ); // coverage:ignore-line defensive error translation
+    }
+  }
+
+  @override
   Future<ApplyBatchResult> applyPreparedBatch(RawBatchPlan plan) async {
     final wireOps = <Op>[for (final op in plan.ops) _toWireOp(op)];
     final preparedChanges = [
@@ -483,6 +497,7 @@ class NativeRawBackend
     required ByteKey start,
     required ByteKey end,
     required List<int> predicateBytes,
+    bool covered = false,
     int? limit,
     int offset = 0,
     String indexTable = geckoIndexTable,
@@ -494,6 +509,7 @@ class NativeRawBackend
         start: start.bytes,
         end: end.bytes,
         predicateBytes: predicateBytes,
+        covered: covered,
         limit: limit,
         offset: offset,
       );
@@ -512,6 +528,8 @@ class NativeRawBackend
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    bool descending = false,
+    bool covered = false,
     int? limit,
     int offset = 0,
     String indexTable = geckoIndexTable,
@@ -525,6 +543,8 @@ class NativeRawBackend
         predicateBytes: predicateBytes,
         sortField: sortField,
         eqBounded: eqBounded,
+        descending: descending,
+        covered: covered,
         limit: limit,
         offset: offset,
       );
@@ -540,6 +560,9 @@ class NativeRawBackend
     required String table,
     required List<(ByteKey, ByteKey)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
+    int? limit,
+    int offset = 0,
     String indexTable = geckoIndexTable,
   }) async {
     try {
@@ -548,6 +571,9 @@ class NativeRawBackend
         indexTable: indexTable,
         ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
         predicateBytes: predicateBytes,
+        covered: covered,
+        limit: limit,
+        offset: offset,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -562,6 +588,7 @@ class NativeRawBackend
     required List<(ByteKey, ByteKey)> ranges,
     required List<int> predicateBytes,
     required String field,
+    bool covered = false,
     String indexTable = geckoIndexTable,
   }) async {
     try {
@@ -571,6 +598,7 @@ class NativeRawBackend
         ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
         predicateBytes: predicateBytes,
         field: field,
+        covered: covered,
       );
     } catch (error) {
       throw mapNativeError(
@@ -583,6 +611,7 @@ class NativeRawBackend
     required String table,
     required List<(ByteKey, ByteKey)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
     String indexTable = geckoIndexTable,
   }) async {
     try {
@@ -591,6 +620,7 @@ class NativeRawBackend
         indexTable: indexTable,
         ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
         predicateBytes: predicateBytes,
+        covered: covered,
       );
     } catch (error) {
       throw mapNativeError(
@@ -1026,6 +1056,7 @@ class NativeRawSnapshot implements RawSnapshot {
     required String table,
     required List<(ByteKey, ByteKey)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
     String indexTable = geckoIndexTable,
   }) async {
     try {
@@ -1035,6 +1066,7 @@ class NativeRawSnapshot implements RawSnapshot {
         indexTable: indexTable,
         ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
         predicateBytes: predicateBytes,
+        covered: covered,
       );
     } catch (error) {
       throw mapNativeError(
@@ -1050,6 +1082,7 @@ class NativeRawSnapshot implements RawSnapshot {
     required List<(ByteKey, ByteKey)> ranges,
     required List<int> predicateBytes,
     required String field,
+    bool covered = false,
     String indexTable = geckoIndexTable,
   }) async {
     try {
@@ -1060,6 +1093,7 @@ class NativeRawSnapshot implements RawSnapshot {
         ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
         predicateBytes: predicateBytes,
         field: field,
+        covered: covered,
       );
     } catch (error) {
       throw mapNativeError(
@@ -1074,6 +1108,9 @@ class NativeRawSnapshot implements RawSnapshot {
     required String table,
     required List<(ByteKey, ByteKey)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
+    int? limit,
+    int offset = 0,
     String indexTable = geckoIndexTable,
   }) async {
     try {
@@ -1083,6 +1120,9 @@ class NativeRawSnapshot implements RawSnapshot {
         indexTable: indexTable,
         ranges: [for (final range in ranges) (range.$1.bytes, range.$2.bytes)],
         predicateBytes: predicateBytes,
+        covered: covered,
+        limit: limit,
+        offset: offset,
       );
       return [for (final pair in pairs) RawEntry(ByteKey(pair.$1), pair.$2)];
     } catch (error) {
@@ -1098,6 +1138,7 @@ class NativeRawSnapshot implements RawSnapshot {
     required ByteKey start,
     required ByteKey end,
     required List<int> predicateBytes,
+    bool covered = false,
     int? limit,
     int offset = 0,
     String indexTable = geckoIndexTable,
@@ -1110,6 +1151,7 @@ class NativeRawSnapshot implements RawSnapshot {
         start: start.bytes,
         end: end.bytes,
         predicateBytes: predicateBytes,
+        covered: covered,
         limit: limit,
         offset: offset,
       );
@@ -1162,6 +1204,8 @@ class NativeRawSnapshot implements RawSnapshot {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    bool descending = false,
+    bool covered = false,
     int? limit,
     int offset = 0,
     String indexTable = geckoIndexTable,
@@ -1176,6 +1220,8 @@ class NativeRawSnapshot implements RawSnapshot {
         predicateBytes: predicateBytes,
         sortField: sortField,
         eqBounded: eqBounded,
+        descending: descending,
+        covered: covered,
         limit: limit,
         offset: offset,
       );

@@ -474,6 +474,7 @@ class NativeWorkerClient {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    bool covered = false,
     int? limit,
     int offset = 0,
   }) async => _decodePairs(
@@ -483,6 +484,7 @@ class NativeWorkerClient {
       start,
       end,
       predicateBytes,
+      covered,
       limit,
       offset,
     ]),
@@ -512,6 +514,8 @@ class NativeWorkerClient {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    bool descending = false,
+    bool covered = false,
     int? limit,
     int offset = 0,
   }) async => _decodePairs(
@@ -523,6 +527,8 @@ class NativeWorkerClient {
       predicateBytes,
       sortField,
       eqBounded,
+      descending,
+      covered,
       limit,
       offset,
     ]),
@@ -540,6 +546,9 @@ class NativeWorkerClient {
     required String indexTable,
     required List<(List<int>, List<int>)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
+    int? limit,
+    int offset = 0,
   }) async => _decodePairs(
     await _request('queryIndexedMulti', <Object?>[
       table,
@@ -548,6 +557,9 @@ class NativeWorkerClient {
         for (final range in ranges) <Object?>[range.$1, range.$2],
       ],
       predicateBytes,
+      covered,
+      limit,
+      offset,
     ]),
   );
 
@@ -557,6 +569,7 @@ class NativeWorkerClient {
     required List<(List<int>, List<int>)> ranges,
     required List<int> predicateBytes,
     required String field,
+    bool covered = false,
   }) async {
     final result = await _request('queryIndexedDistinct', <Object?>[
       table,
@@ -566,6 +579,7 @@ class NativeWorkerClient {
       ],
       predicateBytes,
       field,
+      covered,
     ]);
     return [for (final bytes in result as List) _copyBytes(bytes)];
   }
@@ -575,6 +589,7 @@ class NativeWorkerClient {
     required String indexTable,
     required List<(List<int>, List<int>)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
   }) async => _asInt(
     await _request('queryIndexedCount', <Object?>[
       table,
@@ -583,6 +598,7 @@ class NativeWorkerClient {
         for (final range in ranges) <Object?>[range.$1, range.$2],
       ],
       predicateBytes,
+      covered,
     ]),
   );
 
@@ -876,6 +892,9 @@ class NativeWorkerClient {
     required String indexTable,
     required List<(List<int>, List<int>)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
+    int? limit,
+    int offset = 0,
   }) async {
     final result = await _request('snapshotQueryIndexedMulti', <Object?>[
       snapshot,
@@ -885,6 +904,9 @@ class NativeWorkerClient {
         for (final range in ranges) <Object?>[range.$1, range.$2],
       ],
       predicateBytes,
+      covered,
+      limit,
+      offset,
     ]);
     return [
       for (final pair in (result as List))
@@ -899,6 +921,7 @@ class NativeWorkerClient {
     required String indexTable,
     required List<(List<int>, List<int>)> ranges,
     required List<int> predicateBytes,
+    bool covered = false,
   }) async {
     return _asInt(
       await _request('snapshotQueryIndexedCount', <Object?>[
@@ -909,8 +932,22 @@ class NativeWorkerClient {
           for (final range in ranges) <Object?>[range.$1, range.$2],
         ],
         predicateBytes,
+        covered,
       ]),
     );
+  }
+
+  /// Registers composite index definitions for [table]. The worker builds
+  /// durable composite index keys (prefix-then-values layout) and maintains
+  /// them alongside single-field indexes.
+  Future<void> setCompositeIndexes(
+    String table,
+    List<List<String>> indexes,
+  ) async {
+    await _request('setCompositeIndexes', <Object?>[
+      table,
+      [for (final index in indexes) index],
+    ]);
   }
 
   /// snapshot-bound distinct field extraction over durable-index
@@ -922,6 +959,7 @@ class NativeWorkerClient {
     required List<(List<int>, List<int>)> ranges,
     required List<int> predicateBytes,
     required String field,
+    bool covered = false,
   }) async {
     final result = await _request('snapshotQueryIndexedDistinct', <Object?>[
       snapshot,
@@ -932,6 +970,7 @@ class NativeWorkerClient {
       ],
       predicateBytes,
       field,
+      covered,
     ]);
     return [
       for (final bytes in (result as List)) List<int>.from(bytes as List),
@@ -946,6 +985,7 @@ class NativeWorkerClient {
     required List<int> start,
     required List<int> end,
     required List<int> predicateBytes,
+    bool covered = false,
     int? limit,
     int offset = 0,
   }) async {
@@ -956,6 +996,7 @@ class NativeWorkerClient {
       start,
       end,
       predicateBytes,
+      covered,
       limit,
       offset,
     ]);
@@ -1001,6 +1042,8 @@ class NativeWorkerClient {
     required List<int> predicateBytes,
     required String sortField,
     required bool eqBounded,
+    bool descending = false,
+    bool covered = false,
     int? limit,
     int offset = 0,
   }) async {
@@ -1013,6 +1056,8 @@ class NativeWorkerClient {
       predicateBytes,
       sortField,
       eqBounded,
+      descending,
+      covered,
       limit,
       offset,
     ]);
