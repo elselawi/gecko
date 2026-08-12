@@ -49,6 +49,8 @@ pub struct ApplyBatchResult {
     pub deltas: Vec<QueryDelta>,
     pub previous_values: Vec<Option<Vec<u8>>>,
     pub removed_keys: Vec<(String, Vec<u8>)>,
+    /// Tables wholesale-cleared by `Clear` operations (batch order).
+    pub cleared: Vec<String>,
 }
 
 /// Additional metadata for one change record completed by Rust inside the
@@ -163,7 +165,8 @@ impl NativeWorker {
         &mut self,
         encoded_ops: Vec<u8>,
         index_definitions: Vec<(String, Vec<String>)>,
-        change_log_max_entries: u64
+        change_log_max_entries: u64,
+        report_removed_keys: bool
     ) -> Result<ApplyBatchResult, String> {
         let operations = crate::wire::Op
             ::decode_batch(&encoded_ops)
@@ -173,10 +176,11 @@ impl NativeWorker {
                     .encode()
             })?;
         let result = self.worker
-            .apply_batch_reactive_with_retention(
+            .apply_batch_reactive_with_retention_mode(
                 &operations,
                 &index_definitions,
-                change_log_max_entries
+                change_log_max_entries,
+                report_removed_keys
             )
             .map_err(encode_worker_error)?;
         Ok(ApplyBatchResult {
@@ -184,6 +188,7 @@ impl NativeWorker {
             deltas: result.deltas.into_iter().map(QueryDelta::from).collect(),
             previous_values: result.previous_values,
             removed_keys: result.removed_keys,
+            cleared: result.cleared,
         })
     }
 
@@ -194,7 +199,8 @@ impl NativeWorker {
         change_log_max_entries: u64,
         previous_operation_indexes: Vec<String>,
         put_modes: Vec<(u64, u8)>,
-        changes: Vec<PreparedChange>
+        changes: Vec<PreparedChange>,
+        report_removed_keys: bool
     ) -> Result<ApplyBatchResult, String> {
         let operations = crate::wire::Op
             ::decode_batch(&encoded_ops)
@@ -227,13 +233,14 @@ impl NativeWorker {
             .map(|(index, mode)| (index as usize, mode))
             .collect::<Vec<_>>();
         let result = self.worker
-            .apply_prepared_batch(
+            .apply_prepared_batch_mode(
                 &operations,
                 &index_definitions,
                 change_log_max_entries,
                 &indexes,
                 &modes,
-                &templates
+                &templates,
+                report_removed_keys
             )
             .map_err(encode_worker_error)?;
         Ok(ApplyBatchResult {
@@ -241,21 +248,27 @@ impl NativeWorker {
             deltas: result.deltas.into_iter().map(QueryDelta::from).collect(),
             previous_values: result.previous_values,
             removed_keys: result.removed_keys,
+            cleared: result.cleared,
         })
     }
 
     /// registers a live query with the worker's reactive
     /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
-    /// the registration id and the initial result set in result order.
+    /// the registration id and the initial result set in result order. A
+    /// windowed query ([limit] is Some) receives only the ordered slice
+    /// `[offset, offset + limit)`; the registry maintains the full matching
+    /// set incrementally so the window stays correct under writes.
     pub async fn register_live_query(
         &mut self,
         table: String,
         predicate_bytes: Vec<u8>,
         sort_bytes: Vec<u8>,
-        kind: u8
+        kind: u8,
+        limit: Option<u64>,
+        offset: u64,
     ) -> Result<RegisterLiveQueryResult, String> {
         self.worker
-            .register_live_query(&table, &predicate_bytes, &sort_bytes, kind)
+            .register_live_query(&table, &predicate_bytes, &sort_bytes, kind, limit, offset)
             .map(|(id, initial)| RegisterLiveQueryResult { id, initial })
             .map_err(encode_worker_error)
     }
@@ -313,6 +326,20 @@ impl NativeWorker {
         self.worker.orphaned_attachments().map_err(encode_worker_error)
     }
 
+    /// Scans a metadata table ([table]) and returns the entries whose row
+    /// matches [predicate_bytes] — filtering and ordering execute in Rust, so
+    /// attachment/conflict listing never materializes the whole catalog in
+    /// Dart. Deterministic ascending key order.
+    pub async fn metadata_query(
+        &self,
+        table: String,
+        predicate_bytes: Vec<u8>
+    ) -> Result<Vec<ByteEntry>, String> {
+        self.worker
+            .metadata_query(&table, &predicate_bytes)
+            .map_err(encode_worker_error)
+    }
+
     /// Number of active live-query registrations (diagnostics).
     pub async fn live_query_count(&self) -> Result<u64, String> {
         Ok(self.worker.live_query_count() as u64)
@@ -328,9 +355,18 @@ impl NativeWorker {
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
         limit: Option<u64>,
+        start_inclusive: bool,
+        end_inclusive: bool,
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
-            .range_scan(&table, start.as_deref(), end.as_deref(), limit)
+            .range_scan(
+                &table,
+                start.as_deref(),
+                end.as_deref(),
+                limit,
+                start_inclusive,
+                end_inclusive,
+            )
             .map_err(encode_worker_error)
     }
 
@@ -388,9 +424,19 @@ impl NativeWorker {
         start: Option<Vec<u8>>,
         end: Option<Vec<u8>>,
         limit: Option<u64>,
+        start_inclusive: bool,
+        end_inclusive: bool,
     ) -> Result<Vec<ByteEntry>, String> {
         self.worker
-            .snapshot_range_scan(snapshot, &table, start.as_deref(), end.as_deref(), limit)
+            .snapshot_range_scan(
+                snapshot,
+                &table,
+                start.as_deref(),
+                end.as_deref(),
+                limit,
+                start_inclusive,
+                end_inclusive,
+            )
             .map_err(encode_worker_error)
     }
 
@@ -1118,14 +1164,16 @@ mod tests {
         let mut worker = worker;
         // Garbage that cannot decode as an op batch → InvalidOperation.
         let err = block_on(
-            worker.apply_batch(vec![0xde, 0xad, 0xbe, 0xef], vec![], 0)
+            worker.apply_batch(vec![0xde, 0xad, 0xbe, 0xef], vec![], 0, true)
         ).unwrap_err();
         let envelope = decode_envelope(&err);
         assert_eq!(envelope.error_type, GeckoErrorType::InvalidOperation);
         // A well-formed empty batch applies cleanly (an empty write
         // transaction still commits, advancing the worker sequence to 1).
-        let ok = block_on(worker.apply_batch(vec![1, 0], vec![], 0)).unwrap();
+        let ok = block_on(worker.apply_batch(vec![1, 0], vec![], 0, true)).unwrap();
         assert_eq!(ok.sequence, 1);
+        assert!(ok.removed_keys.is_empty());
+        assert!(ok.cleared.is_empty());
         let _ = std::fs::remove_file(path);
     }
 
@@ -1135,14 +1183,14 @@ mod tests {
         let worker = block_on(NativeWorker::open(path.display().to_string(), false)).unwrap();
         let mut worker = worker;
         let err = block_on(
-            worker.register_live_query("items".into(), vec![1, 0], vec![1, 0], 99)
+            worker.register_live_query("items".into(), vec![1, 0], vec![1, 0], 99, None, 0)
         ).unwrap_err();
         let envelope = decode_envelope(&err);
         assert_eq!(envelope.error_type, GeckoErrorType::InvalidOperation);
         assert!(envelope.message.contains("kind"));
         // Valid kind registers.
         let result = block_on(
-            worker.register_live_query("items".into(), vec![1, 0], vec![1, 0], 0)
+            worker.register_live_query("items".into(), vec![1, 0], vec![1, 0], 0, None, 0)
         ).unwrap();
         assert_eq!(result.id, 0);
         assert!(result.initial.is_empty());

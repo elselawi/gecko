@@ -80,8 +80,14 @@ pub struct ApplyBatchOutcome {
     pub previous_values: Vec<Option<Vec<u8>>>,
     /// Every primary key actually removed by delete-range or clear, grouped by
     /// operation order. The Dart adapter uses these to report affected keys
-    /// without a separate pre-write snapshot scan.
+    /// without a separate pre-write snapshot scan. Empty when the batch ran in
+    /// `report_removed_keys = false` mode (callers that only need cache
+    /// invalidation can use [`Self::cleared`] for whole-table clears instead).
     pub removed_keys: Vec<(String, Vec<u8>)>,
+    /// Tables wholesale-cleared by `Clear` operations in this batch (in batch
+    /// order, deduplicated). Dart uses this for table-generation cache
+    /// invalidation without enumerating every removed key.
+    pub cleared: Vec<String>,
 }
 
 /// Dart-authored metadata completed inside the same Rust write transaction as
@@ -591,7 +597,7 @@ impl RedbWorker {
         operations: &[Op],
         index_definitions: &[(String, Vec<String>)]
     ) -> Result<ApplyBatchOutcome, WorkerError> {
-        self.apply_batch_impl(operations, index_definitions, 0, &[], &[], &[], true)
+        self.apply_batch_impl(operations, index_definitions, 0, &[], &[], &[], true, true)
     }
 
     /// /like [Self::apply_batch_reactive], but also prunes the
@@ -610,7 +616,33 @@ impl RedbWorker {
             &[],
             &[],
             &[],
+            true,
             true
+        )
+    }
+
+    /// Same as [`Self::apply_batch_reactive_with_retention`] but with an
+    /// explicit removed-key reporting mode. When [report_removed_keys] is
+    /// false, delete-range/clear operations do not collect every removed key
+    /// (memory proportional to deleted keys is avoided); whole-table clears
+    /// are still reported through [`ApplyBatchOutcome::cleared`] for
+    /// table-generation cache invalidation.
+    pub fn apply_batch_reactive_with_retention_mode(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)],
+        change_log_max_entries: u64,
+        report_removed_keys: bool
+    ) -> Result<ApplyBatchOutcome, WorkerError> {
+        self.apply_batch_impl(
+            operations,
+            index_definitions,
+            change_log_max_entries,
+            &[],
+            &[],
+            &[],
+            true,
+            report_removed_keys
         )
     }
 
@@ -633,7 +665,32 @@ impl RedbWorker {
             previous_operation_indexes,
             put_modes,
             change_templates,
-            false
+            false,
+            true
+        )
+    }
+
+    /// Same as [`Self::apply_prepared_batch`] but with an explicit removed-key
+    /// reporting mode (see [`Self::apply_batch_reactive_with_retention_mode`]).
+    pub fn apply_prepared_batch_mode(
+        &mut self,
+        operations: &[Op],
+        index_definitions: &[(String, Vec<String>)],
+        change_log_max_entries: u64,
+        previous_operation_indexes: &[usize],
+        put_modes: &[(usize, u8)],
+        change_templates: &[PreparedChangeTemplate],
+        report_removed_keys: bool
+    ) -> Result<ApplyBatchOutcome, WorkerError> {
+        self.apply_batch_impl(
+            operations,
+            index_definitions,
+            change_log_max_entries,
+            previous_operation_indexes,
+            put_modes,
+            change_templates,
+            false,
+            report_removed_keys
         )
     }
 
@@ -646,7 +703,8 @@ impl RedbWorker {
         previous_operation_indexes: &[usize],
         put_modes: &[(usize, u8)],
         change_templates: &[PreparedChangeTemplate],
-        legacy_metadata: bool
+        legacy_metadata: bool,
+        report_removed_keys: bool
     ) -> Result<ApplyBatchOutcome, WorkerError> {
         if self.read_only {
             return Err(
@@ -713,6 +771,9 @@ impl RedbWorker {
         // separate local (not in `handles`) so index maintenance can borrow it
         // mutably while a user table from `handles` is still being scanned.
         let mut index_table: Option<Table<'_, &'static [u8], &'static [u8]>> = None;
+        // Durable missing-field index table (rows lacking an indexed field),
+        // opened lazily at most once per batch alongside `index_table`.
+        let mut missing_index_table: Option<Table<'_, &'static [u8], &'static [u8]>> = None;
         // Per-index-entry presence deltas accumulated across the whole batch
         // (keyed by encoded index prefix); each affected prefix's net delta
         // is read/applied exactly once after the operation loop.
@@ -880,6 +941,7 @@ impl RedbWorker {
                     maintain_durable_index(
                         &transaction,
                         &mut index_table,
+                        &mut missing_index_table,
                         &mut index_meta_deltas,
                         index_plan,
                         &operation.table,
@@ -945,6 +1007,7 @@ impl RedbWorker {
                     maintain_durable_index(
                         &transaction,
                         &mut index_table,
+                        &mut missing_index_table,
                         &mut index_meta_deltas,
                         index_plan,
                         &operation.table,
@@ -1002,6 +1065,7 @@ impl RedbWorker {
                             maintain_durable_index(
                                 &transaction,
                                 &mut index_table,
+                                &mut missing_index_table,
                                 &mut index_meta_deltas,
                                 index_plan,
                                 &operation.table,
@@ -1034,7 +1098,9 @@ impl RedbWorker {
                         }
                     }
                     for key in keys {
-                        removed_keys.push((operation.table.clone(), key.clone()));
+                        if report_removed_keys {
+                            removed_keys.push((operation.table.clone(), key.clone()));
+                        }
                         affected.push((operation.table.clone(), key.clone()));
                         if registry_active {
                             changed
@@ -1069,6 +1135,7 @@ impl RedbWorker {
                             maintain_durable_index(
                                 &transaction,
                                 &mut index_table,
+                                &mut missing_index_table,
                                 &mut index_meta_deltas,
                                 index_plan,
                                 &operation.table,
@@ -1101,7 +1168,9 @@ impl RedbWorker {
                         }
                     }
                     for key in keys {
-                        removed_keys.push((operation.table.clone(), key));
+                        if report_removed_keys {
+                            removed_keys.push((operation.table.clone(), key));
+                        }
                     }
                     cleared.push(operation.table.clone());
                 }
@@ -1126,6 +1195,7 @@ impl RedbWorker {
         // durability — rollback still undoes everything on error.
         drop(handles);
         drop(index_table);
+        drop(missing_index_table);
         // Apply the batch's accumulated index-presence deltas once per prefix
         // (instead of read/decode/write per index entry change).
         apply_index_meta_deltas(&transaction, &index_meta_deltas, &self.counters)?;
@@ -1170,6 +1240,12 @@ impl RedbWorker {
                 std::collections::HashSet::with_capacity(affected.len());
             affected.retain(|(table, key)| seen.insert((table.clone(), key.clone())));
         }
+        // Deduplicate wholesale-cleared tables (batch order preserved) so the
+        // Dart side invalidates each table's cache generation exactly once.
+        {
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            cleared.retain(|table| seen.insert(table.clone()));
+        }
         let deltas = self.registry.apply(&affected, &changed, &cleared, &self.counters)?;
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
         if !sequence_neutral {
@@ -1181,18 +1257,23 @@ impl RedbWorker {
             deltas,
             previous_values,
             removed_keys,
+            cleared,
         })
     }
 
     /// registers a live query with the worker and materializes
     /// its initial result set from one consistent read transaction. Returns
-    /// `(registration id, initial snapshot in result order)`.
+    /// `(registration id, initial snapshot in result order)`. A windowed query
+    /// ([limit] is Some) receives only the ordered slice `[offset, offset +
+    /// limit)` while the registry maintains the full matching set incrementally.
     pub fn register_live_query(
         &mut self,
         table: &str,
         predicate_bytes: &[u8],
         sort_bytes: &[u8],
-        kind: u8
+        kind: u8,
+        limit: Option<u64>,
+        offset: u64,
     ) -> Result<(u64, Vec<ByteEntry>), WorkerError> {
         let kind_value = crate::registry::LiveQueryKind
             ::from_u8(kind)
@@ -1206,6 +1287,8 @@ impl RedbWorker {
             predicate_bytes,
             sort_bytes,
             kind_value,
+            limit,
+            offset,
         )
     }
 
@@ -1510,6 +1593,11 @@ impl RedbWorker {
     /// per attachment now runs inside one Rust read transaction instead of a
     /// Dart full scan plus N point reads. Returns `(attachmentKey, meta)`
     /// pairs for orphans. A missing table yields an empty result.
+    ///
+    /// Parent-table handles are cached per collection name for the read
+    /// transaction (a catalog spanning few collections never re-opens the
+    /// same parent table), and both parent fields are extracted from each
+    /// metadata row in ONE encoded-map walk.
     pub fn orphaned_attachments(&self) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         let catalog = match transaction.open_table(table_definition("__gecko_attachments")) {
@@ -1521,40 +1609,94 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
+        // Per-collection parent-table handle cache for this read transaction.
+        // `None` records a parent table known to be absent (all its
+        // attachments are orphans) so it is not re-probed per attachment.
+        let mut parent_tables: std::collections::HashMap<String, Option<()>> =
+            std::collections::HashMap::new();
         let mut result = Vec::new();
+        let mut ranges: [Option<(usize, usize)>; 2] = [None, None];
         for entry in catalog.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let entry = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let meta = entry.1.value();
-            let parent_collection = match crate::value_codec::find_field_bytes(meta, "parentCollection") {
-                Ok(Some(bytes)) => bytes.to_vec(),
-                _ => continue,
-            };
-            let parent_id = match crate::value_codec::find_field_bytes(meta, "parentId") {
-                Ok(Some(bytes)) => bytes.to_vec(),
-                _ => continue,
-            };
-            let Some(parent_table_name) = decode_string_value(&parent_collection) else {
+            // One walk extracts both parent fields (missing/absent → skip).
+            ranges.fill(None);
+            crate::value_codec::find_fields_ranges(
+                meta,
+                &["parentCollection".to_string(), "parentId".to_string()],
+                &mut ranges,
+            )
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let (Some((cs, ce)), Some((ps, pe))) = (ranges[0], ranges[1]) else {
                 continue;
             };
-            let parent_table = match transaction.open_table(table_definition(&parent_table_name)) {
-                Ok(t) => t,
-                Err(redb::TableError::TableDoesNotExist(_)) => {
-                    // Parent table absent → the parent cannot exist → orphan.
-                    result.push((entry.0.value().to_vec(), meta.to_vec()));
-                    continue;
-                }
-                Err(error) => {
-                    return Err(WorkerError::Storage(error.to_string()));
-                }
+            let Some(parent_table_name) = decode_string_value(&meta[cs..ce]) else {
+                continue;
             };
+            // Cache: a collection seen before never re-opens its parent table.
+            if !parent_tables.contains_key(&parent_table_name) {
+                let exists = match transaction.open_table(table_definition(&parent_table_name)) {
+                    Ok(_) => true,
+                    Err(redb::TableError::TableDoesNotExist(_)) => false,
+                    Err(error) => {
+                        return Err(WorkerError::Storage(error.to_string()));
+                    }
+                };
+                parent_tables.insert(parent_table_name.clone(), if exists { Some(()) } else { None });
+            }
+            let Some(()) = parent_tables.get(&parent_table_name).copied().flatten() else {
+                // Parent table absent → the parent cannot exist → orphan.
+                result.push((entry.0.value().to_vec(), meta.to_vec()));
+                continue;
+            };
+            let parent_table = transaction
+                .open_table(table_definition(&parent_table_name))
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
             let exists = parent_table
-                .get(parent_id.as_slice())
+                .get(&meta[ps..pe])
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
                 .is_some();
             if !exists {
                 result.push((entry.0.value().to_vec(), meta.to_vec()));
             }
         }
+        Ok(result)
+    }
+
+    /// Scans a metadata table ([table], e.g. `__gecko_attachments` or
+    /// `__gecko_conflicts`) and returns every entry whose row matches
+    /// [predicate_bytes] (the standard encoded predicate). Filtering and
+    /// ordering execute in Rust; Dart decodes only the matching rows into its
+    /// public models. A missing table is an empty result, never an error.
+    pub fn metadata_query(
+        &self,
+        table: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<Vec<ByteEntry>, WorkerError> {
+        let predicate = crate::predicate::decode_predicate(predicate_bytes)
+            .map_err(|error| WorkerError::Wire(error.to_string()))?;
+        let mut predicate_scratch = predicate.scratch();
+        let transaction = self.begin_read()?;
+        let table = match transaction.open_table(table_definition(table)) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(error) => {
+                return Err(WorkerError::Storage(error.to_string()));
+            }
+        };
+        let mut result = Vec::new();
+        for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
+            let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+            let row = value.value();
+            crate::work_count!(self, primary_rows_visited, 1);
+            if !predicate.test_bytes_with_scratch(row, &mut predicate_scratch) {
+                continue;
+            }
+            result.push((key.value().to_vec(), row.to_vec()));
+        }
+        crate::work_count!(self, rows_returned, result.len() as u64);
         Ok(result)
     }
 
@@ -1648,16 +1790,20 @@ impl RedbWorker {
         Ok(result)
     }
 
-    /// Reads a sorted inclusive range using one consistent snapshot.
+    /// Reads a sorted range using one consistent read transaction.
     /// [limit] bounds the number of returned entries — the scan stops early
     /// once [limit] is reached, so a page reader never materializes the whole
-    /// tail of a table.
+    /// tail of a table. [start_inclusive]/[end_inclusive] map directly to redb
+    /// range bounds, so exclusive raw ranges are pushed into Rust instead of
+    /// Dart-side `scanAll` + filtering.
     pub fn range_scan(
         &self,
         table: &str,
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         limit: Option<u64>,
+        start_inclusive: bool,
+        end_inclusive: bool,
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.begin_read()?;
         let table = match transaction.open_table(table_definition(table)) {
@@ -1670,6 +1816,9 @@ impl RedbWorker {
             }
         };
         let mut result = Vec::new();
+        // redb has no exclusive range operators, so bounds are applied as
+        // inclusive redb ranges and the (at most one) boundary key is skipped
+        // in the streaming loop — O(1) per side, never a full-scan fallback.
         let iterator = match (start, end) {
             (Some(start), Some(end)) =>
                 table.range(start..=end).map_err(|error| WorkerError::Storage(error.to_string()))?,
@@ -1681,7 +1830,17 @@ impl RedbWorker {
         };
         for entry in iterator {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-            result.push((key.value().to_vec(), value.value().to_vec()));
+            let key_bytes = key.value();
+            if !start_inclusive
+                && start.is_some()
+                && start.expect("start is some") == key_bytes
+            {
+                continue;
+            }
+            if !end_inclusive && end.is_some() && end.expect("end is some") == key_bytes {
+                break;
+            }
+            result.push((key_bytes.to_vec(), value.value().to_vec()));
             if let Some(limit) = limit {
                 if result.len() as u64 >= limit {
                     break;
@@ -1760,9 +1919,11 @@ impl RedbWorker {
         Ok(value)
     }
 
-    /// Scans a sorted inclusive range through a previously created snapshot.
+    /// Scans a sorted range through a previously created snapshot.
     /// [limit] bounds the number of returned entries so callers can page a
     /// large table without materializing the full tail in memory.
+    /// [start_inclusive]/[end_inclusive] map directly to redb range bounds, so
+    /// exclusive raw ranges never fall back to a full scan + Dart filtering.
     pub fn snapshot_range_scan(
         &self,
         id: u64,
@@ -1770,6 +1931,8 @@ impl RedbWorker {
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         limit: Option<u64>,
+        start_inclusive: bool,
+        end_inclusive: bool,
     ) -> Result<Vec<ByteEntry>, WorkerError> {
         let transaction = self.snapshot_transaction(id)?;
         let table = match transaction.open_table(table_definition(table)) {
@@ -1782,6 +1945,9 @@ impl RedbWorker {
             }
         };
         let mut result = Vec::new();
+        // redb has no exclusive range operators, so bounds are applied as
+        // inclusive redb ranges and the (at most one) boundary key is skipped
+        // in the streaming loop — O(1) per side, never a full-scan fallback.
         let iterator = match (start, end) {
             (Some(start), Some(end)) =>
                 table.range(start..=end).map_err(|error| WorkerError::Storage(error.to_string()))?,
@@ -1793,7 +1959,17 @@ impl RedbWorker {
         };
         for entry in iterator {
             let (key, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-            result.push((key.value().to_vec(), value.value().to_vec()));
+            let key_bytes = key.value();
+            if !start_inclusive
+                && start.is_some()
+                && start.expect("start is some") == key_bytes
+            {
+                continue;
+            }
+            if !end_inclusive && end.is_some() && end.expect("end is some") == key_bytes {
+                break;
+            }
+            result.push((key_bytes.to_vec(), value.value().to_vec()));
             if let Some(limit) = limit {
                 if result.len() as u64 >= limit {
                     break;
@@ -2025,6 +2201,18 @@ impl RedbWorker {
             }
         };
         let mut expected = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        // Fields whose missing-state this repair owns (single declarations
+        // plus every composite constituent), used to rebuild the durable
+        // missing-field structure alongside the index.
+        let mut missing_fields: Vec<String> = fields.to_vec();
+        for composite in &composites {
+            for field in composite {
+                if !missing_fields.iter().any(|f| f == field) {
+                    missing_fields.push(field.clone());
+                }
+            }
+        }
+        let mut expected_missing = BTreeMap::<Vec<u8>, Vec<u8>>::new();
         for entry in primary.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (record_key, row_value) = entry.map_err(|error|
                 WorkerError::Storage(error.to_string())
@@ -2035,6 +2223,10 @@ impl RedbWorker {
                 let Some((start, end)) = crate::value_codec
                     ::find_field_range(row_bytes, field)
                     .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                    expected_missing.insert(
+                        missing_index_key(table, field, &record_key),
+                        record_key.clone(),
+                    );
                     continue;
                 };
                 expected.insert(
@@ -2046,6 +2238,12 @@ impl RedbWorker {
                 let Some(values) =
                     extract_field_slices(Some(row_bytes), composite)?
                 else {
+                    for field in composite {
+                        expected_missing.insert(
+                            missing_index_key(table, field, &record_key),
+                            record_key.clone(),
+                        );
+                    }
                     continue;
                 };
                 let field_refs: Vec<&str> = composite.iter().map(|f| f.as_str()).collect();
@@ -2075,11 +2273,19 @@ impl RedbWorker {
             // manifest is missing or stale (an older database, or a store
             // whose index was rebuilt before this feature existed). Persist
             // the manifest so future declarations skip the full rebuild.
+            // The missing-field structure is reconciled too (it may be stale
+            // even when the index is current).
             let transaction = match &self.database {
                 WorkerDatabase::ReadWrite(database) =>
                     database.begin_write().map_err(|error| WorkerError::Storage(error.to_string()))?,
                 WorkerDatabase::ReadOnly(_) => unreachable!("read-only worker rejected above"),
             };
+            Self::reconcile_missing_entries(
+                &transaction,
+                table,
+                &missing_fields,
+                &expected_missing,
+            )?;
             Self::write_index_manifest(&transaction, table, &fingerprint)?;
             Self::write_global_index_seq(&transaction, self.commit_sequence)?;
             transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
@@ -2154,12 +2360,63 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))?;
         }
         drop(meta);
+        // Rebuild the missing-field structure alongside the index so a repair
+        // leaves both durable structures consistent with the primary rows.
+        Self::reconcile_missing_entries(
+            &transaction,
+            table,
+            &missing_fields,
+            &expected_missing,
+        )?;
         // The durable index now matches the primary rows for this declaration:
         // persist the manifest in the same transaction so a reopen (or a later
         // declaration of the same fields) skips the full rebuild.
         Self::write_index_manifest(&transaction, table, &fingerprint)?;
         Self::write_global_index_seq(&transaction, self.commit_sequence)?;
         transaction.commit().map_err(|error| WorkerError::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Reconciles the durable missing-field structure for one table: removes
+    /// every stale `__gecko_index_missing` entry owned by this table and
+    /// inserts [expected] (the rows that currently lack an indexed field).
+    /// Called from index repair so both durable structures are rebuilt
+    /// atomically in the same transaction.
+    fn reconcile_missing_entries(
+        transaction: &WriteTransaction,
+        table: &str,
+        missing_fields: &[String],
+        expected: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), WorkerError> {
+        let missing_def = table_definition("__gecko_index_missing");
+        let mut missing = transaction
+            .open_table(missing_def)
+            .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        // Remove stale entries: keys owned by this table (any field prefix)
+        // that are not in the expected set.
+        let mut stale = Vec::new();
+        if let Ok(iter) = missing.iter() {
+            for entry in iter {
+                let (key, _) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                let key_bytes = key.value();
+                let owned = missing_fields.iter().any(|field| {
+                    key_bytes.starts_with(missing_index_prefix(table, field).as_slice())
+                });
+                if owned && !expected.contains_key(key_bytes) {
+                    stale.push(key_bytes.to_vec());
+                }
+            }
+        }
+        for key in stale {
+            missing
+                .remove(key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        for (key, value) in expected {
+            missing
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -2551,7 +2808,11 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
+        // Native dedup for low-cardinality scalar fields whose Dart `Set`
+        // equality is exactly byte-deterministic; non-scalar values are passed
+        // through for Dart's authoritative dedup.
         let mut result = Vec::new();
+        let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
         for row_key in candidates {
             crate::work_count!(self, primary_rows_fetched, 1);
             let Some(value) = user_table
@@ -2571,7 +2832,15 @@ impl RedbWorker {
                 .map_err(|error| WorkerError::Storage(error.to_string()))? else {
                 continue;
             };
-            result.push(row_bytes[start..end].to_vec());
+            let slice = row_bytes[start..end].to_vec();
+            let safe = crate::value_codec::decode_value(&row_bytes[start..end])
+                .ok()
+                .map(|v| scalar_distinct_safe(&v))
+                .unwrap_or(false);
+            if safe && !seen.insert(slice.clone()) {
+                continue;
+            }
+            result.push(slice);
         }
         crate::work_count!(self, rows_returned, result.len() as u64);
         Ok(result)
@@ -2656,17 +2925,57 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
-        let mut candidates = if index_ranges.is_empty() {
-            user_table
+        let wanted: Option<BTreeSet<Vec<u8>>> = if parent_ids.is_empty() {
+            None
+        } else {
+            Some(parent_ids.iter().cloned().collect())
+        };
+        // One-pass grouping: every candidate row is fetched exactly once, then
+        // foreign-key membership + predicate are evaluated and the row is
+        // appended to its parent's group immediately — there is no separate
+        // candidate set + matching set + second fetch.
+        let mut groups: BTreeMap<Vec<u8>, Vec<ByteEntry>> = BTreeMap::new();
+        let mut classify = |row_key: &[u8],
+                            row_bytes: &[u8],
+                            groups: &mut BTreeMap<Vec<u8>, Vec<ByteEntry>>|
+         -> Result<(), WorkerError> {
+            let Some((start, end)) = crate::value_codec
+                ::find_field_range(row_bytes, foreign_key_field)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?
+            else {
+                return Ok(());
+            };
+            let fk = &row_bytes[start..end];
+            if let Some(w) = &wanted {
+                if !w.contains(fk) {
+                    return Ok(());
+                }
+            }
+            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
+                return Ok(());
+            }
+            groups
+                .entry(fk.to_vec())
+                .or_default()
+                .push((row_key.to_vec(), row_bytes.to_vec()));
+            Ok(())
+        };
+        if index_ranges.is_empty() {
+            // Unindexed one-pass scan: iterate the source table directly
+            // (key + value in one step, ascending key order).
+            for entry in user_table
                 .iter()
                 .map_err(|error| WorkerError::Storage(error.to_string()))?
-                .map(|entry| {
-                    entry
-                        .map(|(key, _)| key.value().to_vec())
-                        .map_err(|error| WorkerError::Storage(error.to_string()))
-                })
-                .collect::<Result<BTreeSet<_>, WorkerError>>()?
+            {
+                let (key, value) = entry.map_err(|error|
+                    WorkerError::Storage(error.to_string())
+                )?;
+                crate::work_count!(self, primary_rows_visited, 1);
+                classify(key.value(), value.value(), &mut groups)?;
+            }
         } else {
+            // Indexed path: collect candidate keys once (sorted + deduped),
+            // then fetch each row exactly once.
             let index_table = match transaction.open_table(table_definition(index_table)) {
                 Ok(t) => t,
                 Err(redb::TableError::TableDoesNotExist(_)) => {
@@ -2687,52 +2996,16 @@ impl RedbWorker {
                     union.insert(value.value().to_vec());
                 }
             }
-            union
-        };
-        if !parent_ids.is_empty() {
-            let wanted = parent_ids.iter().cloned().collect::<BTreeSet<_>>();
-            let mut matching = BTreeSet::new();
-            for key in &candidates {
+            for row_key in union {
+                crate::work_count!(self, primary_rows_fetched, 1);
                 let Some(value) = user_table
-                    .get(key.as_slice())
-                    .map_err(|error| WorkerError::Storage(error.to_string()))? else {
+                    .get(row_key.as_slice())
+                    .map_err(|error| WorkerError::Storage(error.to_string()))?
+                else {
                     continue;
                 };
-                let Some((start, end)) = crate::value_codec
-                    ::find_field_range(value.value(), foreign_key_field)
-                    .map_err(|error| WorkerError::Storage(error.to_string()))? else {
-                    continue;
-                };
-                if wanted.contains(&value.value()[start..end]) {
-                    matching.insert(key.clone());
-                }
+                classify(&row_key, value.value(), &mut groups)?;
             }
-            candidates = matching;
-        }
-        // Group matching rows by their encoded FK value. The BTreeMap keeps
-        // groups in FK-byte order and rows within a group in row-key order
-        // (candidates is a sorted BTreeSet), matching the order Dart's eager
-        // loader previously preserved when it bucketed rows itself.
-        let mut groups: BTreeMap<Vec<u8>, Vec<ByteEntry>> = BTreeMap::new();
-        for row_key in candidates {
-            let Some(value) = user_table
-                .get(row_key.as_slice())
-                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
-                continue;
-            };
-            let row_bytes = value.value();
-            if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
-                continue;
-            }
-            let Some((start, end)) = crate::value_codec
-                ::find_field_range(row_bytes, foreign_key_field)
-                .map_err(|error| WorkerError::Storage(error.to_string()))? else {
-                continue;
-            };
-            groups
-                .entry(row_bytes[start..end].to_vec())
-                .or_default()
-                .push((row_key, row_bytes.to_vec()));
         }
         Ok(
             groups
@@ -3113,7 +3386,12 @@ impl RedbWorker {
                 return Err(WorkerError::Storage(error.to_string()));
             }
         };
+        // Native dedup for low-cardinality scalar fields whose Dart `Set`
+        // equality is exactly byte-deterministic; non-scalar values are passed
+        // through for Dart's authoritative dedup (deep equality / float edge
+        // cases stay in Dart).
         let mut result = Vec::new();
+        let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
         for entry in table.iter().map_err(|error| WorkerError::Storage(error.to_string()))? {
             let (_, value) = entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
             let row_bytes = value.value();
@@ -3132,7 +3410,15 @@ impl RedbWorker {
             let Some((start, end)) = range else {
                 continue;
             };
-            result.push(row_bytes[start..end].to_vec());
+            let slice = row_bytes[start..end].to_vec();
+            let safe = crate::value_codec::decode_value(&row_bytes[start..end])
+                .ok()
+                .map(|v| scalar_distinct_safe(&v))
+                .unwrap_or(false);
+            if safe && !seen.insert(slice.clone()) {
+                continue;
+            }
+            result.push(slice);
         }
         crate::work_count!(self, rows_returned, result.len() as u64);
         Ok(result)
@@ -3590,7 +3876,6 @@ impl RedbWorker {
         limit: Option<u64>,
         offset: u64
     ) -> Result<Vec<ByteEntry>, WorkerError> {
-        use crate::value_codec::find_field;
         let predicate = crate::predicate
             ::decode_predicate(predicate_bytes)
             .map_err(|error| WorkerError::Wire(error.to_string()))?;
@@ -3693,8 +3978,10 @@ impl RedbWorker {
 
         if !eq_bounded && !descending {
             // Ascending non-eq: append missing-field rows (they sort LAST)
-            // unless the field is complete. The skip set is pre-sized and the
-            // scan is skipped entirely when the window already filled.
+            // unless the field is complete. Missing rows are enumerated from
+            // the durable missing-field structure (`__gecko_index_missing`),
+            // so primary rows visited == missing rows, never the whole table.
+            // The window-short-circuit is preserved.
             let needs_append = !done
                 && !field_complete
                 && want.is_none_or(|w| (matches.len() as u64) < w);
@@ -3703,39 +3990,49 @@ impl RedbWorker {
                 for m in &matches {
                     present.insert(m.0.clone());
                 }
-                for entry in user_table
-                    .iter()
-                    .map_err(|error| WorkerError::Storage(error.to_string()))? {
-                    if done {
-                        break;
-                    }
-                    let (key, value) =
-                        entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-                    let key_bytes = key.value().to_vec();
-                    if present.contains(&key_bytes) {
-                        continue;
-                    }
-                    let row_bytes = value.value();
-                    crate::work_count!(self, primary_rows_visited, 1);
-                    if !covered {
-                        crate::work_count!(self, predicate_evaluations, 1);
-                        if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
+                let missing_prefix = missing_index_prefix(table, sort_field);
+                if let Ok(missing_table) = transaction
+                    .open_table(table_definition("__gecko_index_missing"))
+                {
+                    for entry in missing_table
+                        .range(missing_prefix.as_slice()..)
+                        .map_err(|error| WorkerError::Storage(error.to_string()))?
+                    {
+                        if done {
+                            break;
+                        }
+                        let (key, _) =
+                            entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        let key_bytes = key.value();
+                        if !key_bytes.starts_with(&missing_prefix) {
+                            break;
+                        }
+                        let record_key = &key_bytes[missing_prefix.len()..];
+                        if present.contains(record_key) {
                             continue;
                         }
-                    }
-                    let has_field = find_field(row_bytes, sort_field)
-                        .map_err(|error| WorkerError::Storage(error.to_string()))?
-                        .is_some();
-                    if has_field {
-                        // Has the field but no index entry — not a
-                        // missing-field row; skip (should not happen when the
-                        // durable index is maintained atomically).
-                        continue;
-                    }
-                    matches.push((key_bytes, row_bytes.to_vec()));
-                    if let Some(w) = want {
-                        if (matches.len() as u64) >= w {
-                            done = true;
+                        crate::work_count!(self, primary_rows_visited, 1);
+                        let Some(row_bytes) = user_table
+                            .get(record_key)
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|v| v.value().to_vec())
+                        else {
+                            continue;
+                        };
+                        if !covered {
+                            crate::work_count!(self, predicate_evaluations, 1);
+                            if !predicate.test_bytes_with_scratch(
+                                &row_bytes,
+                                &mut predicate_scratch,
+                            ) {
+                                continue;
+                            }
+                        }
+                        matches.push((record_key.to_vec(), row_bytes));
+                        if let Some(w) = want {
+                            if (matches.len() as u64) >= w {
+                                done = true;
+                            }
                         }
                     }
                 }
@@ -3746,34 +4043,48 @@ impl RedbWorker {
             // iterator. Within an equal value the reverse stream yields record
             // keys descending; each contiguous equal-value group is reversed
             // back to ascending so the tie-break matches the top-K path.
+            // Missing rows come from the durable missing-field structure.
             if !done && !field_complete {
-                for entry in user_table
-                    .iter()
-                    .map_err(|error| WorkerError::Storage(error.to_string()))? {
-                    if done {
-                        break;
-                    }
-                    let (key, value) =
-                        entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
-                    let key_bytes = key.value().to_vec();
-                    let row_bytes = value.value();
-                    crate::work_count!(self, primary_rows_visited, 1);
-                    if !covered {
-                        crate::work_count!(self, predicate_evaluations, 1);
-                        if !predicate.test_bytes_with_scratch(row_bytes, &mut predicate_scratch) {
-                            continue;
-                        }
-                    }
-                    let has_field = find_field(row_bytes, sort_field)
+                let missing_prefix = missing_index_prefix(table, sort_field);
+                if let Ok(missing_table) = transaction
+                    .open_table(table_definition("__gecko_index_missing"))
+                {
+                    for entry in missing_table
+                        .range(missing_prefix.as_slice()..)
                         .map_err(|error| WorkerError::Storage(error.to_string()))?
-                        .is_some();
-                    if has_field {
-                        continue;
-                    }
-                    matches.push((key_bytes, row_bytes.to_vec()));
-                    if let Some(w) = want {
-                        if (matches.len() as u64) >= w {
-                            done = true;
+                    {
+                        if done {
+                            break;
+                        }
+                        let (key, _) =
+                            entry.map_err(|error| WorkerError::Storage(error.to_string()))?;
+                        let key_bytes = key.value();
+                        if !key_bytes.starts_with(&missing_prefix) {
+                            break;
+                        }
+                        let record_key = &key_bytes[missing_prefix.len()..];
+                        crate::work_count!(self, primary_rows_visited, 1);
+                        let Some(row_bytes) = user_table
+                            .get(record_key)
+                            .map_err(|error| WorkerError::Storage(error.to_string()))?
+                            .map(|v| v.value().to_vec())
+                        else {
+                            continue;
+                        };
+                        if !covered {
+                            crate::work_count!(self, predicate_evaluations, 1);
+                            if !predicate.test_bytes_with_scratch(
+                                &row_bytes,
+                                &mut predicate_scratch,
+                            ) {
+                                continue;
+                            }
+                        }
+                        matches.push((record_key.to_vec(), row_bytes));
+                        if let Some(w) = want {
+                            if (matches.len() as u64) >= w {
+                                done = true;
+                            }
                         }
                     }
                 }
@@ -4004,6 +4315,24 @@ fn lsn_key() -> Vec<u8> {
     key.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     key.extend_from_slice(bytes);
     key
+}
+
+/// True when a decoded scalar's Dart `Set` equality is exactly its
+/// byte-deterministic encoding (so native distinct dedup is safe). Null, bool,
+/// int/bigint, string, and datetime all encode canonically; F64 is excluded
+/// (float edge cases) and Bytes/List/Map are excluded (Dart deep equality
+/// stays authoritative). Dart-side dedup remains the fallback for everything
+/// else.
+fn scalar_distinct_safe(value: &crate::value_codec::RowValue) -> bool {
+    matches!(
+        value,
+        crate::value_codec::RowValue::Null
+            | crate::value_codec::RowValue::Bool(_)
+            | crate::value_codec::RowValue::Int64(_)
+            | crate::value_codec::RowValue::BigInt(_)
+            | crate::value_codec::RowValue::String(_)
+            | crate::value_codec::RowValue::DateTime(_)
+    )
 }
 
 fn lsn_value(sequence: u64) -> Vec<u8> {
@@ -4786,6 +5115,7 @@ fn apply_index_meta_deltas(
 fn maintain_durable_index<'txn>(
     transaction: &'txn WriteTransaction,
     index_table: &mut Option<Table<'txn, &'static [u8], &'static [u8]>>,
+    missing_table: &mut Option<Table<'txn, &'static [u8], &'static [u8]>>,
     meta_deltas: &mut HashMap<Vec<u8>, i64>,
     plan: &IndexPlan,
     table: &str,
@@ -4877,6 +5207,53 @@ fn maintain_durable_index<'txn>(
             *meta_deltas.entry(entry.prefix.clone()).or_insert(0) += 1;
         }
     }
+
+    // Missing-field structure: for every indexed field, keep one entry per
+    // row that LACKS the field (explicit null is present and has a normal
+    // index entry). Only a present→missing / missing→present transition (or a
+    // fresh insert lacking the field, or a row deletion) touches the table,
+    // so the common unchanged-field update does no work. An index-ordered
+    // query enumerates missing rows from this structure instead of scanning
+    // the whole primary table.
+    for (field_index, field) in all_fields.iter().enumerate() {
+        let old_present = old_union
+            .as_ref()
+            .and_then(|u| u[field_index])
+            .is_some();
+        let new_present = new_union
+            .as_ref()
+            .and_then(|u| u[field_index])
+            .is_some();
+        let insert_missing = match (old_row, new_row) {
+            (None, Some(_)) => !new_present,
+            (Some(_), Some(_)) => !new_present && old_present,
+            _ => false,
+        };
+        let remove_missing =
+            new_row.is_none() || (old_row.is_some() && new_present && !old_present);
+        if !insert_missing && !remove_missing {
+            continue;
+        }
+        if missing_table.is_none() {
+            let opened = transaction
+                .open_table(table_definition("__gecko_index_missing"))
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+            counters.bump(&counters.table_opens, 1);
+            *missing_table = Some(opened);
+        }
+        let missing = missing_table.as_mut().expect("opened just above");
+        let key = missing_index_key(table, field, record_key);
+        if insert_missing {
+            missing
+                .insert(key.as_slice(), record_key)
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        } else {
+            missing
+                .remove(key.as_slice())
+                .map_err(|error| WorkerError::Storage(error.to_string()))?;
+        }
+        counters.bump(&counters.index_maintenance_ops, 1);
+    }
     Ok(())
 }
 
@@ -4914,6 +5291,29 @@ fn durable_index_key_multi(
 
 fn durable_index_key(table: &str, field: &str, value: &[u8], record_key: &[u8]) -> Vec<u8> {
     durable_index_key_multi(table, &[field], &[value], record_key)
+}
+
+/// Durable missing-field index key: `[enc(table), enc(field), recordKey]` in
+/// the `__gecko_index_missing` table. One entry per (table, field, record key)
+/// whose row LACKS [field] (explicit null is present and has a normal index
+/// entry; only a missing field is tracked here). The `[enc(table), enc(field)]`
+/// prefix lets an index-ordered query enumerate exactly the missing rows
+/// without scanning the primary table.
+fn missing_index_key(table: &str, field: &str, record_key: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&encode_index_string(table));
+    out.extend_from_slice(&encode_index_string(field));
+    out.extend_from_slice(record_key);
+    out
+}
+
+/// The `[enc(table), enc(field)]` prefix shared by every missing-field entry
+/// of one (table, field) pair.
+fn missing_index_prefix(table: &str, field: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&encode_index_string(table));
+    out.extend_from_slice(&encode_index_string(field));
+    out
 }
 
 fn encode_index_string(value: &str) -> Vec<u8> {
@@ -5041,7 +5441,7 @@ mod tests {
         assert_eq!(sequence, 1);
         assert_eq!(worker.get("items", &[1]).unwrap(), Some(vec![10]));
         assert_eq!(
-            worker.range_scan("items", Some(&[1]), Some(&[2]), None).unwrap(),
+            worker.range_scan("items", Some(&[1]), Some(&[2]), None, true, true).unwrap(),
             vec![(vec![1], vec![10]), (vec![2], vec![20])]
         );
         worker.apply_batch(&[op(OpKind::Delete, Some(vec![1]), None)]).unwrap();
@@ -5097,7 +5497,7 @@ mod tests {
         assert_eq!(outcome.sequence, 2);
         assert_eq!(outcome.previous_values, vec![Some(first.clone()), Some(second.clone()), None]);
         assert_eq!(worker.commit_sequence(), 2);
-        let log = worker.range_scan("__gecko_change_log", None, None, None).unwrap();
+        let log = worker.range_scan("__gecko_change_log", None, None, None, true, true).unwrap();
         assert_eq!(log.len(), 3);
         let expected_previous = [
             Some(first),
@@ -5147,7 +5547,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome.sequence, 2);
-        let log = worker.range_scan("__gecko_change_log", None, None, None).unwrap();
+        let log = worker.range_scan("__gecko_change_log", None, None, None, true, true).unwrap();
         assert_eq!(log.len(), 2, "both templates for the one operation are written");
 
         // Both change-log records carry the batch sequence and preserve the
@@ -5230,7 +5630,7 @@ mod tests {
         // the historical O(N^2) full-slice filter per operation.
         assert_eq!(counters.template_routing_inspections, n as u64);
         assert_eq!(counters.rows_written, n as u64);
-        let log = worker.range_scan("__gecko_change_log", None, None, None).unwrap();
+        let log = worker.range_scan("__gecko_change_log", None, None, None, true, true).unwrap();
         assert_eq!(log.len(), n);
         let _ = std::fs::remove_file(path);
     }
@@ -5499,7 +5899,7 @@ mod tests {
                 ]
             )
             .unwrap();
-        assert_eq!(worker.range_scan("items", None, None, None).unwrap(), vec![(vec![3], vec![3])]);
+        assert_eq!(worker.range_scan("items", None, None, None, true, true).unwrap(), vec![(vec![3], vec![3])]);
         worker
             .apply_batch(
                 &[
@@ -5514,7 +5914,66 @@ mod tests {
                 ]
             )
             .unwrap();
-        assert!(worker.range_scan("items", None, None, None).unwrap().is_empty());
+        assert!(worker.range_scan("items", None, None, None, true, true).unwrap().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn no_removed_key_reporting_still_clears_and_reports_tables() {
+        let path = temp_path("range-noreport");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        worker
+            .apply_batch(
+                &[
+                    op(OpKind::Put, Some(vec![1]), Some(vec![1])),
+                    op(OpKind::Put, Some(vec![2]), Some(vec![2])),
+                ]
+            )
+            .unwrap();
+        // Default mode: removed keys are reported.
+        let reported = worker
+            .apply_batch_reactive_with_retention(
+                &[
+                    Op {
+                        kind: OpKind::DeleteRange,
+                        table: "items".into(),
+                        key: None,
+                        value: None,
+                        start: Some(vec![1]),
+                        end: Some(vec![2]),
+                    },
+                ],
+                &[],
+                0
+            )
+            .unwrap();
+        assert_eq!(reported.removed_keys.len(), 2);
+        assert!(reported.cleared.is_empty());
+        // No-report mode: keys are NOT collected (no memory proportional to
+        // deleted rows), but the wholesale-cleared table is still reported.
+        worker
+            .apply_batch(&[op(OpKind::Put, Some(vec![3]), Some(vec![3]))])
+            .unwrap();
+        let quiet = worker
+            .apply_batch_reactive_with_retention_mode(
+                &[
+                    Op {
+                        kind: OpKind::Clear,
+                        table: "items".into(),
+                        key: None,
+                        value: None,
+                        start: None,
+                        end: None,
+                    },
+                ],
+                &[],
+                0,
+                false
+            )
+            .unwrap();
+        assert!(quiet.removed_keys.is_empty(), "no per-key collection in no-report mode");
+        assert_eq!(quiet.cleared, vec!["items".to_string()]);
+        assert!(worker.range_scan("items", None, None, None, true, true).unwrap().is_empty());
         let _ = std::fs::remove_file(path);
     }
 
@@ -5553,11 +6012,11 @@ mod tests {
             "the old snapshot must not see keys written after it was taken"
         );
         assert_eq!(
-            worker.snapshot_range_scan(snapshot, "items", None, None, None).unwrap(),
+            worker.snapshot_range_scan(snapshot, "items", None, None, None, true, true).unwrap(),
             vec![(vec![1], vec![10]), (vec![2], vec![20])]
         );
         assert_eq!(
-            worker.snapshot_range_scan(snapshot, "items", Some(&[2]), Some(&[2]), None).unwrap(),
+            worker.snapshot_range_scan(snapshot, "items", Some(&[2]), Some(&[2]), None, true, true).unwrap(),
             vec![(vec![2], vec![20])]
         );
 
@@ -5584,7 +6043,7 @@ mod tests {
         let path = temp_path("mvcc-empty");
         let mut worker = RedbWorker::open(&path, false).unwrap();
         let snapshot = worker.create_snapshot().unwrap();
-        assert!(worker.snapshot_range_scan(snapshot, "absent", None, None, None).unwrap().is_empty());
+        assert!(worker.snapshot_range_scan(snapshot, "absent", None, None, None, true, true).unwrap().is_empty());
         assert_eq!(worker.snapshot_get(snapshot, "absent", &[1]).unwrap(), None);
         worker.drop_snapshot(snapshot);
         let _ = std::fs::remove_file(path);
@@ -5601,7 +6060,7 @@ mod tests {
         worker.apply_batch(&ops).unwrap();
 
         // A limit returns exactly that many entries, in ascending order.
-        let page = worker.range_scan("items", None, None, Some(7)).unwrap();
+        let page = worker.range_scan("items", None, None, Some(7), true, true).unwrap();
         assert_eq!(
             page,
             (1u8..=7u8).map(|i| (vec![i], vec![i])).collect::<Vec<_>>(),
@@ -5611,7 +6070,7 @@ mod tests {
         // A page strictly after a resume key continues the walk (inclusive
         // start + skip-the-resume-key is how the migration pages).
         let page2 = worker
-            .range_scan("items", Some(&[7]), None, Some(7))
+            .range_scan("items", Some(&[7]), None, Some(7), true, true)
             .unwrap();
         assert_eq!(
             page2,
@@ -5621,9 +6080,46 @@ mod tests {
 
         // A limit larger than the remaining rows returns everything.
         let tail = worker
-            .range_scan("items", Some(&[99]), None, Some(10))
+            .range_scan("items", Some(&[99]), None, Some(10), true, true)
             .unwrap();
         assert_eq!(tail, vec![(vec![99], vec![99]), (vec![100], vec![100])]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn exclusive_range_bounds_map_directly_to_redb() {
+        let path = temp_path("rscan-excl");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let mut ops = Vec::new();
+        for i in 1..=10u8 {
+            ops.push(op(OpKind::Put, Some(vec![i]), Some(vec![i])));
+        }
+        worker.apply_batch(&ops).unwrap();
+
+        // Exclusive both ends: 2..10 (2 and 10 excluded).
+        let mid = worker
+            .range_scan("items", Some(&[2]), Some(&[10]), None, false, false)
+            .unwrap();
+        assert_eq!(
+            mid,
+            (3u8..=9u8).map(|i| (vec![i], vec![i])).collect::<Vec<_>>(),
+            "exclusive bounds must exclude the boundary keys"
+        );
+        // Exclusive lower, inclusive upper.
+        let after = worker
+            .range_scan("items", Some(&[5]), None, None, false, true)
+            .unwrap();
+        assert_eq!(after.first().unwrap().0, vec![6u8]);
+        // Inclusive lower, exclusive upper.
+        let before = worker
+            .range_scan("items", None, Some(&[5]), None, true, false)
+            .unwrap();
+        assert_eq!(before.last().unwrap().0, vec![4u8]);
+        // A single-key exclusive window is empty.
+        let empty = worker
+            .range_scan("items", Some(&[5]), Some(&[5]), None, false, false)
+            .unwrap();
+        assert!(empty.is_empty());
         let _ = std::fs::remove_file(path);
     }
 
@@ -5639,7 +6135,7 @@ mod tests {
         let snapshot = worker.create_snapshot().unwrap();
 
         let page = worker
-            .snapshot_range_scan(snapshot, "items", None, None, Some(5))
+            .snapshot_range_scan(snapshot, "items", None, None, Some(5), true, true)
             .unwrap();
         assert_eq!(
             page,
@@ -5649,7 +6145,7 @@ mod tests {
         // Resuming strictly after the last page key covers the remainder
         // without re-reading the already-processed rows.
         let rest = worker
-            .snapshot_range_scan(snapshot, "items", Some(&[5]), None, Some(100))
+            .snapshot_range_scan(snapshot, "items", Some(&[5]), None, Some(100), true, true)
             .unwrap();
         assert_eq!(rest.len(), 46, "5..=50 inclusive is 46 entries");
         worker.drop_snapshot(snapshot);
@@ -5755,10 +6251,10 @@ mod tests {
         // reads still work and the physical size is <= the pre-compaction size.
         let after = worker.storage_stats().unwrap();
         assert!(after.physical_bytes <= before.physical_bytes);
-        assert!(worker.range_scan("items", None, None, None).unwrap().is_empty());
+        assert!(worker.range_scan("items", None, None, None, true, true).unwrap().is_empty());
         // LSN continuity: the next write commits at the next sequence.
         worker.apply_batch(&[op(OpKind::Put, Some(vec![9]), Some(vec![99]))]).unwrap();
-        assert_eq!(worker.range_scan("items", None, None, None).unwrap(), vec![(vec![9], vec![99])]);
+        assert_eq!(worker.range_scan("items", None, None, None, true, true).unwrap(), vec![(vec![9], vec![99])]);
         let _ = compacted;
         let _ = std::fs::remove_file(path);
     }
@@ -6450,8 +6946,8 @@ mod tests {
                 &[encode_test_string("a1"), encode_test_string("a2")],
                 "__gecko_index",
                 &[
-                    (start_a1, end_a1),
-                    (start_a2, end_a2),
+                    (start_a1.clone(), end_a1.clone()),
+                    (start_a2.clone(), end_a2.clone()),
                 ],
                 &crate::predicate::encode_predicate(&[])
             )
@@ -6484,6 +6980,30 @@ mod tests {
         assert_eq!(all[1].parent_id, encode_test_string("a2"));
         assert_eq!(all[1].entries.len(), 1);
         assert_eq!(all[1].entries[0].0, encode_test_string("p3"));
+
+        // One-pass proof: each matching post row is fetched exactly once per
+        // query (the indexed path with two parent ids fetches 3 rows once,
+        // never a candidate set + a second matching fetch).
+        worker.enable_counters();
+        let _ = worker
+            .snapshot_relationship_children(
+                snapshot,
+                "posts",
+                "authorId",
+                &[encode_test_string("a1"), encode_test_string("a2")],
+                "__gecko_index",
+                &[
+                    (start_a1.clone(), end_a1.clone()),
+                    (start_a2.clone(), end_a2.clone()),
+                ],
+                &crate::predicate::encode_predicate(&[])
+            )
+            .unwrap();
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.primary_rows_fetched, 3,
+            "one-pass grouping fetches each matching post exactly once (3 posts)"
+        );
 
         worker.drop_snapshot(snapshot);
         let _ = std::fs::remove_file(path);
@@ -6541,30 +7061,26 @@ mod tests {
         use crate::predicate::{ self, Filter };
         use crate::value_codec::{ self, RowValue };
         let (path, mut worker) = seed_aggregate_fixture("qfd");
-        // Distinct `g` across all rows → {g0, g1}. The distinct pushdown
-        // emits the encoded value bytes per matching row; check the decoded
-        // set is exactly {g0, g1} and is unsorted (the caller dedups).
+        // Distinct `g` across all rows → {g0, g1}. Scalar values (strings)
+        // whose Dart `Set` equality is byte-deterministic are deduplicated
+        // natively, so the 4 matching rows emit exactly 2 distinct slices.
         let empty_pred = predicate::encode_predicate(&[]);
         let field_bytes = worker.query_filtered_distinct("items", &empty_pred, "g").unwrap();
-        // contract: the pushdown emits the field's bytes for EACH
-        // matching row (NOT deduped) — the Dart caller dedups. With 4 seeded
-        // rows that all have `g`, we get 4 byte slices that decode to
-        // g0/g0/g1/g1.
-        let values: Vec<RowValue> = field_bytes
+        let mut values: Vec<RowValue> = field_bytes
             .iter()
             .map(|b| value_codec::decode_value(b).unwrap())
             .collect();
+        values.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
         assert_eq!(
             values,
             vec![
                 RowValue::String("g0".into()),
-                RowValue::String("g0".into()),
                 RowValue::String("g1".into()),
-                RowValue::String("g1".into())
-            ]
+            ],
+            "scalar string distinct is deduplicated natively"
         );
 
-        // Distinct `age` for g0 → {10, 20}.
+        // Distinct `age` for g0 → {10, 20} (both already unique).
         let g0_pred = predicate::encode_predicate(
             &[
                 Filter::Equals {
@@ -6574,7 +7090,6 @@ mod tests {
             ]
         );
         let age_bytes = worker.query_filtered_distinct("items", &g0_pred, "age").unwrap();
-        // g0 has 2 rows (ages 10, 20) — both emitted, undeduped.
         let mut ages: Vec<i64> = age_bytes
             .iter()
             .map(|b| {
@@ -6604,10 +7119,11 @@ mod tests {
                 ]
             )
             .unwrap();
-        // Distinct `g` now still emits 5 byte slices (4 with g + the
-        // missing-field row is skipped), verifying the missing-field skip.
+        // Distinct `g` still returns the two distinct scalar values (g0, g1);
+        // the missing-field row is skipped (a missing field is not a distinct
+        // value) and duplicates are deduplicated natively.
         let after_missing = worker.query_filtered_distinct("items", &empty_pred, "g").unwrap();
-        assert_eq!(after_missing.len(), 4, "missing-field row skipped, 4 rows with g remain");
+        assert_eq!(after_missing.len(), 2, "missing-field row skipped; distinct g0/g1 remain");
 
         // A missing table is an empty result, never an error.
         let missing_table = worker.query_filtered_distinct("nope", &empty_pred, "g").unwrap();
@@ -6694,6 +7210,17 @@ mod tests {
             kind: OpKind::Put,
             table: "__gecko_index".into(),
             key: Some(index_key("items", "nick", &encode_test_string("g1"), b"k4")),
+            value: Some(b"k4".to_vec()),
+            start: None,
+            end: None,
+        });
+        // Durable missing-field entry: k4 lacks `age` (it has nick, so there
+        // is no nick missing entry). Seeded directly to match the fixture's
+        // direct index seeding.
+        ops.push(Op {
+            kind: OpKind::Put,
+            table: "__gecko_index_missing".into(),
+            key: Some(missing_index_key("items", "age", b"k4")),
             value: Some(b"k4".to_vec()),
             start: None,
             end: None,
@@ -7340,7 +7867,7 @@ mod tests {
     fn live_registry_filtered_query_tracks_join_leave_update() {
         let (path, mut worker) = seed_registry_fixture("registry-query");
         let (id, initial) = worker
-            .register_live_query("items", &g0_predicate(), &no_filters(), 2)
+            .register_live_query("items", &g0_predicate(), &no_filters(), 2, None, 0)
             .unwrap();
         assert_eq!(id, 0);
         // Initial result set: k0, k1 (byte-key order).
@@ -7447,7 +7974,7 @@ mod tests {
     fn live_registry_watch_all_returns_full_snapshot_per_batch() {
         let (path, mut worker) = seed_registry_fixture("registry-watchall");
         let (id, initial) = worker
-            .register_live_query("items", &no_filters(), &no_filters(), 0)
+            .register_live_query("items", &no_filters(), &no_filters(), 0, None, 0)
             .unwrap();
         assert_eq!(initial.len(), 4);
         // Byte-key order: k0..k3.
@@ -7502,7 +8029,7 @@ mod tests {
     fn live_registry_sorted_query_inserts_at_comparator_position() {
         let (path, mut worker) = seed_registry_fixture("registry-sorted");
         let (id, initial) = worker
-            .register_live_query("items", &no_filters(), &age_ascending_sort(), 2)
+            .register_live_query("items", &no_filters(), &age_ascending_sort(), 2, None, 0)
             .unwrap();
         // Ascending age: k0(10), k1(20), k2(30), k3(40).
         assert_eq!(
@@ -7551,7 +8078,7 @@ mod tests {
     fn live_registry_whole_table_clear_resets_to_empty() {
         let (path, mut worker) = seed_registry_fixture("registry-clear");
         let (id, _) = worker
-            .register_live_query("items", &g0_predicate(), &no_filters(), 1)
+            .register_live_query("items", &g0_predicate(), &no_filters(), 1, None, 0)
             .unwrap();
         let result = worker
             .apply_batch_reactive(&[op_with_table(OpKind::Clear, "items", None, None)], &[])
@@ -7594,7 +8121,7 @@ mod tests {
         // kind 0 (watchAll): keeps the full snapshot on every delta, so the
         // unchanged-write assertion below also checks the snapshot.
         let (_, _) = worker
-            .register_live_query("items", &g0_predicate(), &no_filters(), 0)
+            .register_live_query("items", &g0_predicate(), &no_filters(), 0, None, 0)
             .unwrap();
         // Same value for k0 → nothing observable changes.
         let result = worker
@@ -7631,7 +8158,7 @@ mod tests {
     fn live_registry_coalesces_a_batch_into_one_delta() {
         let (path, mut worker) = seed_registry_fixture("registry-coalesce");
         let (id, _) = worker
-            .register_live_query("items", &g0_predicate(), &no_filters(), 2)
+            .register_live_query("items", &g0_predicate(), &no_filters(), 2, None, 0)
             .unwrap();
         // One batch touching 3 g0 rows → exactly one delta.
         let result = worker
@@ -7698,7 +8225,7 @@ mod tests {
     fn live_registry_unregister_stops_deltas() {
         let (path, mut worker) = seed_registry_fixture("registry-unregister");
         let (id, _) = worker
-            .register_live_query("items", &g0_predicate(), &no_filters(), 2)
+            .register_live_query("items", &g0_predicate(), &no_filters(), 2, None, 0)
             .unwrap();
         worker.unregister_live_query(id);
         assert_eq!(worker.live_query_count(), 0);
@@ -8109,7 +8636,7 @@ mod tests {
             Some(crate::value_codec::RowValue::Int64(1)),
             "watermark advances to the pruned LSN"
         );
-        let log = worker.range_scan("__gecko_change_log", None, None, None).unwrap();
+        let log = worker.range_scan("__gecko_change_log", None, None, None, true, true).unwrap();
         assert_eq!(log.len(), 1, "oldest clean record pruned to stay at retention");
         let counters = worker.take_counters();
         assert_eq!(counters.change_log_pruned, 1);
@@ -8960,6 +9487,82 @@ mod tests {
         let _ = std::fs::remove_file(temp_path("orphans-empty"));
     }
 
+    #[test]
+    fn metadata_query_filters_and_orders_in_rust() {
+        use crate::predicate::{self, Filter};
+        use crate::value_codec::RowValue;
+        let path = temp_path("meta-query");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        // Attachment-like catalog rows with an uploadState field.
+        let rows: Vec<(&[u8], &str, &str)> = vec![
+            (b"a", "items", "pending"),
+            (b"b", "items", "completed"),
+            (b"c", "other", "pending"),
+        ];
+        let mut ops = Vec::new();
+        for (key, collection, state) in rows {
+            ops.push(op_with_table(
+                OpKind::Put,
+                "__gecko_attachments",
+                Some(key.to_vec()),
+                Some(encode_test_row(&[
+                    ("parentCollection", encode_test_string(collection)),
+                    ("parentId", encode_test_string("p1")),
+                    ("uploadState", encode_test_string(state)),
+                ])),
+            ));
+        }
+        worker.apply_batch(&ops).unwrap();
+
+        // Filter on uploadState == pending: rows a and c, ascending key order.
+        let pending = predicate::encode_predicate(&[
+            Filter::Equals {
+                field: "uploadState".into(),
+                value: RowValue::String("pending".into()),
+            },
+        ]);
+        let got = worker.metadata_query("__gecko_attachments", &pending).unwrap();
+        let keys: Vec<&[u8]> = got.iter().map(|e| e.0.as_slice()).collect();
+        assert_eq!(keys, vec![&b"a"[..], &b"c"[..]], "filtered + key-ordered");
+
+        // An empty predicate matches everything.
+        let all = worker
+            .metadata_query("__gecko_attachments", &predicate::encode_predicate(&[]))
+            .unwrap();
+        assert_eq!(all.len(), 3);
+
+        // A missing table is empty, never an error.
+        let missing = worker
+            .metadata_query("__gecko_attachments_absent", &predicate::encode_predicate(&[]))
+            .unwrap();
+        assert!(missing.is_empty());
+
+        // Null-equality matches explicit null (used by conflict readPending).
+        worker
+            .apply_batch(&[op_with_table(
+                OpKind::Put,
+                "__gecko_conflicts",
+                Some(b"c1".to_vec()),
+                Some(encode_test_row(&[
+                    ("conflictId", encode_test_string("c1")),
+                    (
+                        "resolution",
+                        crate::value_codec::encode_value(&crate::value_codec::RowValue::Null),
+                    ),
+                ])),
+            )])
+            .unwrap();
+        let unresolved = predicate::encode_predicate(&[
+            Filter::Equals {
+                field: "resolution".into(),
+                value: RowValue::Null,
+            },
+        ]);
+        let pending_conflicts = worker.metadata_query("__gecko_conflicts", &unresolved).unwrap();
+        assert_eq!(pending_conflicts.len(), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
     // ── TopK + slice_offset_limit unit edges ──────────────────────────────
 
     fn candidate(key: u8, row: u8) -> SortCandidate {
@@ -9231,7 +9834,7 @@ mod tests {
         );
         // Reads still work.
         assert_eq!(ro.get("items", &[1]).unwrap(), Some(vec![10]));
-        assert_eq!(ro.range_scan("items", None, None, None).unwrap().len(), 1);
+        assert_eq!(ro.range_scan("items", None, None, None, true, true).unwrap().len(), 1);
         let _ = std::fs::remove_file(path);
     }
 
@@ -9252,7 +9855,7 @@ mod tests {
     fn range_scan_inverted_bounds_is_empty() {
         let (path, worker) = seed_aggregate_fixture("rscan-inv");
         // start > end → empty, never an error.
-        let got = worker.range_scan("items", Some(&[9]), Some(&[1]), None).unwrap();
+        let got = worker.range_scan("items", Some(&[9]), Some(&[1]), None, true, true).unwrap();
         assert!(got.is_empty());
         let _ = std::fs::remove_file(path);
     }
@@ -9988,6 +10591,132 @@ mod tests {
             "only the missing-field row (k4) reaches the append scan — the \
              pre-sized present-set skips the already-matched rows"
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn missing_field_structure_is_maintained_and_bounds_the_fallback() {
+        use crate::predicate::{self};
+        let path = temp_path("qmissing-maint");
+        let mut worker = RedbWorker::open(&path, false).unwrap();
+        let indexes = vec![("items".to_string(), vec!["age".to_string()])];
+        // Rows k0..k9 carry age; k10 lacks it. All written through a
+        // maintained batch so the missing-field structure is built atomically.
+        let mut ops = Vec::new();
+        for i in 0..10u8 {
+            ops.push(op_with_table(
+                OpKind::Put,
+                "items",
+                Some(vec![i]),
+                Some(encode_test_row(&[("age", encode_test_int64(i as i64))])),
+            ));
+        }
+        ops.push(op_with_table(
+            OpKind::Put,
+            "items",
+            Some(b"k10".to_vec()),
+            Some(encode_test_row(&[("nick", encode_test_string("g1"))])),
+        ));
+        worker.apply_batch_with_indexes(&ops, &indexes).unwrap();
+        let empty_pred = predicate::encode_predicate(&[]);
+        let (start, end) = age_field_bounds();
+
+        worker.enable_counters();
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                false,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        let keys: Vec<Vec<u8>> = got.iter().map(|entry| entry.0.clone()).collect();
+        assert_eq!(keys.len(), 11);
+        assert_eq!(
+            keys.last().unwrap(),
+            &b"k10".to_vec(),
+            "the missing-age row appends last"
+        );
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.primary_rows_visited, 1,
+            "the fallback visits exactly the missing row, not the whole table"
+        );
+
+        // Giving k10 an age removes its missing entry (present→present field
+        // transition touches no missing state) — the field becomes complete.
+        worker
+            .apply_batch_with_indexes(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k10".to_vec()),
+                    Some(encode_test_row(&[("age", encode_test_int64(100))])),
+                )],
+                &indexes,
+            )
+            .unwrap();
+        worker.enable_counters();
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                false,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        assert_eq!(got.len(), 11, "k10 now has age and sorts by it");
+        let counters = worker.take_counters();
+        assert_eq!(
+            counters.primary_rows_visited, 0,
+            "a complete sort field skips the fallback scan entirely"
+        );
+
+        // Removing the age field again restores the missing entry.
+        worker
+            .apply_batch_with_indexes(
+                &[op_with_table(
+                    OpKind::Put,
+                    "items",
+                    Some(b"k10".to_vec()),
+                    Some(encode_test_row(&[("nick", encode_test_string("g1"))])),
+                )],
+                &indexes,
+            )
+            .unwrap();
+        worker.enable_counters();
+        let got = worker
+            .query_indexed_ordered(
+                "items",
+                "__gecko_index",
+                &start,
+                &end,
+                &empty_pred,
+                "age",
+                false,
+                false,
+                false,
+                None,
+                0
+            )
+            .unwrap();
+        assert_eq!(got.last().unwrap().0, b"k10".to_vec());
+        let counters = worker.take_counters();
+        assert_eq!(counters.primary_rows_visited, 1, "missing entry restored");
         let _ = std::fs::remove_file(path);
     }
 

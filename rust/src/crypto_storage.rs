@@ -24,8 +24,8 @@
 //! marker that lets an interrupted rotation be recovered to *either* the old
 //! or the new key.
 
-use aes_gcm::aead::{ Aead, KeyInit, Payload };
-use aes_gcm::{ Aes256Gcm, Nonce };
+use aes_gcm::aead::{ Aead, AeadInPlace, KeyInit, Payload };
+use aes_gcm::{ Aes256Gcm, Nonce, Tag };
 use redb::StorageBackend;
 use std::fs::{ File, OpenOptions };
 use std::io::{ self, Read, Seek, SeekFrom, Write };
@@ -72,10 +72,28 @@ fn encrypt_with(cipher: &Aes256Gcm, key_gen: u8, plaintext: &[u8]) -> io::Result
 }
 
 fn decrypt_with(cipher: &Aes256Gcm, key_gen: u8, physical: &[u8]) -> io::Result<Vec<u8>> {
+    let mut out = vec![0u8; LOGICAL_PAGE_SIZE];
+    decrypt_into(cipher, key_gen, physical, &mut out)?;
+    Ok(out)
+}
+
+/// Decrypts one physical page in place into [out] (a full logical page),
+/// avoiding the per-page plaintext allocation of [`decrypt_with`]. Zero pages,
+/// wrong key generations, and authentication failures behave exactly as in
+/// [`decrypt_with`]; [out] is always fully written on success (and on a zero
+/// page).
+fn decrypt_into(
+    cipher: &Aes256Gcm,
+    key_gen: u8,
+    physical: &[u8],
+    out: &mut [u8]
+) -> io::Result<()> {
     debug_assert_eq!(physical.len(), PHYSICAL_PAGE_SIZE);
+    debug_assert_eq!(out.len(), LOGICAL_PAGE_SIZE);
     // A never-written page is all zeros (set_len initializes to zero).
     if physical.iter().all(|b| *b == 0) {
-        return Ok(vec![0u8; LOGICAL_PAGE_SIZE]);
+        out.fill(0);
+        return Ok(());
     }
     if physical[0] != key_gen {
         return Err(
@@ -87,12 +105,13 @@ fn decrypt_with(cipher: &Aes256Gcm, key_gen: u8, physical: &[u8]) -> io::Result<
     }
     let nonce = Nonce::from_slice(&physical[physical.len() - 12..]);
     let ct_and_tag = &physical[1..physical.len() - 12];
+    // Layout is [gen][ciphertext][tag][nonce]; split the ciphertext from the
+    // trailing tag so GCM can decrypt in place into [out].
+    let (ct, tag_bytes) = ct_and_tag.split_at(ct_and_tag.len() - 16);
+    out.copy_from_slice(ct);
     let aad = [key_gen];
     cipher
-        .decrypt(nonce, Payload {
-            msg: ct_and_tag,
-            aad: &aad,
-        })
+        .decrypt_in_place_detached(nonce, &aad, out, Tag::from_slice(tag_bytes))
         .map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -138,23 +157,41 @@ impl EncryptingStorageBackend {
         decrypt_with(&cipher, self.key_gen, physical)
     }
 
+    /// In-place variant of [`Self::decrypt_page`] that writes into [out] (a
+    /// full logical page) so the hot read path reuses one owned scratch
+    /// instead of allocating a fresh plaintext Vec per page.
+    fn decrypt_page_into(&self, physical: &[u8], out: &mut [u8]) -> io::Result<()> {
+        let cipher = self.cipher.lock().unwrap();
+        decrypt_into(&cipher, self.key_gen, physical, out)
+    }
+
     fn read_physical_page(&self, page: u64) -> io::Result<Vec<u8>> {
-        // Never read beyond the underlying file length: redb's FileBackend
-        // loops on zero-length reads at EOF on Windows, and a not-yet-written
-        // page (or a page past a freshly set_len'd tail) must read as zeros.
+        let mut buf = vec![0u8; PHYSICAL_PAGE_SIZE];
+        self.read_physical_into(page, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Fills [buf] (a full physical page, zeroed first) with the physical
+    /// bytes for [page]. Never reads beyond the underlying file length: redb's
+    /// FileBackend loops on zero-length reads at EOF on Windows, and a
+    /// not-yet-written page (or a page past a freshly set_len'd tail) must
+    /// read as zeros. The caller owns [buf], so the hot read path reuses one
+    /// physical scratch across many pages instead of allocating per page.
+    fn read_physical_into(&self, page: u64, buf: &mut [u8]) -> io::Result<()> {
+        debug_assert_eq!(buf.len(), PHYSICAL_PAGE_SIZE);
+        buf.fill(0);
         let start = page * (PHYSICAL_PAGE_SIZE as u64);
         let file_len = self.inner.len()?;
         if start >= file_len {
-            return Ok(vec![0u8; PHYSICAL_PAGE_SIZE]);
+            return Ok(());
         }
         let available = (file_len - start).min(PHYSICAL_PAGE_SIZE as u64) as usize;
-        let mut buf = vec![0u8; PHYSICAL_PAGE_SIZE];
         if available > 0 {
-            let mut read_buf = vec![0u8; available];
-            self.inner.read(start, &mut read_buf)?;
-            buf[..available].copy_from_slice(&read_buf);
+            // Direct bounded read fills the caller's page buffer in place — no
+            // intermediate read buffer allocation.
+            self.inner.read(start, &mut buf[..available])?;
         }
-        Ok(buf)
+        Ok(())
     }
 
     fn write_physical_page(&self, page: u64, physical: &[u8]) -> io::Result<()> {
@@ -184,9 +221,14 @@ impl StorageBackend for EncryptingStorageBackend {
         let first_page = start / page_size;
         let last_page = (end - 1) / page_size;
         let mut copied = 0usize;
+        // One owned plaintext scratch reused across the pages of this read
+        // (concurrency-safe: local to this call) instead of a fresh plaintext
+        // allocation per page.
+        let mut scratch = vec![0u8; LOGICAL_PAGE_SIZE];
+        let mut physical = vec![0u8; PHYSICAL_PAGE_SIZE];
         for page in first_page..=last_page {
-            let physical = self.read_physical_page(page)?;
-            let plain = self.decrypt_page(&physical)?;
+            self.read_physical_into(page, &mut physical)?;
+            self.decrypt_page_into(&physical, &mut scratch)?;
             let page_start = page * page_size;
             let in_seg_start = start.saturating_sub(page_start) as usize;
             let in_seg_end = (if end > page_start + page_size {
@@ -194,7 +236,7 @@ impl StorageBackend for EncryptingStorageBackend {
             } else {
                 end - page_start
             }) as usize;
-            let seg = &plain[in_seg_start..in_seg_end];
+            let seg = &scratch[in_seg_start..in_seg_end];
             out[copied..copied + seg.len()].copy_from_slice(seg);
             copied += seg.len();
         }
@@ -544,6 +586,32 @@ mod tests {
         let mut read_back = vec![0u8; LOGICAL_PAGE_SIZE];
         backend.read(LOGICAL_PAGE_SIZE as u64, &mut read_back).unwrap();
         assert_eq!(read_back, page);
+    }
+
+    #[test]
+    fn in_place_read_handles_zero_and_written_pages_in_one_call() {
+        // The reused-scratch read path must treat a never-written (zero) page
+        // as zeros and a written page as its plaintext within a single call
+        // that crosses several pages.
+        let inner = InMemoryBackend::new();
+        inner.set_len((PHYSICAL_PAGE_SIZE * 4) as u64).unwrap();
+        let backend = EncryptingStorageBackend::new(Box::new(inner), key(1), 1);
+        // Write page 0 only; pages 1..3 stay zero.
+        let page = plaintext(LOGICAL_PAGE_SIZE, 5);
+        backend.write(0, &page).unwrap();
+        let mut out = vec![0u8; LOGICAL_PAGE_SIZE * 2];
+        // Span page 0 (written) and page 1 (never written).
+        backend.read(0, &mut out).unwrap();
+        assert_eq!(&out[..LOGICAL_PAGE_SIZE], &page[..]);
+        assert!(out[LOGICAL_PAGE_SIZE..].iter().all(|b| *b == 0));
+        // A partial read straddling the written/zero boundary keeps both halves
+        // intact.
+        let mut partial = vec![0u8; 64];
+        backend
+            .read((LOGICAL_PAGE_SIZE as u64) - 32, &mut partial)
+            .unwrap();
+        assert_eq!(&partial[..32], &page[LOGICAL_PAGE_SIZE - 32..]);
+        assert!(partial[32..].iter().all(|b| *b == 0));
     }
 
     #[test]

@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -837452315;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -781048411;
 
 // Section: executor
 
@@ -75,6 +75,7 @@ fn wire__crate__api__NativeWorker_apply_batch_impl(
             let api_encoded_ops = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_index_definitions = <Vec<(String, Vec<String>)>>::sse_decode(&mut deserializer);
             let api_change_log_max_entries = <u64>::sse_decode(&mut deserializer);
+            let api_report_removed_keys = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -101,6 +102,7 @@ fn wire__crate__api__NativeWorker_apply_batch_impl(
                             api_encoded_ops,
                             api_index_definitions,
                             api_change_log_max_entries,
+                            api_report_removed_keys,
                         )
                         .await?;
                         Ok(output_ok)
@@ -142,6 +144,7 @@ fn wire__crate__api__NativeWorker_apply_prepared_batch_impl(
             let api_previous_operation_indexes = <Vec<String>>::sse_decode(&mut deserializer);
             let api_put_modes = <Vec<(u64, u8)>>::sse_decode(&mut deserializer);
             let api_changes = <Vec<crate::api::PreparedChange>>::sse_decode(&mut deserializer);
+            let api_report_removed_keys = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -171,6 +174,7 @@ fn wire__crate__api__NativeWorker_apply_prepared_batch_impl(
                             api_previous_operation_indexes,
                             api_put_modes,
                             api_changes,
+                            api_report_removed_keys,
                         )
                         .await?;
                         Ok(output_ok)
@@ -849,6 +853,68 @@ fn wire__crate__api__NativeWorker_live_query_count_impl(
                         let api_that_guard = api_that_guard.unwrap();
                         let output_ok =
                             crate::api::NativeWorker::live_query_count(&*api_that_guard).await?;
+                        Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__NativeWorker_metadata_query_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "NativeWorker_metadata_query",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeWorker>,
+            >>::sse_decode(&mut deserializer);
+            let api_table = <String>::sse_decode(&mut deserializer);
+            let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, String>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::NativeWorker::metadata_query(
+                            &*api_that_guard,
+                            api_table,
+                            api_predicate_bytes,
+                        )
+                        .await?;
                         Ok(output_ok)
                     })()
                     .await,
@@ -1888,6 +1954,8 @@ fn wire__crate__api__NativeWorker_range_scan_impl(
             let api_start = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
             let api_end = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
             let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
+            let api_start_inclusive = <bool>::sse_decode(&mut deserializer);
+            let api_end_inclusive = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -1915,6 +1983,8 @@ fn wire__crate__api__NativeWorker_range_scan_impl(
                             api_start,
                             api_end,
                             api_limit,
+                            api_start_inclusive,
+                            api_end_inclusive,
                         )
                         .await?;
                         Ok(output_ok)
@@ -1954,6 +2024,8 @@ fn wire__crate__api__NativeWorker_register_live_query_impl(
             let api_predicate_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_sort_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
             let api_kind = <u8>::sse_decode(&mut deserializer);
+            let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
+            let api_offset = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -1981,6 +2053,8 @@ fn wire__crate__api__NativeWorker_register_live_query_impl(
                             api_predicate_bytes,
                             api_sort_bytes,
                             api_kind,
+                            api_limit,
+                            api_offset,
                         )
                         .await?;
                         Ok(output_ok)
@@ -3094,6 +3168,8 @@ fn wire__crate__api__NativeWorker_snapshot_range_scan_impl(
             let api_start = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
             let api_end = <Option<Vec<u8>>>::sse_decode(&mut deserializer);
             let api_limit = <Option<u64>>::sse_decode(&mut deserializer);
+            let api_start_inclusive = <bool>::sse_decode(&mut deserializer);
+            let api_end_inclusive = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -3122,6 +3198,8 @@ fn wire__crate__api__NativeWorker_snapshot_range_scan_impl(
                             api_start,
                             api_end,
                             api_limit,
+                            api_start_inclusive,
+                            api_end_inclusive,
                         )
                         .await?;
                         Ok(output_ok)
@@ -3733,11 +3811,13 @@ impl SseDecode for crate::api::ApplyBatchResult {
         let mut var_deltas = <Vec<crate::api::QueryDelta>>::sse_decode(deserializer);
         let mut var_previousValues = <Vec<Option<Vec<u8>>>>::sse_decode(deserializer);
         let mut var_removedKeys = <Vec<(String, Vec<u8>)>>::sse_decode(deserializer);
+        let mut var_cleared = <Vec<String>>::sse_decode(deserializer);
         return crate::api::ApplyBatchResult {
             sequence: var_sequence,
             deltas: var_deltas,
             previous_values: var_previousValues,
             removed_keys: var_removedKeys,
+            cleared: var_cleared,
         };
     }
 }
@@ -4200,196 +4280,197 @@ fn pde_ffi_dispatcher_primary_impl(
         14 => {
             wire__crate__api__NativeWorker_live_query_count_impl(port, ptr, rust_vec_len, data_len)
         }
-        15 => wire__crate__api__NativeWorker_open_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__NativeWorker_open_encrypted_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__NativeWorker_orphaned_attachments_impl(
+        15 => wire__crate__api__NativeWorker_metadata_query_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__NativeWorker_open_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__NativeWorker_open_encrypted_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__NativeWorker_orphaned_attachments_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        18 => {
+        19 => {
             wire__crate__api__NativeWorker_pending_changes_impl(port, ptr, rust_vec_len, data_len)
         }
-        19 => wire__crate__api__NativeWorker_physical_size_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__NativeWorker_query_filtered_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__NativeWorker_query_filtered_count_impl(
+        20 => wire__crate__api__NativeWorker_physical_size_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__NativeWorker_query_filtered_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__NativeWorker_query_filtered_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        22 => wire__crate__api__NativeWorker_query_filtered_distinct_impl(
+        23 => wire__crate__api__NativeWorker_query_filtered_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        23 => wire__crate__api__NativeWorker_query_filtered_limited_impl(
+        24 => wire__crate__api__NativeWorker_query_filtered_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        24 => wire__crate__api__NativeWorker_query_indexed_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__NativeWorker_query_indexed_count_impl(
+        25 => wire__crate__api__NativeWorker_query_indexed_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__NativeWorker_query_indexed_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        26 => wire__crate__api__NativeWorker_query_indexed_distinct_impl(
+        27 => wire__crate__api__NativeWorker_query_indexed_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        27 => wire__crate__api__NativeWorker_query_indexed_limited_impl(
+        28 => wire__crate__api__NativeWorker_query_indexed_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        28 => wire__crate__api__NativeWorker_query_indexed_multi_impl(
+        29 => wire__crate__api__NativeWorker_query_indexed_multi_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        29 => wire__crate__api__NativeWorker_query_indexed_ordered_impl(
+        30 => wire__crate__api__NativeWorker_query_indexed_ordered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        30 => wire__crate__api__NativeWorker_query_sorted_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__NativeWorker_range_scan_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__NativeWorker_register_live_query_impl(
+        31 => wire__crate__api__NativeWorker_query_sorted_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__NativeWorker_range_scan_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__NativeWorker_register_live_query_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        33 => wire__crate__api__NativeWorker_rekey_encrypted_file_impl(
+        34 => wire__crate__api__NativeWorker_rekey_encrypted_file_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        34 => wire__crate__api__NativeWorker_repair_index_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__NativeWorker_set_composite_indexes_impl(
+        35 => wire__crate__api__NativeWorker_repair_index_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__NativeWorker_set_composite_indexes_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        36 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
-        37 => {
+        37 => wire__crate__api__NativeWorker_snapshot_get_impl(port, ptr, rust_vec_len, data_len),
+        38 => {
             wire__crate__api__NativeWorker_snapshot_get_many_impl(port, ptr, rust_vec_len, data_len)
         }
-        38 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
+        39 => wire__crate__api__NativeWorker_snapshot_query_filtered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__api__NativeWorker_snapshot_query_filtered_count_impl(
+        40 => wire__crate__api__NativeWorker_snapshot_query_filtered_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        40 => wire__crate__api__NativeWorker_snapshot_query_filtered_distinct_impl(
+        41 => wire__crate__api__NativeWorker_snapshot_query_filtered_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__api__NativeWorker_snapshot_query_filtered_limited_impl(
+        42 => wire__crate__api__NativeWorker_snapshot_query_filtered_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        42 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
+        43 => wire__crate__api__NativeWorker_snapshot_query_indexed_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
+        44 => wire__crate__api__NativeWorker_snapshot_query_indexed_count_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        44 => wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
+        45 => wire__crate__api__NativeWorker_snapshot_query_indexed_distinct_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        45 => wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
+        46 => wire__crate__api__NativeWorker_snapshot_query_indexed_limited_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        46 => wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
+        47 => wire__crate__api__NativeWorker_snapshot_query_indexed_multi_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
+        48 => wire__crate__api__NativeWorker_snapshot_query_indexed_ordered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        48 => wire__crate__api__NativeWorker_snapshot_query_sorted_impl(
+        49 => wire__crate__api__NativeWorker_snapshot_query_sorted_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
+        50 => wire__crate__api__NativeWorker_snapshot_range_scan_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        50 => wire__crate__api__NativeWorker_snapshot_relationship_children_impl(
+        51 => wire__crate__api__NativeWorker_snapshot_relationship_children_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        51 => wire__crate__api__NativeWorker_snapshot_relationship_join_ids_impl(
+        52 => wire__crate__api__NativeWorker_snapshot_relationship_join_ids_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        52 => wire__crate__api__NativeWorker_snapshot_relationship_parent_impl(
+        53 => wire__crate__api__NativeWorker_snapshot_relationship_parent_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        53 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
-        54 => wire__crate__api__NativeWorker_sync_state_matching_impl(
+        54 => wire__crate__api__NativeWorker_storage_stats_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__api__NativeWorker_sync_state_matching_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        55 => {
+        56 => {
             wire__crate__api__NativeWorker_sync_transition_impl(port, ptr, rust_vec_len, data_len)
         }
-        56 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
-        57 => wire__crate__api__NativeWorker_take_counters_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__api__NativeWorker_unregister_live_query_impl(
+        57 => wire__crate__api__NativeWorker_tables_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__api__NativeWorker_take_counters_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__api__NativeWorker_unregister_live_query_impl(
             port,
             ptr,
             rust_vec_len,
@@ -4436,6 +4517,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ApplyBatchResult {
             self.deltas.into_into_dart().into_dart(),
             self.previous_values.into_into_dart().into_dart(),
             self.removed_keys.into_into_dart().into_dart(),
+            self.cleared.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4647,6 +4729,7 @@ impl SseEncode for crate::api::ApplyBatchResult {
         <Vec<crate::api::QueryDelta>>::sse_encode(self.deltas, serializer);
         <Vec<Option<Vec<u8>>>>::sse_encode(self.previous_values, serializer);
         <Vec<(String, Vec<u8>)>>::sse_encode(self.removed_keys, serializer);
+        <Vec<String>>::sse_encode(self.cleared, serializer);
     }
 }
 

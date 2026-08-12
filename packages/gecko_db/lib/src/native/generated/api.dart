@@ -17,6 +17,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<int> encodedOps,
     required List<(String, List<String>)> indexDefinitions,
     required BigInt changeLogMaxEntries,
+    required bool reportRemovedKeys,
   });
 
   Future<ApplyBatchResult> applyPreparedBatch({
@@ -26,6 +27,7 @@ abstract class NativeWorker implements RustOpaqueInterface {
     required List<String> previousOperationIndexes,
     required List<(BigInt, int)> putModes,
     required List<PreparedChange> changes,
+    required bool reportRemovedKeys,
   });
 
   /// Range-filtered `changesSince(lastSeq)`: scans the change log in Rust
@@ -75,6 +77,15 @@ abstract class NativeWorker implements RustOpaqueInterface {
 
   /// Number of active live-query registrations (diagnostics).
   Future<BigInt> liveQueryCount();
+
+  /// Scans a metadata table ([table]) and returns the entries whose row
+  /// matches [predicate_bytes] — filtering and ordering execute in Rust, so
+  /// attachment/conflict listing never materializes the whole catalog in
+  /// Dart. Deterministic ascending key order.
+  Future<List<(Uint8List, Uint8List)>> metadataQuery({
+    required String table,
+    required List<int> predicateBytes,
+  });
 
   /// Opens a database. Async so the web (wasm) build dispatches through the
   /// async runtime instead of FRB's sync WorkerPool.
@@ -234,16 +245,23 @@ abstract class NativeWorker implements RustOpaqueInterface {
     Uint8List? start,
     Uint8List? end,
     BigInt? limit,
+    required bool startInclusive,
+    required bool endInclusive,
   });
 
   /// registers a live query with the worker's reactive
   /// registry. [kind] is 0 = watchAll, 1 = watchAllDiff, 2 = query. Returns
-  /// the registration id and the initial result set in result order.
+  /// the registration id and the initial result set in result order. A
+  /// windowed query ([limit] is Some) receives only the ordered slice
+  /// `[offset, offset + limit)`; the registry maintains the full matching
+  /// set incrementally so the window stays correct under writes.
   Future<RegisterLiveQueryResult> registerLiveQuery({
     required String table,
     required List<int> predicateBytes,
     required List<int> sortBytes,
     required int kind,
+    BigInt? limit,
+    required BigInt offset,
   });
 
   /// Atomically re-encrypts a *closed* encrypted database file from
@@ -420,6 +438,8 @@ abstract class NativeWorker implements RustOpaqueInterface {
     Uint8List? start,
     Uint8List? end,
     BigInt? limit,
+    required bool startInclusive,
+    required bool endInclusive,
   });
 
   /// /snapshot-bound child retrieval using durable index ranges or
@@ -493,11 +513,15 @@ class ApplyBatchResult {
   final List<Uint8List?> previousValues;
   final List<(String, Uint8List)> removedKeys;
 
+  /// Tables wholesale-cleared by `Clear` operations (batch order).
+  final List<String> cleared;
+
   const ApplyBatchResult({
     required this.sequence,
     required this.deltas,
     required this.previousValues,
     required this.removedKeys,
+    required this.cleared,
   });
 
   @override
@@ -505,7 +529,8 @@ class ApplyBatchResult {
       sequence.hashCode ^
       deltas.hashCode ^
       previousValues.hashCode ^
-      removedKeys.hashCode;
+      removedKeys.hashCode ^
+      cleared.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -515,7 +540,8 @@ class ApplyBatchResult {
           sequence == other.sequence &&
           deltas == other.deltas &&
           previousValues == other.previousValues &&
-          removedKeys == other.removedKeys;
+          removedKeys == other.removedKeys &&
+          cleared == other.cleared;
 }
 
 /// Additional metadata for one change record completed by Rust inside the
