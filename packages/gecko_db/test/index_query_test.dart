@@ -625,6 +625,62 @@ void main() {
     });
 
     test(
+      'timings are captured on composite, multi-eq, and sorted routes',
+      () async {
+        final db = await openNative(slowQueryThreshold: 1);
+        final col = db.collection<_Rec>(
+          't',
+          toRow: _toRow,
+          fromRow: _fromRow,
+          id: _id,
+          indexFields: ['age'],
+          prefixFields: ['name'],
+          compositeIndexes: const [
+            ['age', 'name'],
+          ],
+        );
+        for (var i = 0; i < 100; i++) {
+          await col.put(_Rec('r$i', 'n${i % 5}', 20 + (i % 10), 'g${i % 3}'));
+        }
+        // Composite: eq on the first field + range on the trailing field.
+        final comp = col
+            .where()
+            .filter('age', 20)
+            .range('name', min: 'n0', max: 'n2');
+        await comp.findAll();
+        expect(comp.lastPlan, IndexPlan.secondaryIndex);
+        // Multi-eq / multi-range: two filters on different indexed fields.
+        final multi = col
+            .where()
+            .range('age', min: 20, max: 25)
+            .prefix('name', 'n1');
+        await multi.findAll();
+        expect(multi.lastPlan, IndexPlan.secondaryIndex);
+        // Index-covered sort: single-field index on the sort field.
+        final sorted = col.where().sort([const SortSpec('age')]);
+        await sorted.findAll();
+        expect(sorted.lastPlan, IndexPlan.secondaryIndex);
+        // Non-index-covered sort: Rust top-K full-scan path.
+        final topK = col.where().sort([const SortSpec('nick')]);
+        await topK.findAll();
+        expect(topK.lastPlan, IndexPlan.nativeFilteredScan);
+        // Every slow-query record captured timings with the stage fields set.
+        final records = db.engine.recentSlowQueries;
+        expect(records.length, greaterThanOrEqualTo(4));
+        for (final rec in records) {
+          final t = rec.timings;
+          expect(t, isNotNull);
+          expect(t!.total, greaterThanOrEqualTo(0));
+          expect(t.backendRead, greaterThanOrEqualTo(0));
+          expect(t.decode, greaterThanOrEqualTo(0));
+          expect(t.mapCopy, greaterThanOrEqualTo(0));
+          expect(t.predicate, greaterThanOrEqualTo(0));
+        }
+        await db.close();
+      },
+    );
+
+    test(
       'non-snapshot NativeRawBackend.queryIndexed joins index→row in one hop',
       () async {
         // Exercises the non-snapshot variant (opens its own read txn) plus

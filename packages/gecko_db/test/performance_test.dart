@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:gecko_db/gecko_db.dart';
+import 'package:gecko_db/src/backend/raw_backend.dart'
+    show RawBatchPlan, RawPut;
 import 'package:test/test.dart';
 
 import 'support/native_database.dart';
@@ -182,10 +184,43 @@ void main() {
         db.diagnostics.enable();
         await item.put(_Item('b', 'B'));
         await item.get('b');
+        // Engine-level write paths with diagnostics armed: the failed-write
+        // catch and the write-duration accounting run for every variant.
+        await db.engine.commitBatchNoSnapshot(
+          (lsn) async => [RawPut('t', ByteKey([1]), [1])],
+        );
+        await db.engine.commitPreparedBatch(
+          () async => RawBatchPlan(ops: [RawPut('t', ByteKey([2]), [2])]),
+        );
+        await db.engine.rawPut('t', ByteKey([3]), [3]);
+        await db.engine.rawDelete('t', ByteKey([3]));
+        await db.engine.rawClear('t');
+        await db.engine.rawRangeScan('t');
+        // A failed write (insertOnly on an existing key) bumps failedWrites.
+        await db.engine.rawPut('t', ByteKey([9]), [9]);
+        var insertOnlyThrew = false;
+        try {
+          await db.engine.rawPut('t', ByteKey([9]), [10],
+              mode: RawWriteMode.insertOnly);
+        } on GeckoError {
+          insertOnlyThrew = true;
+        }
+        expect(insertOnlyThrew, isTrue, reason: 'insertOnly on an existing key');
+        // Slow-query accounting: report below/at threshold directly.
+        db.engine.reportSlowQuery(
+          SlowQueryRecord(
+            durationMicros: 0,
+            table: 't',
+            indexed: false,
+            filters: const [],
+            sort: const [],
+          ),
+        );
         final snapshot = db.diagnostics.snapshot();
         expect(snapshot.enabled, isTrue);
         expect(snapshot.totalWrites, greaterThan(0));
         expect(snapshot.totalReads, greaterThan(0));
+        expect(snapshot.failedWrites, greaterThan(0));
         expect(snapshot.inFlightLimit, greaterThan(0));
         db.diagnostics.reset();
         expect(db.diagnostics.snapshot().totalWrites, 0);

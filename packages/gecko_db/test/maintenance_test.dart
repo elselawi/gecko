@@ -677,6 +677,10 @@ void main() {
         anyOf(MaintenanceState.committed.name, MaintenanceState.idle.name),
       );
       expect(snap.compacting, isFalse);
+      // The worker-contention field and the snapshot string form are
+      // readable (defensive surface coverage).
+      expect(snap.workerContention, isA<WorkerContention>());
+      expect(snap.toString(), contains('reads='));
       await db.close();
     });
   });

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:gecko_db/gecko_db.dart';
 import 'package:gecko_db/src/backend/raw_backend.dart'
     show RawBatchPlan, RawChangeTemplate, DirectReadBackend, PreparedBatchBackend;
+import 'package:gecko_db/src/namespaces.dart' show geckoChangeLogTable, geckoSyncStateTable, geckoAttachmentTable;
 import 'package:test/test.dart';
 
 import 'support/native_database.dart';
@@ -277,7 +278,140 @@ void main() {
       await eng.dispose();
     });
   });
+
+  group('RawEngine: P8 sync/migration primitives', () {
+    test('workerContention reports serial-queue service after requests',
+        () async {
+      final before = engine.workerContention;
+      for (var i = 0; i < 5; i++) {
+        await engine.rawPut('t', ByteKey([i]), [i]);
+      }
+      final c = engine.workerContention;
+      expect(c.requestCount, greaterThan(before.requestCount));
+      expect(c.queueDepthHighWater, greaterThanOrEqualTo(1));
+      expect(c.avgServiceMicros, greaterThanOrEqualTo(0));
+      expect(c.maxServiceMicros, greaterThanOrEqualTo(c.avgServiceMicros));
+    });
+
+    test('syncStateMatching filters sync-state rows by record id', () async {
+      ByteKey keyFor(String id) => ByteKey(_wire.encode(id));
+      await engine.rawPut(
+        geckoSyncStateTable,
+        keyFor('a'),
+        _wire.encode(_syncRecord(seq: 1, id: 'a')),
+      );
+      await engine.rawPut(
+        geckoSyncStateTable,
+        keyFor('b'),
+        _wire.encode(_syncRecord(seq: 2, id: 'b')),
+      );
+      final matched = await engine.syncStateMatching([_plainMatcher('b')]);
+      expect(matched, hasLength(1));
+      expect(matched.single.key, keyFor('b'));
+      final none = await engine.syncStateMatching([_plainMatcher('zzz')]);
+      expect(none, isEmpty);
+    });
+
+    test('changesSince filters change-log rows by sequence', () async {
+      ByteKey keyFor(int seq) => ByteKey(_wire.encode('c$seq'));
+      for (final seq in [1, 5, 10]) {
+        await engine.rawPut(
+          geckoChangeLogTable,
+          keyFor(seq),
+          _wire.encode(_syncRecord(seq: seq, id: 'r$seq')),
+        );
+      }
+      final after = await engine.changesSince(4);
+      final ids = [for (final e in after) e.key];
+      expect(ids, containsAll([keyFor(5), keyFor(10)]));
+      expect(ids, isNot(contains(keyFor(1))));
+    });
+
+    test('orphanedAttachments returns rows whose parent is missing', () async {
+      await engine.rawPut(
+        'items',
+        ByteKey(_wire.encode('p1')),
+        _wire.encode({'id': 'p1'}),
+      );
+      List<int> metaFor(
+        String id,
+        String parentCollection,
+        String parentId,
+      ) =>
+          _wire.encode({
+            'id': id,
+            'parentCollection': parentCollection,
+            'parentId': parentId,
+          });
+      // att2's parent row does not exist -> orphan. att1's parent exists.
+      await engine.rawPut(
+        geckoAttachmentTable,
+        ByteKey(_wire.encode('att1')),
+        metaFor('att1', 'items', 'p1'),
+      );
+      await engine.rawPut(
+        geckoAttachmentTable,
+        ByteKey(_wire.encode('att2')),
+        metaFor('att2', 'items', 'gone'),
+      );
+      final orphans = await engine.orphanedAttachments();
+      expect(orphans.map((e) => e.key), [ByteKey(_wire.encode('att2'))]);
+    });
+
+    test('fallback backends reject the Rust-only primitives with a typed error',
+        () async {
+      final counting = _CountingBackend(backend);
+      final eng = RawEngine(counting, lruCapacity: 4, inFlightBatchLimit: 2);
+      // A non-native backend reports empty (default) worker contention.
+      final contention = eng.workerContention;
+      expect(contention.requestCount, 0);
+      expect(contention.queueDepthHighWater, 0);
+      expect(contention.avgServiceMicros, 0);
+      expect(contention.maxServiceMicros, 0);
+      expect(
+        () => eng.syncStateMatching(const [
+          [0],
+        ]),
+        throwsA(isA<GeckoError>()),
+      );
+      expect(() => eng.changesSince(0), throwsA(isA<GeckoError>()));
+      expect(() => eng.orphanedAttachments(), throwsA(isA<GeckoError>()));
+      await eng.dispose();
+    });
+  });
 }
+
+final DefaultWireCodec _wire = DefaultWireCodec();
+
+Map<String, Object?> _syncRecord({
+  required int seq,
+  required String id,
+  String? collection,
+}) =>
+    {
+      'localMutationId': seq,
+      'recordId': id,
+      'timestamp': DateTime.fromMillisecondsSinceEpoch(0),
+      'collection': collection,
+      'kind': 'put',
+      'value': {'id': id},
+      'origin': 'user',
+      'dirty': true,
+      'syncPhase': 'pending',
+    };
+
+List<int> _plainMatcher(String id) => [
+  0x00,
+  ..._u32(_wire.encode(id).length),
+  ..._wire.encode(id),
+];
+
+List<int> _u32(int n) => [
+  (n >> 24) & 0xFF,
+  (n >> 16) & 0xFF,
+  (n >> 8) & 0xFF,
+  n & 0xFF,
+];
 
 /// A read-counting backend: delegates to the real native backend and counts
 /// direct point-read calls so cache behavior is observable in tests.

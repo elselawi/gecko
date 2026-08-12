@@ -353,6 +353,35 @@ void main() {
       expect(list[2], true);
       expect(list[3], isNull);
     });
+
+    test('JSON request/response helpers round-trip through decodeMessage', () {
+      final request = <String, Object?>{'op': 'get', 'args': <int>[1, 2]};
+      final jsonReq = encodeRequest(request);
+      expect(jsonReq, isA<String>());
+      final decodedReq = decodeMessage(jsonReq);
+      expect(decodedReq['op'], 'get');
+      expect(decodedReq['args'], <int>[1, 2]);
+      final response = <String, Object?>{'ok': true, 'data': 'x'};
+      final decodedResp = decodeMessage(encodeResponse(response));
+      expect(decodedResp['ok'], isTrue);
+      expect(decodedResp['data'], 'x');
+    });
+
+    test('binary response messages round-trip structure and bytes', () {
+      final response = <String, Object?>{
+        'seq': 7,
+        'ok': true,
+        'data': <int>[5, 6, 7],
+        'nested': <String, Object?>{'bytes': <int>[8, 9]},
+      };
+      final encoded = encodeResponseBinary(response);
+      final decoded = decodeMessageBinary(encoded);
+      expect(decoded['seq'], 7);
+      expect(decoded['ok'], isTrue);
+      expect(decodeValueBinary(decoded['data'] as Object), <int>[5, 6, 7]);
+      final nested = decoded['nested'] as Map;
+      expect(decodeValueBinary(nested['bytes'] as Object), <int>[8, 9]);
+    });
   });
 
   group('web worker client (VM stub)', () {
